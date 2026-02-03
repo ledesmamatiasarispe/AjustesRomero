@@ -56,9 +56,15 @@ class TabHistoricos(ttk.Frame):
         ttk.Button(adj_act, text="Eliminar ajuste", command=self.delete_adjustment).pack(side="left", padx=6)
 
         ttk.Label(self, text="Ajustes de la sesión").pack(anchor="w")
-        adj_cols = ("fecha", "ce", "resumen")
+        adj_cols = ("fecha", "ce_est", "ce_ini", "ce_obj", "resumen")
         self.tree_adj = ttk.Treeview(self, columns=adj_cols, show="headings", height=6)
-        for cid, title, w in (("fecha", "Fecha/Hora", 160), ("ce", "CE est.", 90), ("resumen", "Materiales", 470)):
+        for cid, title, w in (
+            ("fecha", "Fecha/Hora", 160),
+            ("ce_est", "CE est.", 90),
+            ("ce_ini", "CE ini.", 90),
+            ("ce_obj", "CE obj.", 90),
+            ("resumen", "Materiales", 320),
+        ):
             self.tree_adj.heading(cid, text=title)
             self.tree_adj.column(cid, width=w, anchor="w")
         self.tree_adj.pack(fill="both", expand=True, pady=(0, 6))
@@ -143,9 +149,22 @@ class TabHistoricos(ttk.Frame):
             return
         s = self.hist[idx]
         for it in s.get("ajustes", []):
+            ce_formula = it.get("ce_formula", "FUNDICION")
+            ce_custom = it.get("ce_custom", {}) or {}
             ce_est = it.get("ce_estimado", "")
+            ce_ini = it.get("ce_inicial", "")
+            ce_obj = it.get("ce_objetivo", None)
+            if ce_obj is None:
+                ce_obj = ce_from_percent(it.get("objetivo_comp", {}) or {}, ce_formula, ce_custom)
+
             ce_est = fmt(ce_est, 4) if isinstance(ce_est, (int, float)) else (ce_est or "")
-            self.tree_adj.insert("", "end", values=(it.get("fecha",""), ce_est, it.get("resumen","")))
+            ce_ini = fmt(ce_ini, 4) if isinstance(ce_ini, (int, float)) else (ce_ini or "")
+            ce_obj = fmt(ce_obj, 4) if isinstance(ce_obj, (int, float)) else (ce_obj or "")
+            self.tree_adj.insert(
+                "",
+                "end",
+                values=(it.get("fecha",""), ce_est, ce_ini, ce_obj, it.get("resumen",""))
+            )
         self._show_adjustment_composition()
 
     def _clear_comp_panel(self):

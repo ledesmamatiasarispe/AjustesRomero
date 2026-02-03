@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime
 import re
+import uuid
 
 from config import ELEMENTS, COLOR_OK, COLOR_FAIL, COLOR_WARN, TOL_NO_LIMITS
 from utils import to_float, fmt, _norm
@@ -954,18 +955,27 @@ class TabAjuste(ttk.Frame):
     def _refresh_hist(self):
         if not hasattr(self, "tree_hist"):
             return
+        changed = False
+        for it in getattr(self, "ajustes_log", []):
+            if not it.get("id"):
+                it["id"] = uuid.uuid4().hex
+                changed = True
         for i in self.tree_hist.get_children():
             self.tree_hist.delete(i)
         items = sorted(getattr(self, "ajustes_log", []), key=lambda x: x.get("fecha", ""))
         for it in items:
             self.tree_hist.insert("", "end", values=(it.get("fecha", ""), it.get("objetivo", ""), it.get("resumen", "")))
+        if changed:
+            self._fire_save()
 
     def _log_ajuste(self, plan, porcentaje, comp0, M0, pred_pct, Mnew, objetivo_name,
                      ce_formula, ce_now, ce_pred, objetivo_comp):
         try:
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             _, _, _, ce_custom = self._objective_ce_data()
+            ce_obj = ce_from_percent(objetivo_comp or {}, ce_formula, ce_custom)
             entry = {
+                "id": uuid.uuid4().hex,
                 "fecha": ts,
                 "colada": self.colada.get(),
                 "objetivo": objetivo_name or "",
@@ -979,6 +989,7 @@ class TabAjuste(ttk.Frame):
                 "ce_custom": ce_custom or {},
                 "ce_inicial": ce_now,
                 "ce_estimado": ce_pred,
+                "ce_objetivo": ce_obj,
             }
             self.ajustes_log.append(entry)
             self._refresh_hist()
@@ -995,7 +1006,13 @@ class TabAjuste(ttk.Frame):
         items = sorted(self.ajustes_log, key=lambda x: x.get("fecha", ""))
         if idx >= len(items):
             return None
-        fecha = items[idx]["fecha"]
+        picked = items[idx]
+        picked_id = picked.get("id")
+        if picked_id:
+            for i, it in enumerate(self.ajustes_log):
+                if it.get("id") == picked_id:
+                    return i
+        fecha = picked.get("fecha")
         for i, it in enumerate(self.ajustes_log):
             if it.get("fecha") == fecha:
                 return i

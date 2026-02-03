@@ -375,6 +375,35 @@ class TabAjuste(ttk.Frame):
         frm = esp.get("CE_formula", "FUNDICION") or "FUNDICION"
         return (esp.get("CE_min", None), esp.get("CE_max", None), _norm(frm), esp.get("CE_custom", {}) or {})
 
+    def _ce_coeffs(self, formula, custom_coefs=None):
+        f = _norm(formula or "FUNDICION")
+        if f in ("PERSONALIZADA", "CUSTOM", "PERSONAL"):
+            coefs = {}
+            for e in ELEMENTS:
+                v = to_float((custom_coefs or {}).get(e, 0.0))
+                if v != 0.0:
+                    coefs[e] = v
+            return coefs
+        if f in ("FUNDICION", "FUNDICION GRIS", "CAST", "CASTIRON", "CAST_IRON", "FOUNDRY"):
+            return {"C": 1.0, "Si": 1.0/3.0, "P": 1.0/3.0}
+        if f == "CET":
+            return {"C": 1.0, "Mn": 1.0/10.0, "Mo": 1.0/10.0, "Cr": 1.0/20.0, "Cu": 1.0/20.0, "Ni": 1.0/40.0}
+        # IIW base (con opcion Si/24)
+        coefs = {"C": 1.0, "Mn": 1.0/6.0, "Cr": 1.0/5.0, "Mo": 1.0/5.0, "V": 1.0/5.0, "Ni": 1.0/15.0, "Cu": 1.0/15.0}
+        if f in ("IIW+SI/24", "IIW_SI", "IIW+SI"):
+            coefs["Si"] = 1.0/24.0
+        return coefs
+
+    def _ce_impact_perkg(self, alloy, ce_coeffs):
+        rend = to_float(alloy.get("rendimiento", 100.0)) / 100.0
+        impact = 0.0
+        comp = alloy.get("composicion", {}) or {}
+        for e, coef in (ce_coeffs or {}).items():
+            pct = to_float(comp.get(e, 0.0))
+            if pct != 0.0:
+                impact += abs(coef) * pct * rend
+        return impact
+
     def _effective_add_perkg(self, alloy, element):
         rend = to_float(alloy.get("rendimiento", 100.0)) / 100.0
         pct = to_float(alloy["composicion"].get(element, 0.0)) / 100.0
@@ -389,6 +418,27 @@ class TabAjuste(ttk.Frame):
         for e in ELEMENTS:
             out[e] = kg * (to_float(alloy["composicion"].get(e, 0.0)) / 100.0) * rend
         return out
+
+    def _pick_base_adjusters(self, adjust_names):
+        # Selecciona materiales base de forma dinámica usando la lista de ajuste
+        best_c = (None, 0.0)   # (alloy, %C)
+        best_si = (None, 0.0)  # (alloy, %Si)
+        best_fe = (None, -1.0) # (alloy, %Fe)
+        for nm in adjust_names:
+            a = self._alloy_by_name(nm)
+            if not a:
+                continue
+            comp = a.get("composicion", {}) or {}
+            c = to_float(comp.get("C", 0.0))
+            si = to_float(comp.get("Si", 0.0))
+            fe = to_float(comp.get("Fe", 0.0))
+            if c > best_c[1]:
+                best_c = (a, c)
+            if si > best_si[1]:
+                best_si = (a, si)
+            if fe > best_fe[1]:
+                best_fe = (a, fe)
+        return (best_c[0], best_si[0], best_fe[0])
 
     def _bath_mass(self):
         M = to_float(self.mass.get())
@@ -441,7 +491,8 @@ class TabAjuste(ttk.Frame):
                 "composicion": comp,
                 "limites": {e: {"soft_min": None, "soft_max": None, "hard_min": None, "hard_max": None} for e in ELEMENTS},
                 "especiales": {"CE_formula": "FUNDICION", "CE_min": None, "CE_max": None,
-                               "CE_custom": {"C": 1.0, "Si": 1/3, "P": 1/3, "S": 0.0}}
+                               "CE_custom": {"C": 1.0, "Si": 1/3, "P": 1/3, "S": 0.0}},
+                "ajuste": True
             })
         if "Silicio" not in existing:
             comp = {e: 0.0 for e in ELEMENTS}
@@ -454,7 +505,8 @@ class TabAjuste(ttk.Frame):
                 "composicion": comp,
                 "limites": {e: {"soft_min": None, "soft_max": None, "hard_min": None, "hard_max": None} for e in ELEMENTS},
                 "especiales": {"CE_formula": "FUNDICION", "CE_min": None, "CE_max": None,
-                               "CE_custom": {"C": 1.0, "Si": 1/3, "P": 1/3, "S": 0.0}}
+                               "CE_custom": {"C": 1.0, "Si": 1/3, "P": 1/3, "S": 0.0}},
+                "ajuste": True
             })
         if "Acero 1010" not in existing:
             comp = {e: 0.0 for e in ELEMENTS}
@@ -468,7 +520,8 @@ class TabAjuste(ttk.Frame):
                 "composicion": comp,
                 "limites": {e: {"soft_min": None, "soft_max": None, "hard_min": None, "hard_max": None} for e in ELEMENTS},
                 "especiales": {"CE_formula": "FUNDICION", "CE_min": None, "CE_max": None,
-                               "CE_custom": {"C": 1.0, "Si": 1/3, "P": 1/3, "S": 0.0}}
+                               "CE_custom": {"C": 1.0, "Si": 1/3, "P": 1/3, "S": 0.0}},
+                "ajuste": True
             })
         if to_add:
             self.alloys.extend(to_add)
@@ -755,11 +808,10 @@ class TabAjuste(ttk.Frame):
             T_Si = tgt_pct.get("Si", 0.0) / 100.0
             T_frac = {e: tgt_pct.get(e, 0.0) / 100.0 for e in ELEMENTS}
 
-            a_steel = self._get_adjuster("Acero 1010")
-            a_graph = self._get_adjuster("Carbón de grafito")
-            a_sil = self._get_adjuster("Silicio")
-            if not (a_steel and a_graph and a_sil):
-                self._status("Faltan materiales base: Acero 1010 / Carbón / Silicio.")
+            adjust_names = list(getattr(self, "adjust_list", []))
+            a_graph, a_sil, a_steel = self._pick_base_adjusters(adjust_names)
+            if not (a_graph and a_sil and a_steel):
+                self._status("Faltan materiales base en la lista de ajuste (C/Si/Fe).")
                 return {} if return_plan else False
 
             # 1) Subir elementos != C,Si,Fe con los materiales elegidos
@@ -767,15 +819,34 @@ class TabAjuste(ttk.Frame):
             kg_other = {}
             missing_elems = []
             warn_msg = None
-            other_adjusters = [n for n in getattr(self, "adjust_list", []) if n not in ("Acero 1010", "Carbón de grafito", "Silicio")]
+            ce_min, ce_max, ce_formula, ce_custom = self._objective_ce_data()
+            ce_coeffs = self._ce_coeffs(ce_formula, ce_custom)
+            base_names = {a_graph.get("nombre",""), a_sil.get("nombre",""), a_steel.get("nombre","")}
+            other_adjusters = [n for n in adjust_names if n and n not in base_names]
+            best_for_elem = {}
+            for el in [e for e in ELEMENTS if e not in ("C", "Si", "Fe")]:
+                best_name = None
+                best_rE = 0.0
+                for nm in other_adjusters:
+                    a = self._get_adjuster(nm)
+                    if not a:
+                        continue
+                    rE = self._effective_add_perkg(a, el)
+                    if rE > best_rE + 1e-16:
+                        best_name = nm
+                        best_rE = rE
+                if best_name:
+                    best_for_elem[el] = best_name
             for el in [e for e in ELEMENTS if e not in ("C", "Si", "Fe")]:
                 T_E = tgt_pct.get(el, 0.0) / 100.0
                 if T_E <= 0:
                     continue
                 fE = masses[el] / M if M > 0 else 0.0
                 if fE < T_E - 1e-12:
-                    best_name, best_a, best_k, best_rTOT = None, None, None, 0.0
-                    for nm in other_adjusters:
+                    best_name, best_a, best_k, best_rTOT, best_rE = None, None, None, 0.0, None
+                    best_group = 2
+                    nm = best_for_elem.get(el)
+                    if nm:
                         a = self._get_adjuster(nm)
                         if not a:
                             continue
@@ -785,6 +856,8 @@ class TabAjuste(ttk.Frame):
                             continue
                         if rE <= eps:
                             continue
+                        impact = self._ce_impact_perkg(a, ce_coeffs)
+                        group = 0 if impact <= 1e-9 else 1
                         k = self._solve_kg_for_target(M, masses[el], T_E, rE, rTOT)
                         if k is None or k <= 0:
                             continue
@@ -800,8 +873,11 @@ class TabAjuste(ttk.Frame):
                                     break
                         if not ok:
                             continue
-                        if best_k is None or k < best_k:
-                            best_name, best_a, best_k, best_rTOT = nm, a, k, rTOT
+                        if group > best_group:
+                            continue
+                        if group < best_group or best_rE is None or rE > best_rE + 1e-16 or (abs(rE - best_rE) <= 1e-16 and (best_k is None or k < best_k)):
+                            best_group = group
+                            best_name, best_a, best_k, best_rTOT, best_rE = nm, a, k, rTOT, rE
                     if best_a and best_k and best_k > 0:
                         eff = self._effective_add(best_a, best_k)
                         for e in ELEMENTS:
@@ -814,7 +890,7 @@ class TabAjuste(ttk.Frame):
             if missing_elems:
                 msg = "No hay material de ajuste que eleve sin pasarse para: " + ", ".join(missing_elems)
                 if not silent:
-                    messagebox.showwarning("Ajuste", msg + ". CreÃ¡ un material nuevo en CatÃ¡logo.")
+                    messagebox.showwarning("Ajuste", msg + ". Crea un material nuevo en Catálogo.")
                 warn_msg = msg
                 self._status(msg)
 

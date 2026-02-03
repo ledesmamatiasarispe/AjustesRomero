@@ -40,7 +40,7 @@ def _normalize_especiales(esp_dict):
     return esp
 
 def _basic_alloys():
-    def alloy(nombre, tipo, rendimiento, costo, comp, limites=None, especiales=None):
+    def alloy(nombre, tipo, rendimiento, costo, comp, limites=None, especiales=None, ajuste=False):
         cdict = {e: 0.0 for e in ELEMENTS}; cdict.update(comp)
         lim = {e: {"soft_min": None, "soft_max": None, "hard_min": None, "hard_max": None} for e in ELEMENTS}
         if limites:
@@ -49,19 +49,19 @@ def _basic_alloys():
                        "CE_custom": {"C":1.0, "Si":1/3, "P":1/3, "S":0.0}}
         if especiales: esp_default.update(especiales)
         return {"nombre": nombre, "tipo": tipo, "rendimiento": rendimiento, "costo": costo,
-                "composicion": cdict, "limites": lim, "especiales": esp_default}
+                "composicion": cdict, "limites": lim, "especiales": esp_default, "ajuste": bool(ajuste)}
 
     a1010 = {"C":0.10, "Mn":0.50, "P":0.02, "S":0.02}
     a1010["Fe"] = max(0.0, 100.0 - sum(a1010.values()))
 
     return [
-        alloy("FeSi", "Ferroaleación", 90.0, 0.0, {"Si": 75.0}),
-        alloy("FeMn", "Ferroaleación", 90.0, 0.0, {"Mn": 80.0}),
-        alloy("FeCr", "Ferroaleación", 90.0, 0.0, {"Cr": 65.0}),
-        alloy("Carbón de grafito", "Aditivo", 90.0, 0.0, {"C": 99.0}),
-        alloy("Silicio", "Metal puro", 90.0, 0.0, {"Si": 100.0}),
-        alloy("Acero 1010", "Retorno", 100.0, 0.0, a1010),
-        alloy("Pirita de azufre", "Aditivo", 90.0, 0.0, {"S": 53.4, "Fe": 46.6}),
+        alloy("FeSi", "Ferroaleación", 90.0, 0.0, {"Si": 75.0}, ajuste=True),
+        alloy("FeMn", "Ferroaleación", 90.0, 0.0, {"Mn": 80.0}, ajuste=True),
+        alloy("FeCr", "Ferroaleación", 90.0, 0.0, {"Cr": 65.0}, ajuste=True),
+        alloy("Carbón de grafito", "Aditivo", 90.0, 0.0, {"C": 99.0}, ajuste=True),
+        alloy("Silicio", "Metal puro", 90.0, 0.0, {"Si": 100.0}, ajuste=True),
+        alloy("Acero 1010", "Retorno", 100.0, 0.0, a1010, ajuste=True),
+        alloy("Pirita de azufre", "Aditivo", 90.0, 0.0, {"S": 53.4, "Fe": 46.6}, ajuste=True),
     ]
 
 # --------------------------------- Catálogo -----------------------------------
@@ -291,6 +291,7 @@ class TabCatalogo(ttk.Frame):
         tipo   = tk.StringVar(value=(item or {}).get("tipo","Ferroaleación"))
         rend   = tk.StringVar(value=fmt(to_float((item or {}).get("rendimiento",90)),6))
         costo  = tk.StringVar(value=fmt(to_float((item or {}).get("costo",0)),6))
+        v_ajuste = tk.BooleanVar(value=bool((item or {}).get("ajuste", False)))
 
         row0 = ttk.Frame(form); row0.pack(fill="x", pady=4)
         ttk.Label(row0, text="Nombre", width=16).pack(side="left")
@@ -300,6 +301,7 @@ class TabCatalogo(ttk.Frame):
         ttk.Label(row1, text="Tipo", width=16).pack(side="left")
         cb_tipo = ttk.Combobox(row1, textvariable=tipo, values=self.TYPES, state="readonly", width=37)
         cb_tipo.pack(side="left", padx=6)
+        ttk.Checkbutton(row1, text="Material de ajuste", variable=v_ajuste).pack(side="left", padx=(12, 0))
 
         row2 = ttk.Frame(form); row2.pack(fill="x", pady=4)
         ttk.Label(row2, text="Rendimiento (%)", width=16).pack(side="left")
@@ -416,7 +418,8 @@ class TabCatalogo(ttk.Frame):
                     "costo": to_float(costo.get()),
                     "composicion": {el: to_float(comp_vars[el].get()) for el in ELEMENTS},
                     "limites": {},
-                    "especiales": {}
+                    "especiales": {},
+                    "ajuste": bool(v_ajuste.get()),
                 }
                 if not a["nombre"]:
                     raise ValueError("El nombre es obligatorio.")

@@ -56,9 +56,9 @@ class TabHistoricos(ttk.Frame):
         ttk.Button(adj_act, text="Eliminar ajuste", command=self.delete_adjustment).pack(side="left", padx=6)
 
         ttk.Label(self, text="Ajustes de la sesión").pack(anchor="w")
-        adj_cols = ("fecha", "resumen")
+        adj_cols = ("fecha", "ce", "resumen")
         self.tree_adj = ttk.Treeview(self, columns=adj_cols, show="headings", height=6)
-        for cid, title, w in (("fecha", "Fecha/Hora", 160), ("resumen", "Materiales", 560)):
+        for cid, title, w in (("fecha", "Fecha/Hora", 160), ("ce", "CE est.", 90), ("resumen", "Materiales", 470)):
             self.tree_adj.heading(cid, text=title)
             self.tree_adj.column(cid, width=w, anchor="w")
         self.tree_adj.pack(fill="both", expand=True, pady=(0, 6))
@@ -143,7 +143,9 @@ class TabHistoricos(ttk.Frame):
             return
         s = self.hist[idx]
         for it in s.get("ajustes", []):
-            self.tree_adj.insert("", "end", values=(it.get("fecha",""), it.get("resumen","")))
+            ce_est = it.get("ce_estimado", "")
+            ce_est = fmt(ce_est, 4) if isinstance(ce_est, (int, float)) else (ce_est or "")
+            self.tree_adj.insert("", "end", values=(it.get("fecha",""), ce_est, it.get("resumen","")))
         self._show_adjustment_composition()
 
     def _clear_comp_panel(self):

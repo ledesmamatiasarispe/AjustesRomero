@@ -1,0 +1,52 @@
+{
+  "ajuste": {
+    "mass": 1000.0,
+    "actual": {
+      "C": 3.6,
+      "Si": 1.9,
+      "Mn": 0.0,
+      "P": 0.0,
+      "S": 0.0,
+      "Cr": 0.0,
+      "Mo": 0.0,
+      "Ni": 0.0,
+      "Al": 0.0,
+      "Co": 0.0,
+      "Cu": 0.0,
+      "Nb": 0.0,
+      "Ti": 0.0,
+      "V": 0.0,
+      "W": 0.0,
+      "Pb": 0.0,
+      "Sn": 0.0,
+      "Mg": 0.0,
+      "As": 0.0,
+      "Zr": 0.0,
+      "Bi": 0.0,
+      "Ce": 0.0,
+      "Sb": 0.0,
+      "Se": 0.0,
+      "Te": 0.0,
+      "B": 0.0,
+      "Zn": 0.0,
+      "La": 0.0,
+      "Fe": 94.5
+    },
+    "objective": "mat5",
+    "adjust_list": [
+      "Carbón de grafito",
+      "Silicio",
+      "Acero 1010"
+    ],
+    "kg": {
+      "Carbón de grafito": 0.0,
+      "Silicio": 4.923,
+      "Acero 1010": 60.606
+    },
+    "auto": false,
+    "partial_pct": 45,
+    "colada": "0002 /25 - mat5",
+    "session_started_at": "2025-09-30 15:50:21",
+    "ajustes_log": []
+  }
+}

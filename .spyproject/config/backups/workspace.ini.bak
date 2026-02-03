@@ -1,0 +1,12 @@
+[workspace]
+restore_data_on_startup = True
+save_data_on_exit = True
+save_history = True
+save_non_project_files = False
+project_type = 'empty-project-type'
+recent_files = ['app.py', 'ce.py', 'config.py', 'storage.py', 'tab_ajuste.py', 'tab_catalogo.py', 'tab_historicos.py', 'utils.py', 'widgets.py', '..\\..\\Pictures\\Sin título0.py']
+
+[main]
+version = 0.2.0
+recent_files = []
+

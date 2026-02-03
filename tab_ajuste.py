@@ -5,7 +5,7 @@ from datetime import datetime
 import re
 import uuid
 
-from config import ELEMENTS, COLOR_OK, COLOR_FAIL, COLOR_WARN, TOL_NO_LIMITS
+from config import ELEMENTS, COLOR_OK, COLOR_FAIL, COLOR_WARN, TOL_NO_LIMITS, BG_ENTRY, FG
 from utils import to_float, fmt, _norm
 from ce import ce_from_percent
 from storage import append_history, save_alloys
@@ -122,7 +122,8 @@ class TabAjuste(ttk.Frame):
             r = ttk.Frame(self.sfE.inner)
             r.grid(row=i, column=0, sticky="ew", padx=2, pady=1)
             ttk.Label(r, text=el, width=6).grid(row=0, column=0, padx=4)
-            t = tk.Entry(r, width=12, state="readonly", readonlybackground="white")
+            t = tk.Entry(r, width=12, state="readonly", readonlybackground=BG_ENTRY,
+                         fg=FG, bg=BG_ENTRY, insertbackground=FG)
             t.grid(row=0, column=1, padx=4)
             self.est_rows.append((el, t))
 
@@ -752,6 +753,7 @@ class TabAjuste(ttk.Frame):
             tgt_pct = self._target_comp()
             T_C = tgt_pct.get("C", 0.0) / 100.0
             T_Si = tgt_pct.get("Si", 0.0) / 100.0
+            T_frac = {e: tgt_pct.get(e, 0.0) / 100.0 for e in ELEMENTS}
 
             a_steel = self._get_adjuster("Acero 1010")
             a_graph = self._get_adjuster("Carbón de grafito")
@@ -763,6 +765,8 @@ class TabAjuste(ttk.Frame):
             # 1) Subir elementos != C,Si,Fe con los materiales elegidos
             eps = 1e-12
             kg_other = {}
+            missing_elems = []
+            warn_msg = None
             other_adjusters = [n for n in getattr(self, "adjust_list", []) if n not in ("Acero 1010", "Carbón de grafito", "Silicio")]
             for el in [e for e in ELEMENTS if e not in ("C", "Si", "Fe")]:
                 T_E = tgt_pct.get(el, 0.0) / 100.0
@@ -770,7 +774,7 @@ class TabAjuste(ttk.Frame):
                     continue
                 fE = masses[el] / M if M > 0 else 0.0
                 if fE < T_E - 1e-12:
-                    best_name, best_a, best_rE, best_rTOT = None, None, 0.0, 0.0
+                    best_name, best_a, best_k, best_rTOT = None, None, None, 0.0
                     for nm in other_adjusters:
                         a = self._get_adjuster(nm)
                         if not a:
@@ -779,16 +783,40 @@ class TabAjuste(ttk.Frame):
                         rTOT = self._effective_total_perkg(a)
                         if rTOT <= 0:
                             continue
-                        if rE > best_rE + 1e-16:
-                            best_name, best_a, best_rE, best_rTOT = nm, a, rE, rTOT
-                    if best_a and best_rE > eps:
-                        k = self._solve_kg_for_target(M, masses[el], T_E, best_rE, best_rTOT)
-                        if k is not None and k > 0:
-                            eff = self._effective_add(best_a, k)
-                            for e in ELEMENTS:
-                                masses[e] += eff[e]
-                            M += k * best_rTOT
-                            kg_other[best_name] = kg_other.get(best_name, 0.0) + k
+                        if rE <= eps:
+                            continue
+                        k = self._solve_kg_for_target(M, masses[el], T_E, rE, rTOT)
+                        if k is None or k <= 0:
+                            continue
+                        eff = self._effective_add(a, k)
+                        Mnew = M + k * rTOT
+                        ok = True
+                        for e in ELEMENTS:
+                            T_e = T_frac.get(e, 0.0)
+                            if T_e > 0:
+                                f_new = (masses[e] + eff[e]) / Mnew if Mnew > 0 else 0.0
+                                if f_new > T_e + 1e-12:
+                                    ok = False
+                                    break
+                        if not ok:
+                            continue
+                        if best_k is None or k < best_k:
+                            best_name, best_a, best_k, best_rTOT = nm, a, k, rTOT
+                    if best_a and best_k and best_k > 0:
+                        eff = self._effective_add(best_a, best_k)
+                        for e in ELEMENTS:
+                            masses[e] += eff[e]
+                        M += best_k * best_rTOT
+                        kg_other[best_name] = kg_other.get(best_name, 0.0) + best_k
+                    else:
+                        missing_elems.append(el)
+
+            if missing_elems:
+                msg = "No hay material de ajuste que eleve sin pasarse para: " + ", ".join(missing_elems)
+                if not silent:
+                    messagebox.showwarning("Ajuste", msg + ". CreÃ¡ un material nuevo en CatÃ¡logo.")
+                warn_msg = msg
+                self._status(msg)
 
             # 2) Bajar con acero si C/Si por encima
             kg_steel = kg_C = kg_Si = 0.0
@@ -881,7 +909,10 @@ class TabAjuste(ttk.Frame):
                     self.kg_vars[n].set(fmt(kg, 3))
 
             self.calc_prediction()
-            self._status("")
+            if warn_msg:
+                self._status(warn_msg)
+            else:
+                self._status("")
             return True
         except Exception as ex:
             if not silent:

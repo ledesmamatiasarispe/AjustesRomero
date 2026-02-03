@@ -216,6 +216,13 @@ class TabAjuste(ttk.Frame):
         ttk.Checkbutton(left_opts, text="Auto-estimar", variable=self.auto_est,
                         command=lambda: (self._schedule_auto(), self._fire_save())).pack(side="left")
 
+        ttk.Label(left_opts, text="Método", padding=(10, 0)).pack(side="left")
+        self.method = tk.StringVar(value="Greedy")
+        self.cb_method = ttk.Combobox(left_opts, textvariable=self.method, values=("Greedy", "Lineal", "Lineal+CSiFe"),
+                                      state="readonly", width=10)
+        self.cb_method.pack(side="left", padx=6)
+        self.cb_method.bind("<<ComboboxSelected>>", lambda e: (self._schedule_auto(), self._fire_save()))
+
         ttk.Label(left_opts, text="Progreso (%)", padding=(10, 0)).pack(side="left")
         self.partial_pct = tk.IntVar(value=30)
         s = ttk.Scale(left_opts, from_=1, to=100, orient="horizontal",
@@ -268,6 +275,7 @@ class TabAjuste(ttk.Frame):
             "adjust_list": list(self.adjust_list),
             "kg": {name: to_float(var.get()) for name, var in self.kg_vars.items()},
             "auto": bool(self.auto_est.get()),
+            "method": self.method.get(),
             "partial_pct": int(self.partial_pct.get()),
             "colada": self.colada.get(),  # solo "NNNN /YY"
             "session_started_at": self.session_started_at,
@@ -301,6 +309,9 @@ class TabAjuste(ttk.Frame):
                 var.set(fmt(to_float(kg.get(name, 0.0))))
 
             self.auto_est.set(bool(st.get("auto", False)))
+            method = st.get("method", "Greedy")
+            if method in ("Greedy", "Lineal", "Lineal+CSiFe"):
+                self.method.set(method)
             self.partial_pct.set(int(st.get("partial_pct", 30)))
 
             self.colada.set(st.get("colada", ""))
@@ -403,6 +414,46 @@ class TabAjuste(ttk.Frame):
             if pct != 0.0:
                 impact += abs(coef) * pct * rend
         return impact
+
+    def _solve_linear(self, A, b):
+        # Resuelve (A^T A) x = A^T b con eliminación gaussiana simple
+        if not A or not A[0]:
+            return None
+        m = len(A)
+        n = len(A[0])
+        # Construir normal equations
+        ATA = [[0.0 for _ in range(n)] for _ in range(n)]
+        ATb = [0.0 for _ in range(n)]
+        for i in range(n):
+            for j in range(n):
+                s = 0.0
+                for k in range(m):
+                    s += A[k][i] * A[k][j]
+                ATA[i][j] = s
+            sb = 0.0
+            for k in range(m):
+                sb += A[k][i] * b[k]
+            ATb[i] = sb
+
+        # Gauss
+        for i in range(n):
+            pivot = ATA[i][i]
+            if abs(pivot) < 1e-12:
+                return None
+            inv = 1.0 / pivot
+            for j in range(i, n):
+                ATA[i][j] *= inv
+            ATb[i] *= inv
+            for r in range(n):
+                if r == i:
+                    continue
+                factor = ATA[r][i]
+                if abs(factor) < 1e-12:
+                    continue
+                for c in range(i, n):
+                    ATA[r][c] -= factor * ATA[i][c]
+                ATb[r] -= factor * ATb[i]
+        return ATb
 
     def _effective_add_perkg(self, alloy, element):
         rend = to_float(alloy.get("rendimiento", 100.0)) / 100.0
@@ -810,7 +861,10 @@ class TabAjuste(ttk.Frame):
 
             adjust_names = list(getattr(self, "adjust_list", []))
             a_graph, a_sil, a_steel = self._pick_base_adjusters(adjust_names)
-            if not (a_graph and a_sil and a_steel):
+            skip_csi = False
+            if self.method.get() == "Lineal+CSiFe":
+                skip_csi = True
+            elif not (a_graph and a_sil and a_steel):
                 self._status("Faltan materiales base en la lista de ajuste (C/Si/Fe).")
                 return {} if return_plan else False
 
@@ -821,8 +875,7 @@ class TabAjuste(ttk.Frame):
             warn_msg = None
             ce_min, ce_max, ce_formula, ce_custom = self._objective_ce_data()
             ce_coeffs = self._ce_coeffs(ce_formula, ce_custom)
-            base_names = {a_graph.get("nombre",""), a_sil.get("nombre",""), a_steel.get("nombre","")}
-            other_adjusters = [n for n in adjust_names if n and n not in base_names]
+            other_adjusters = [n for n in adjust_names if n]
             best_for_elem = {}
             for el in [e for e in ELEMENTS if e not in ("C", "Si", "Fe")]:
                 best_name = None
@@ -837,55 +890,159 @@ class TabAjuste(ttk.Frame):
                         best_rE = rE
                 if best_name:
                     best_for_elem[el] = best_name
-            for el in [e for e in ELEMENTS if e not in ("C", "Si", "Fe")]:
-                T_E = tgt_pct.get(el, 0.0) / 100.0
-                if T_E <= 0:
-                    continue
-                fE = masses[el] / M if M > 0 else 0.0
-                if fE < T_E - 1e-12:
-                    best_name, best_a, best_k, best_rTOT, best_rE = None, None, None, 0.0, None
-                    best_group = 2
-                    nm = best_for_elem.get(el)
-                    if nm:
+            method = self.method.get() if hasattr(self, "method") else "Greedy"
+            if method == "Lineal":
+                target_elems = [e for e in ELEMENTS if e not in ("C", "Si", "Fe") and (tgt_pct.get(e, 0.0) > 0)]
+                mats = [nm for nm in other_adjusters if any(self._effective_add_perkg(self._get_adjuster(nm), e) > eps for e in target_elems)]
+                if target_elems and mats:
+                    A = []
+                    b = []
+                    for e in target_elems:
+                        row = []
+                        for nm in mats:
+                            a = self._get_adjuster(nm)
+                            row.append(self._effective_add_perkg(a, e))
+                        A.append(row)
+                        b.append(T_frac.get(e, 0.0) * M - masses[e])
+                    sol = self._solve_linear(A, b)
+                    if sol:
+                        for nm, kg in zip(mats, sol):
+                            if kg and kg > 0:
+                                eff = self._effective_add(self._get_adjuster(nm), kg)
+                                for e in ELEMENTS:
+                                    masses[e] += eff[e]
+                                M += kg * self._effective_total_perkg(self._get_adjuster(nm))
+                                kg_other[nm] = kg_other.get(nm, 0.0) + kg
+                # fallback greedy for elements not reached
+                for el in [e for e in ELEMENTS if e not in ("C", "Si", "Fe")]:
+                    T_E = tgt_pct.get(el, 0.0) / 100.0
+                    if T_E <= 0:
+                        continue
+                    fE = masses[el] / M if M > 0 else 0.0
+                    if fE < T_E - 1e-12:
+                        nm = best_for_elem.get(el)
+                        if not nm:
+                            missing_elems.append(el)
+                            continue
                         a = self._get_adjuster(nm)
                         if not a:
+                            missing_elems.append(el)
                             continue
                         rE = self._effective_add_perkg(a, el)
                         rTOT = self._effective_total_perkg(a)
-                        if rTOT <= 0:
+                        if rTOT <= 0 or rE <= eps:
+                            missing_elems.append(el)
                             continue
-                        if rE <= eps:
-                            continue
-                        impact = self._ce_impact_perkg(a, ce_coeffs)
-                        group = 0 if impact <= 1e-9 else 1
                         k = self._solve_kg_for_target(M, masses[el], T_E, rE, rTOT)
                         if k is None or k <= 0:
+                            missing_elems.append(el)
                             continue
                         eff = self._effective_add(a, k)
-                        Mnew = M + k * rTOT
-                        ok = True
-                        for e in ELEMENTS:
-                            T_e = T_frac.get(e, 0.0)
-                            if T_e > 0:
-                                f_new = (masses[e] + eff[e]) / Mnew if Mnew > 0 else 0.0
-                                if f_new > T_e + 1e-12:
-                                    ok = False
-                                    break
-                        if not ok:
-                            continue
-                        if group > best_group:
-                            continue
-                        if group < best_group or best_rE is None or rE > best_rE + 1e-16 or (abs(rE - best_rE) <= 1e-16 and (best_k is None or k < best_k)):
-                            best_group = group
-                            best_name, best_a, best_k, best_rTOT, best_rE = nm, a, k, rTOT, rE
-                    if best_a and best_k and best_k > 0:
-                        eff = self._effective_add(best_a, best_k)
                         for e in ELEMENTS:
                             masses[e] += eff[e]
-                        M += best_k * best_rTOT
-                        kg_other[best_name] = kg_other.get(best_name, 0.0) + best_k
-                    else:
-                        missing_elems.append(el)
+                        M += k * rTOT
+                        kg_other[nm] = kg_other.get(nm, 0.0) + k
+            elif method == "Lineal+CSiFe":
+                target_elems = [e for e in ELEMENTS if tgt_pct.get(e, 0.0) > 0]
+                mats = [nm for nm in other_adjusters]
+                if target_elems and mats:
+                    A = []
+                    b = []
+                    for e in target_elems:
+                        row = []
+                        for nm in mats:
+                            a = self._get_adjuster(nm)
+                            row.append(self._effective_add_perkg(a, e))
+                        A.append(row)
+                        b.append(T_frac.get(e, 0.0) * M - masses[e])
+                    sol = self._solve_linear(A, b)
+                    if sol:
+                        for nm, kg in zip(mats, sol):
+                            if kg and kg > 0:
+                                eff = self._effective_add(self._get_adjuster(nm), kg)
+                                for e in ELEMENTS:
+                                    masses[e] += eff[e]
+                                M += kg * self._effective_total_perkg(self._get_adjuster(nm))
+                                kg_other[nm] = kg_other.get(nm, 0.0) + kg
+                # fallback greedy para elementos no alcanzados
+                for el in [e for e in ELEMENTS if tgt_pct.get(e, 0.0) > 0]:
+                    T_E = tgt_pct.get(el, 0.0) / 100.0
+                    if T_E <= 0:
+                        continue
+                    fE = masses[el] / M if M > 0 else 0.0
+                    if fE < T_E - 1e-12:
+                        nm = best_for_elem.get(el)
+                        if not nm:
+                            missing_elems.append(el)
+                            continue
+                        a = self._get_adjuster(nm)
+                        if not a:
+                            missing_elems.append(el)
+                            continue
+                        rE = self._effective_add_perkg(a, el)
+                        rTOT = self._effective_total_perkg(a)
+                        if rTOT <= 0 or rE <= eps:
+                            missing_elems.append(el)
+                            continue
+                        k = self._solve_kg_for_target(M, masses[el], T_E, rE, rTOT)
+                        if k is None or k <= 0:
+                            missing_elems.append(el)
+                            continue
+                        eff = self._effective_add(a, k)
+                        for e in ELEMENTS:
+                            masses[e] += eff[e]
+                        M += k * rTOT
+                        kg_other[nm] = kg_other.get(nm, 0.0) + k
+            else:
+                for el in [e for e in ELEMENTS if e not in ("C", "Si", "Fe")]:
+                    T_E = tgt_pct.get(el, 0.0) / 100.0
+                    if T_E <= 0:
+                        continue
+                    fE = masses[el] / M if M > 0 else 0.0
+                    if fE < T_E - 1e-12:
+                        best_name, best_a, best_k, best_rTOT, best_rE = None, None, None, 0.0, None
+                        best_group = 2
+                        nm = best_for_elem.get(el)
+                        if nm:
+                            a = self._get_adjuster(nm)
+                            if not a:
+                                continue
+                            rE = self._effective_add_perkg(a, el)
+                            rTOT = self._effective_total_perkg(a)
+                            if rTOT <= 0:
+                                continue
+                            if rE <= eps:
+                                continue
+                            impact = self._ce_impact_perkg(a, ce_coeffs)
+                            group = 0 if impact <= 1e-9 else 1
+                            k = self._solve_kg_for_target(M, masses[el], T_E, rE, rTOT)
+                            if k is None or k <= 0:
+                                continue
+                            eff = self._effective_add(a, k)
+                            Mnew = M + k * rTOT
+                            ok = True
+                            for e in ELEMENTS:
+                                T_e = T_frac.get(e, 0.0)
+                                if T_e > 0:
+                                    f_new = (masses[e] + eff[e]) / Mnew if Mnew > 0 else 0.0
+                                    if f_new > T_e + 1e-12:
+                                        ok = False
+                                        break
+                            if not ok:
+                                continue
+                            if group > best_group:
+                                continue
+                            if group < best_group or best_rE is None or rE > best_rE + 1e-16 or (abs(rE - best_rE) <= 1e-16 and (best_k is None or k < best_k)):
+                                best_group = group
+                                best_name, best_a, best_k, best_rTOT, best_rE = nm, a, k, rTOT, rE
+                        if best_a and best_k and best_k > 0:
+                            eff = self._effective_add(best_a, best_k)
+                            for e in ELEMENTS:
+                                masses[e] += eff[e]
+                            M += best_k * best_rTOT
+                            kg_other[best_name] = kg_other.get(best_name, 0.0) + best_k
+                        else:
+                            missing_elems.append(el)
 
             if missing_elems:
                 msg = "No hay material de ajuste que eleve sin pasarse para: " + ", ".join(missing_elems)
@@ -896,13 +1053,14 @@ class TabAjuste(ttk.Frame):
 
             # 2) Bajar con acero si C/Si por encima
             kg_steel = kg_C = kg_Si = 0.0
-            rTOT_s = self._effective_total_perkg(a_steel)
-            rC_s = self._effective_add_perkg(a_steel, "C")
-            rSi_s = self._effective_add_perkg(a_steel, "Si")
-            rTOT_g = self._effective_total_perkg(a_graph)
-            rC_g = self._effective_add_perkg(a_graph, "C")
-            rTOT_si = self._effective_total_perkg(a_sil)
-            rSi = self._effective_add_perkg(a_sil, "Si")
+            if not skip_csi:
+                rTOT_s = self._effective_total_perkg(a_steel)
+                rC_s = self._effective_add_perkg(a_steel, "C")
+                rSi_s = self._effective_add_perkg(a_steel, "Si")
+                rTOT_g = self._effective_total_perkg(a_graph)
+                rC_g = self._effective_add_perkg(a_graph, "C")
+                rTOT_si = self._effective_total_perkg(a_sil)
+                rSi = self._effective_add_perkg(a_sil, "Si")
 
             def fracC():
                 return masses["C"] / M if M > 0 else 0.0
@@ -910,52 +1068,54 @@ class TabAjuste(ttk.Frame):
             def fracSi():
                 return masses["Si"] / M if M > 0 else 0.0
 
-            need_down_C = fracC() > T_C + 1e-12
-            need_down_Si = fracSi() > T_Si + 1e-12
-            if need_down_C and need_down_Si:
-                kC = self._solve_kg_for_target(M, masses["C"], T_C, rC_s, rTOT_s)
-                kSi = self._solve_kg_for_target(M, masses["Si"], T_Si, rSi_s, rTOT_s)
-                k = max((kC or 0.0), (kSi or 0.0))
-                if k and k > 0:
-                    eff = self._effective_add(a_steel, k)
-                    for e in ELEMENTS:
-                        masses[e] += eff[e]
-                    M += k * rTOT_s
-                    kg_steel += k
-            elif need_down_C:
-                k = self._solve_kg_for_target(M, masses["C"], T_C, rC_s, rTOT_s)
-                if k and k > 0:
-                    eff = self._effective_add(a_steel, k)
-                    for e in ELEMENTS:
-                        masses[e] += eff[e]
-                    M += k * rTOT_s
-                    kg_steel += k
-            elif need_down_Si:
-                k = self._solve_kg_for_target(M, masses["Si"], T_Si, rSi_s, rTOT_s)
-                if k and k > 0:
-                    eff = self._effective_add(a_steel, k)
-                    for e in ELEMENTS:
-                        masses[e] += eff[e]
-                    M += k * rTOT_s
-                    kg_steel += k
+            if not skip_csi:
+                need_down_C = fracC() > T_C + 1e-12
+                need_down_Si = fracSi() > T_Si + 1e-12
+                if need_down_C and need_down_Si:
+                    kC = self._solve_kg_for_target(M, masses["C"], T_C, rC_s, rTOT_s)
+                    kSi = self._solve_kg_for_target(M, masses["Si"], T_Si, rSi_s, rTOT_s)
+                    k = max((kC or 0.0), (kSi or 0.0))
+                    if k and k > 0:
+                        eff = self._effective_add(a_steel, k)
+                        for e in ELEMENTS:
+                            masses[e] += eff[e]
+                        M += k * rTOT_s
+                        kg_steel += k
+                elif need_down_C:
+                    k = self._solve_kg_for_target(M, masses["C"], T_C, rC_s, rTOT_s)
+                    if k and k > 0:
+                        eff = self._effective_add(a_steel, k)
+                        for e in ELEMENTS:
+                            masses[e] += eff[e]
+                        M += k * rTOT_s
+                        kg_steel += k
+                elif need_down_Si:
+                    k = self._solve_kg_for_target(M, masses["Si"], T_Si, rSi_s, rTOT_s)
+                    if k and k > 0:
+                        eff = self._effective_add(a_steel, k)
+                        for e in ELEMENTS:
+                            masses[e] += eff[e]
+                        M += k * rTOT_s
+                        kg_steel += k
 
             # 3) Subir lo que falte de C y Si
-            if fracC() < T_C - 1e-12 and rC_g > eps:
-                k = self._solve_kg_for_target(M, masses["C"], T_C, rC_g, rTOT_g)
-                if k and k > 0:
-                    eff = self._effective_add(a_graph, k)
-                    for e in ELEMENTS:
-                        masses[e] += eff[e]
-                    M += k * rTOT_g
-                    kg_C += k
-            if fracSi() < T_Si - 1e-12 and rSi > eps:
-                k = self._solve_kg_for_target(M, masses["Si"], T_Si, rSi, rTOT_si)
-                if k and k > 0:
-                    eff = self._effective_add(a_sil, k)
-                    for e in ELEMENTS:
-                        masses[e] += eff[e]
-                    M += k * rTOT_si
-                    kg_Si += k
+            if not skip_csi:
+                if fracC() < T_C - 1e-12 and rC_g > eps:
+                    k = self._solve_kg_for_target(M, masses["C"], T_C, rC_g, rTOT_g)
+                    if k and k > 0:
+                        eff = self._effective_add(a_graph, k)
+                        for e in ELEMENTS:
+                            masses[e] += eff[e]
+                        M += k * rTOT_g
+                        kg_C += k
+                if fracSi() < T_Si - 1e-12 and rSi > eps:
+                    k = self._solve_kg_for_target(M, masses["Si"], T_Si, rSi, rTOT_si)
+                    if k and k > 0:
+                        eff = self._effective_add(a_sil, k)
+                        for e in ELEMENTS:
+                            masses[e] += eff[e]
+                        M += k * rTOT_si
+                        kg_Si += k
 
             # Plan final
             plan = {}
@@ -963,11 +1123,52 @@ class TabAjuste(ttk.Frame):
                 if kg > 0:
                     plan[n] = plan.get(n, 0.0) + kg
             if kg_steel > 0:
-                plan["Acero 1010"] = plan.get("Acero 1010", 0.0) + kg_steel
+                plan[a_steel.get("nombre","Acero 1010")] = plan.get(a_steel.get("nombre","Acero 1010"), 0.0) + kg_steel
             if kg_C > 0:
-                plan["Carbón de grafito"] = plan.get("Carbón de grafito", 0.0) + kg_C
+                plan[a_graph.get("nombre","Carbón de grafito")] = plan.get(a_graph.get("nombre","Carbón de grafito"), 0.0) + kg_C
             if kg_Si > 0:
-                plan["Silicio"] = plan.get("Silicio", 0.0) + kg_Si
+                plan[a_sil.get("nombre","Silicio")] = plan.get(a_sil.get("nombre","Silicio"), 0.0) + kg_Si
+
+            # Refuerzo: si algún elemento objetivo queda por debajo, agregar con el mejor material de ajuste
+            try:
+                M_sim = M0
+                masses_sim = {e: M0 * comp0.get(e, 0.0) / 100.0 for e in ELEMENTS}
+                for nm, kg in plan.items():
+                    if kg <= 0:
+                        continue
+                    a = self._get_adjuster(nm)
+                    if not a:
+                        continue
+                    eff = self._effective_add(a, kg)
+                    for e in ELEMENTS:
+                        masses_sim[e] += eff[e]
+                    M_sim += kg * self._effective_total_perkg(a)
+                for el in [e for e in ELEMENTS if e not in ("C", "Si", "Fe")]:
+                    T_E = tgt_pct.get(el, 0.0) / 100.0
+                    if T_E <= 0:
+                        continue
+                    fE = masses_sim[el] / M_sim if M_sim > 0 else 0.0
+                    if fE < T_E - 1e-12:
+                        nm = best_for_elem.get(el)
+                        if not nm:
+                            continue
+                        a = self._get_adjuster(nm)
+                        if not a:
+                            continue
+                        rE = self._effective_add_perkg(a, el)
+                        rTOT = self._effective_total_perkg(a)
+                        if rTOT <= 0 or rE <= eps:
+                            continue
+                        k = self._solve_kg_for_target(M_sim, masses_sim[el], T_E, rE, rTOT)
+                        if k is None or k <= 0:
+                            continue
+                        eff = self._effective_add(a, k)
+                        for e in ELEMENTS:
+                            masses_sim[e] += eff[e]
+                        M_sim += k * rTOT
+                        plan[nm] = plan.get(nm, 0.0) + k
+            except Exception:
+                pass
 
             if log_it:
                 pred_pct_snapshot = {e: (100.0 * masses[e] / M if M > 0 else 0.0) for e in ELEMENTS}

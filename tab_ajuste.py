@@ -964,6 +964,7 @@ class TabAjuste(ttk.Frame):
                      ce_formula, ce_now, ce_pred, objetivo_comp):
         try:
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            _, _, _, ce_custom = self._objective_ce_data()
             entry = {
                 "fecha": ts,
                 "colada": self.colada.get(),
@@ -975,6 +976,7 @@ class TabAjuste(ttk.Frame):
                 "materiales": plan,
                 "resumen": self._summarize_plan(plan),
                 "ce_formula": ce_formula,
+                "ce_custom": ce_custom or {},
                 "ce_inicial": ce_now,
                 "ce_estimado": ce_pred,
             }
@@ -1080,9 +1082,10 @@ class TabAjuste(ttk.Frame):
                 comp0 = adj_entry.get("inicial", {}).get("comp", {})
                 Mnew, comp_est = self._simulate_with_plan(M0, comp0, plan)
                 ce_formula = adj_entry.get('ce_formula', 'FUNDICION')
-                ce_custom = {}
-                res.config(text=f"Estimado: masa {fmt(Mnew)} kg | CE {fmt(ce_from_percent(comp_est, ce_formula, ce_custom), 4)}")
-                return (Mnew, comp_est, plan)
+                ce_custom = adj_entry.get("ce_custom", {}) or {}
+                ce_est = ce_from_percent(comp_est, ce_formula, ce_custom)
+                res.config(text=f"Estimado: masa {fmt(Mnew)} kg | CE {fmt(ce_est, 4)}")
+                return (Mnew, comp_est, plan, ce_est, ce_custom)
             except Exception as ex:
                 messagebox.showerror("Editar", str(ex), parent=win)
                 return None
@@ -1091,11 +1094,13 @@ class TabAjuste(ttk.Frame):
             out = recalc()
             if not out:
                 return
-            Mnew, comp_est, plan = out
+            Mnew, comp_est, plan, ce_est, ce_custom = out
             new_adj = dict(adj_entry)
             new_adj["estimado"] = {"masa": Mnew, "comp": comp_est}
             new_adj["materiales"] = plan
             new_adj["resumen"] = "; ".join(f"{k}: {fmt(v, 3)} kg" for k, v in sorted(plan.items()))
+            new_adj["ce_custom"] = ce_custom or {}
+            new_adj["ce_estimado"] = ce_est
             on_save(new_adj)
             win.destroy()
 
@@ -1214,9 +1219,11 @@ class TabAjuste(ttk.Frame):
             if new_val:
                 self.colada.set(new_val)
                 self.session_started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                self.ajustes_log = []
-                self._refresh_hist()
-                self._fire_save()
+            else:
+                self.session_started_at = None
+            self.ajustes_log = []
+            self._refresh_hist()
+            self._fire_save()
             self._status("Sesión guardada.")
         except Exception as ex:
             self._status(f"No se pudo guardar: {ex}")

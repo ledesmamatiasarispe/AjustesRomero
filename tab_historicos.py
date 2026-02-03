@@ -256,8 +256,11 @@ class TabHistoricos(ttk.Frame):
                 M0  = adj_entry.get("inicial",{}).get("masa", 0.0)
                 comp0 = adj_entry.get("inicial",{}).get("comp", {})
                 Mnew, comp_est = self._simulate_with_plan(M0, comp0, plan)
-                res.config(text=f"Estimado: masa {fmt(Mnew)} kg | CE {fmt(ce_from_percent(comp_est, adj_entry.get('ce_formula','FUNDICION'), {}),4)}")
-                return (Mnew, comp_est, plan)
+                ce_formula = adj_entry.get('ce_formula','FUNDICION')
+                ce_custom = adj_entry.get("ce_custom", {}) or {}
+                ce_est = ce_from_percent(comp_est, ce_formula, ce_custom)
+                res.config(text=f"Estimado: masa {fmt(Mnew)} kg | CE {fmt(ce_est,4)}")
+                return (Mnew, comp_est, plan, ce_est, ce_custom)
             except Exception as ex:
                 messagebox.showerror("Editar", str(ex), parent=win)
                 return None
@@ -265,11 +268,13 @@ class TabHistoricos(ttk.Frame):
         def save():
             out = recalc()
             if not out: return
-            Mnew, comp_est, plan = out
+            Mnew, comp_est, plan, ce_est, ce_custom = out
             new_adj = dict(adj_entry)
             new_adj["estimado"] = {"masa": Mnew, "comp": comp_est}
             new_adj["materiales"] = plan
             new_adj["resumen"] = "; ".join(f"{k}: {fmt(v, 3)} kg" for k, v in sorted(plan.items()))
+            new_adj["ce_custom"] = ce_custom or {}
+            new_adj["ce_estimado"] = ce_est
             update_adjustment(session_index, adj_index, new_adj)
             self.refresh()
             win.destroy()

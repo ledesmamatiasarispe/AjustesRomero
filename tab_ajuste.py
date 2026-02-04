@@ -230,8 +230,14 @@ class TabAjuste(ttk.Frame):
         s.pack(side="left", padx=6)
         self.lbl_partial = ttk.Label(left_opts, text="30%")
         self.lbl_partial.pack(side="left")
-        self.partial_pct.trace_add("write",
-                                   lambda *_: self.lbl_partial.config(text=f"{int(self.partial_pct.get())}%"))
+        self.partial_pct.trace_add(
+            "write",
+            lambda *_: (
+                self.lbl_partial.config(text=f"{int(self.partial_pct.get())}%"),
+                self._schedule_auto(),
+                self._fire_save()
+            )
+        )
 
         for pct in (30, 50, 75, 100):
             ttk.Button(left_opts, text=f"{pct}%", width=4,
@@ -348,7 +354,18 @@ class TabAjuste(ttk.Frame):
         if self.auto_est.get():
             try:
                 self._busy = True
-                self._estimate_core(reset_kgs=True, log_it=False, silent=True)
+                plan = self._estimate_core(reset_kgs=True, log_it=False, silent=True, return_plan=True)
+                if plan:
+                    pct = max(1, min(100, int(self.partial_pct.get())))
+                    p = pct / 100.0
+                    plan_scaled = {k: v * p for k, v in plan.items()}
+                    for name in plan_scaled.keys():
+                        self._ensure_adjuster_present(name)
+                    for v in self.kg_vars.values():
+                        v.set("0")
+                    for name, kg in plan_scaled.items():
+                        self.kg_vars[name].set(fmt(kg, 3))
+                    self.calc_prediction()
             finally:
                 self._busy = False
         self.calc_prediction()
@@ -1222,6 +1239,9 @@ class TabAjuste(ttk.Frame):
             return {} if return_plan else False
 
     def calculate_partial(self):
+        if self.auto_est.get():
+            # Evita que auto-estimar sobrescriba el cálculo parcial
+            self.auto_est.set(False)
         plan = self._estimate_core(reset_kgs=True, log_it=False, silent=True, return_plan=True)
         if not plan:
             self._status("No hay plan para calcular %. Revisá objetivo/materiales.")

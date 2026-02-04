@@ -9,6 +9,7 @@ from tab_ajuste import TabAjuste
 from tab_historicos import TabHistoricos
 
 from storage import load_alloys, save_alloys
+from config import THEME, BG, FG, BG_ENTRY, ACCENT
 
 APP_TITLE = "Ajuste de Composición"
 STATE_FILENAME = "ajuste_comp_ui.json"
@@ -16,6 +17,60 @@ STATE_FILENAME = "ajuste_comp_ui.json"
 
 def _state_path():
     return os.path.join(os.path.expanduser("~"), STATE_FILENAME)
+
+def _apply_theme(root):
+    if THEME != "dark":
+        return
+    try:
+        root.tk_setPalette(
+            background=BG,
+            foreground=FG,
+            activeBackground=ACCENT,
+            activeForeground=FG,
+            highlightColor=ACCENT,
+            selectBackground=ACCENT,
+            selectForeground=FG,
+            insertBackground=FG,
+        )
+    except Exception:
+        pass
+
+    try:
+        style = ttk.Style(root)
+        style.theme_use("clam")
+        style.configure(".", background=BG, foreground=FG)
+        style.configure("TFrame", background=BG)
+        style.configure("TLabel", background=BG, foreground=FG)
+        style.configure("TButton", background=BG, foreground=FG)
+        style.configure("TCheckbutton", background=BG, foreground=FG)
+        style.configure("TRadiobutton", background=BG, foreground=FG)
+        style.configure("TNotebook", background=BG)
+        style.configure("TNotebook.Tab", background=BG, foreground=FG)
+        style.configure("TEntry", fieldbackground=BG_ENTRY, foreground=FG)
+        style.configure("TCombobox", fieldbackground="white", foreground="black", background="white")
+        style.configure("Treeview", background=BG, fieldbackground=BG, foreground=FG)
+        style.configure("Treeview.Heading", background=BG, foreground=FG)
+        style.map("TNotebook.Tab",
+                  background=[("selected", BG_ENTRY)],
+                  foreground=[("selected", FG)])
+        style.map("TButton",
+                  background=[("active", BG_ENTRY)],
+                  foreground=[("active", FG)])
+    except Exception:
+        pass
+
+    # Dropdowns de Combobox: fondo blanco y texto negro para asegurar contraste
+    try:
+        root.option_add("*TCombobox*Listbox*Background", "white")
+        root.option_add("*TCombobox*Listbox*Foreground", "black")
+        root.option_add("*TCombobox*Listbox*selectBackground", "black")
+        root.option_add("*TCombobox*Listbox*selectForeground", "white")
+        root.option_add("*Listbox*Background", "white")
+        root.option_add("*Listbox*Foreground", "black")
+        root.option_add("*Listbox*selectBackground", "black")
+        root.option_add("*Listbox*selectForeground", "white")
+    except Exception:
+        pass
 
 
 class App(tk.Frame):
@@ -130,6 +185,7 @@ class App(tk.Frame):
 
 def main():
     root = tk.Tk()
+    _apply_theme(root)
     root.rowconfigure(0, weight=1)
     root.columnconfigure(0, weight=1)
     App(root)

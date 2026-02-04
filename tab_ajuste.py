@@ -233,6 +233,10 @@ class TabAjuste(ttk.Frame):
         self.partial_pct.trace_add("write",
                                    lambda *_: self.lbl_partial.config(text=f"{int(self.partial_pct.get())}%"))
 
+        for pct in (30, 50, 75, 100):
+            ttk.Button(left_opts, text=f"{pct}%", width=4,
+                       command=lambda p=pct: self.partial_pct.set(p)).pack(side="left", padx=2)
+
         btns = ttk.Frame(side)
         btns.pack(side="right")
         ttk.Button(btns, text="Calcular",
@@ -242,6 +246,7 @@ class TabAjuste(ttk.Frame):
         ttk.Button(btns, text="Guardar sesión", command=self.save_current_session).pack(side="left", padx=6)
         ttk.Button(btns, text="Limpiar kg",
                    command=lambda: (self.clear_adjust_kgs(), self._fire_save())).pack(side="left", padx=(6, 0))
+        ttk.Button(btns, text="Reset ajuste", command=self.reset_adjustment).pack(side="left", padx=(6, 0))
 
         self.lbl_status = ttk.Label(self, text="", foreground="#444")
         self.lbl_status.grid(row=4, column=0, sticky="ew", pady=(3, 0))
@@ -353,6 +358,23 @@ class TabAjuste(ttk.Frame):
             self._busy = True
             for v in self.kg_vars.values():
                 v.set("0")
+        finally:
+            self._busy = False
+
+    def reset_adjustment(self):
+        try:
+            self._busy = True
+            for v in self.kg_vars.values():
+                v.set("0")
+            for _, t in self.est_rows:
+                t.config(state="normal")
+                t.delete(0, tk.END)
+                t.config(state="readonly")
+            self.ajustes_log = []
+            self._refresh_hist()
+            self._predicted = None
+            self._status("Ajuste reiniciado.")
+            self._fire_save()
         finally:
             self._busy = False
 
@@ -1122,12 +1144,15 @@ class TabAjuste(ttk.Frame):
             for n, kg in kg_other.items():
                 if kg > 0:
                     plan[n] = plan.get(n, 0.0) + kg
-            if kg_steel > 0:
-                plan[a_steel.get("nombre","Acero 1010")] = plan.get(a_steel.get("nombre","Acero 1010"), 0.0) + kg_steel
-            if kg_C > 0:
-                plan[a_graph.get("nombre","Carbón de grafito")] = plan.get(a_graph.get("nombre","Carbón de grafito"), 0.0) + kg_C
-            if kg_Si > 0:
-                plan[a_sil.get("nombre","Silicio")] = plan.get(a_sil.get("nombre","Silicio"), 0.0) + kg_Si
+            if kg_steel > 0 and a_steel:
+                nm = a_steel.get("nombre","Acero 1010")
+                plan[nm] = plan.get(nm, 0.0) + kg_steel
+            if kg_C > 0 and a_graph:
+                nm = a_graph.get("nombre","Carbón de grafito")
+                plan[nm] = plan.get(nm, 0.0) + kg_C
+            if kg_Si > 0 and a_sil:
+                nm = a_sil.get("nombre","Silicio")
+                plan[nm] = plan.get(nm, 0.0) + kg_Si
 
             # Refuerzo: si algún elemento objetivo queda por debajo, agregar con el mejor material de ajuste
             try:

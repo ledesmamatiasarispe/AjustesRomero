@@ -24,3 +24,21 @@ def _norm(s):
     return (s.upper()
               .replace("Ó","O").replace("Í","I")
               .replace("Á","A").replace("É","E").replace("Ú","U"))
+
+
+def simulate_with_plan(M0, comp0, plan, elements, get_alloy, effective_add, effective_total_perkg):
+    masses = {e: M0 * to_float(comp0.get(e, 0.0)) / 100.0 for e in elements}
+    add_total_eff = 0.0
+    for name, kg in (plan or {}).items():
+        if kg <= 0:
+            continue
+        a = get_alloy(name)
+        if not a:
+            raise ValueError(f"Material '{name}' no existe en catalogo.")
+        eff = effective_add(a, kg)
+        for e in elements:
+            masses[e] += eff[e]
+        add_total_eff += kg * effective_total_perkg(a)
+    Mnew = M0 + add_total_eff
+    comp_pct = {e: (100.0 * masses[e] / Mnew if Mnew > 0 else 0.0) for e in elements}
+    return (Mnew, comp_pct)

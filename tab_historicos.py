@@ -7,7 +7,7 @@ import re
 from storage import load_history, update_session, delete_session, update_adjustment, delete_adjustment
 from widgets import ScrollFrame
 from config import ELEMENTS
-from utils import fmt, to_float
+from utils import fmt, to_float, simulate_with_plan
 from ce import ce_from_percent
 
 COLADA_RE = re.compile(r"^\\s*(\\d+)\\s*/\\s*(\\d{2})\\s*-\\s*(.+?)\\s*$")
@@ -26,6 +26,7 @@ class TabHistoricos(ttk.Frame):
         self.alloys = alloys_model
         self.hist = []
         self._session_tabs = {}
+        self._alloy_cache = None
 
         # ---- Layout principal (dock)
         root = ttk.PanedWindow(self, orient="horizontal")
@@ -73,10 +74,15 @@ class TabHistoricos(ttk.Frame):
 
     # ---------------------------- helpers catalogo -------------------------
     def _alloy_by_name(self, name):
-        for a in self.alloys:
-            if a.get("nombre", "") == name:
-                return a
-        return None
+        if not name:
+            return None
+        if self._alloy_cache is None:
+            self._alloy_cache = {a.get("nombre", ""): a for a in self.alloys}
+        a = self._alloy_cache.get(name)
+        if a is None:
+            self._alloy_cache = {a.get("nombre", ""): a for a in self.alloys}
+            a = self._alloy_cache.get(name)
+        return a
 
     def _objective_comp(self, session):
         name = session.get("objetivo", "")
@@ -94,21 +100,9 @@ class TabHistoricos(ttk.Frame):
         return out
 
     def _simulate_with_plan(self, M0, comp0, plan):
-        masses = {e: M0 * to_float(comp0.get(e, 0.0)) / 100.0 for e in ELEMENTS}
-        add_total_eff = 0.0
-        for name, kg in (plan or {}).items():
-            if kg <= 0:
-                continue
-            a = self._alloy_by_name(name)
-            if not a:
-                raise ValueError(f"Material '{name}' no existe en catalogo.")
-            eff = self._effective_add(a, kg)
-            for e in ELEMENTS:
-                masses[e] += eff[e]
-            add_total_eff += kg * self._effective_total_perkg(a)
-        Mnew = M0 + add_total_eff
-        comp_pct = {e: (100.0 * masses[e] / Mnew if Mnew > 0 else 0.0) for e in ELEMENTS}
-        return (Mnew, comp_pct)
+        return simulate_with_plan(
+            M0, comp0, plan, ELEMENTS, self._alloy_by_name, self._effective_add, self._effective_total_perkg
+        )
 
     # ---------------------------- data load --------------------------------
     def refresh(self):

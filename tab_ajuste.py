@@ -6,7 +6,7 @@ import re
 import uuid
 
 from config import ELEMENTS, COLOR_OK, COLOR_FAIL, COLOR_WARN, TOL_NO_LIMITS, BG_ENTRY, FG
-from utils import to_float, fmt, _norm
+from utils import to_float, fmt, _norm, simulate_with_plan
 from ce import ce_from_percent
 from storage import append_history, save_alloys
 from widgets import ScrollFrame
@@ -29,6 +29,9 @@ class TabAjuste(ttk.Frame):
         self._calc_log_tree = None
         self._changes_win = None
         self._changes_idx = None
+        self._alloy_cache = None
+        self._ajustes_sorted = []
+        self._ajustes_id_index = {}
 
         # ---------- CONFIG GRID PRINCIPAL ----------
         # Fila 0: barra superior
@@ -375,7 +378,6 @@ class TabAjuste(ttk.Frame):
                         v.set("0")
                     for name, kg in plan_scaled.items():
                         self.kg_vars[name].set(fmt(kg, 3))
-                    self.calc_prediction()
             finally:
                 self._busy = False
         self.calc_prediction()
@@ -410,10 +412,16 @@ class TabAjuste(ttk.Frame):
         return [a["nombre"] for a in self.alloys if (a.get("tipo", "") == "Aleación propia")]
 
     def _alloy_by_name(self, name):
-        for a in self.alloys:
-            if a.get("nombre", "") == name:
-                return a
-        return None
+        if not name:
+            return None
+        if self._alloy_cache is None:
+            self._alloy_cache = {a.get("nombre", ""): a for a in self.alloys}
+        a = self._alloy_cache.get(name)
+        if a is None:
+            # Rebuild in case the catalog changed
+            self._alloy_cache = {a.get("nombre", ""): a for a in self.alloys}
+            a = self._alloy_cache.get(name)
+        return a
 
     def _objective_limits(self, element):
         name = self.cb_obj.get()
@@ -1365,6 +1373,8 @@ class TabAjuste(ttk.Frame):
         for i in self.tree_hist.get_children():
             self.tree_hist.delete(i)
         items = sorted(getattr(self, "ajustes_log", []), key=lambda x: x.get("fecha", ""))
+        self._ajustes_sorted = items
+        self._ajustes_id_index = {it.get("id"): i for i, it in enumerate(self.ajustes_log) if it.get("id")}
         for it in items:
             preview = self._changes_preview(it.get("cambios_list", []))
             self.tree_hist.insert(
@@ -1494,15 +1504,13 @@ class TabAjuste(ttk.Frame):
         if not sel:
             return None
         idx = self.tree_hist.index(sel[0])
-        items = sorted(self.ajustes_log, key=lambda x: x.get("fecha", ""))
+        items = self._ajustes_sorted or sorted(self.ajustes_log, key=lambda x: x.get("fecha", ""))
         if idx >= len(items):
             return None
         picked = items[idx]
         picked_id = picked.get("id")
-        if picked_id:
-            for i, it in enumerate(self.ajustes_log):
-                if it.get("id") == picked_id:
-                    return i
+        if picked_id and picked_id in self._ajustes_id_index:
+            return self._ajustes_id_index[picked_id]
         fecha = picked.get("fecha")
         for i, it in enumerate(self.ajustes_log):
             if it.get("fecha") == fecha:
@@ -1608,21 +1616,9 @@ class TabAjuste(ttk.Frame):
 
     # -------- editor simple de ajuste (en esta pestaña) ----------
     def _simulate_with_plan(self, M0, comp0, plan):
-        masses = {e: M0 * to_float(comp0.get(e, 0.0)) / 100.0 for e in ELEMENTS}
-        add_total_eff = 0.0
-        for name, kg in (plan or {}).items():
-            if kg <= 0:
-                continue
-            a = self._alloy_by_name(name)
-            if not a:
-                raise ValueError(f"Material '{name}' no existe en catálogo.")
-            eff = self._effective_add(a, kg)
-            for e in ELEMENTS:
-                masses[e] += eff[e]
-            add_total_eff += kg * self._effective_total_perkg(a)
-        Mnew = M0 + add_total_eff
-        comp_pct = {e: (100.0 * masses[e] / Mnew if Mnew > 0 else 0.0) for e in ELEMENTS}
-        return (Mnew, comp_pct)
+        return simulate_with_plan(
+            M0, comp0, plan, ELEMENTS, self._alloy_by_name, self._effective_add, self._effective_total_perkg
+        )
 
     def _edit_adjust_dialog(self, adj_entry, on_save):
         win = tk.Toplevel(self)

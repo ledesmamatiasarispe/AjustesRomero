@@ -329,6 +329,80 @@ class TabCatalogo(ttk.Frame):
             except Exception as ex:
                 messagebox.showerror("Recalcular Fe", str(ex))
         ttk.Button(btns, text="Recalcular Fe", command=recalc_fe).pack(side="left")
+        def auto_limits():
+            win = tk.Toplevel(self)
+            win.title("Auto-límites")
+            win.transient(self)
+            win.grab_set()
+            win.resizable(False, False)
+            frm = ttk.Frame(win, padding=10)
+            frm.pack(fill="both", expand=True)
+
+            ttk.Label(frm, text="Porcentaje para SOFT (±%)").grid(row=0, column=0, sticky="w")
+            v_soft = tk.StringVar(value="5")
+            e_soft = ttk.Entry(frm, textvariable=v_soft, width=8)
+            e_soft.grid(row=0, column=1, padx=6)
+
+            ttk.Label(frm, text="Porcentaje para HARD (±%)").grid(row=1, column=0, sticky="w", pady=(6,0))
+            v_hard = tk.StringVar(value="10")
+            e_hard = ttk.Entry(frm, textvariable=v_hard, width=8)
+            e_hard.grid(row=1, column=1, padx=6, pady=(6,0))
+
+            ttk.Label(frm, text="Elementos a aplicar").grid(row=2, column=0, columnspan=2, sticky="w", pady=(10,0))
+            lb = tk.Listbox(frm, selectmode=tk.MULTIPLE, height=8, exportselection=False)
+            lb.grid(row=3, column=0, columnspan=2, sticky="we", pady=(4,0))
+            for el in ELEMENTS:
+                lb.insert(tk.END, el)
+                lb.selection_set(tk.END)
+
+            sel_btns = ttk.Frame(frm)
+            sel_btns.grid(row=4, column=0, columnspan=2, sticky="e", pady=(4,0))
+            def select_all():
+                lb.selection_set(0, tk.END)
+            def select_none():
+                lb.selection_clear(0, tk.END)
+            ttk.Button(sel_btns, text="Todos", command=select_all).pack(side="right")
+            ttk.Button(sel_btns, text="Ninguno", command=select_none).pack(side="right", padx=6)
+
+            btns2 = ttk.Frame(frm)
+            btns2.grid(row=5, column=0, columnspan=2, pady=(10,0), sticky="e")
+
+            def apply():
+                try:
+                    soft_pct = to_float_or_none(v_soft.get())
+                    hard_pct = to_float_or_none(v_hard.get())
+                    if soft_pct is None or hard_pct is None or soft_pct < 0 or hard_pct < 0:
+                        raise ValueError("Porcentajes inválidos.")
+                    sel_idx = set(lb.curselection())
+                    for i, el in enumerate(ELEMENTS):
+                        if sel_idx and i not in sel_idx:
+                            continue
+                        ideal = to_float_or_none(comp_vars[el].get())
+                        if ideal is None or ideal <= 0:
+                            v_sm, v_sM, v_hm, v_hM, *_ = limit_vars[el]
+                            v_sm.set("")
+                            v_sM.set("")
+                            v_hm.set("")
+                            v_hM.set("")
+                            continue
+                        soft = ideal * soft_pct / 100.0
+                        hard = ideal * hard_pct / 100.0
+                        v_sm, v_sM, v_hm, v_hM, *_ = limit_vars[el]
+                        v_sm.set(fmt_opt(ideal - soft))
+                        v_sM.set(fmt_opt(ideal + soft))
+                        v_hm.set(fmt_opt(ideal - hard))
+                        v_hM.set(fmt_opt(ideal + hard))
+                    win.destroy()
+                except Exception as ex:
+                    messagebox.showerror("Auto-límites", str(ex), parent=win)
+
+            ttk.Button(btns2, text="Aplicar", command=apply).pack(side="right")
+            ttk.Button(btns2, text="Cancelar", command=win.destroy).pack(side="right", padx=6)
+
+            e_soft.focus_set()
+            win.wait_window()
+
+        ttk.Button(btns, text="Auto-límites...", command=auto_limits).pack(side="left", padx=6)
 
         # --- Límites (solo Aleación propia) ---
         limits_frame = ttk.LabelFrame(form, text="Límites (solo Aleación propia)", padding=8)

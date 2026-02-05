@@ -24,6 +24,11 @@ class TabAjuste(ttk.Frame):
         self._save_cb = None
         self._restoring = False
         self.ajustes_log = []  # ajustes de la colada actual
+        self.calc_log = []     # cálculos temporales (solo botón Calcular)
+        self._calc_log_win = None
+        self._calc_log_tree = None
+        self._changes_win = None
+        self._changes_idx = None
 
         # ---------- CONFIG GRID PRINCIPAL ----------
         # Fila 0: barra superior
@@ -191,19 +196,22 @@ class TabAjuste(ttk.Frame):
         hist_section = ttk.LabelFrame(self, text="Ajustes de la colada (resumen)", padding=6)
         hist_section.grid(row=2, column=0, sticky="nsew")
 
-        self.tree_hist = ttk.Treeview(hist_section, columns=("fecha", "objetivo", "resumen"),
+        self.tree_hist = ttk.Treeview(hist_section, columns=("fecha", "objetivo", "cambios", "resumen"),
                                       show="headings", height=8)
         for cid, title, w in (("fecha", "Fecha/Hora", 160),
-                              ("objetivo", "Objetivo", 200),
-                              ("resumen", "Materiales", 520)):
+                              ("objetivo", "Objetivo", 160),
+                              ("cambios", "Cambios", 120),
+                              ("resumen", "Materiales", 500)):
             self.tree_hist.heading(cid, text=title)
             self.tree_hist.column(cid, width=w, anchor="w")
         self.tree_hist.pack(fill="both", expand=True)
+        self.tree_hist.bind("<Double-Button-1>", lambda e: self._open_selected_changes())
 
         hist_btns = ttk.Frame(hist_section)
         hist_btns.pack(fill="x", pady=(6, 0))
         ttk.Button(hist_btns, text="Editar ajuste", command=self._edit_selected_adjustment).pack(side="left")
         ttk.Button(hist_btns, text="Eliminar ajuste", command=self._delete_selected_adjustment).pack(side="left", padx=6)
+        ttk.Button(hist_btns, text="Ver cálculos", command=self._open_calc_log).pack(side="right")
 
         # ---------- fila 3: Controles inferiores ----------
         side = ttk.Frame(self)
@@ -246,7 +254,7 @@ class TabAjuste(ttk.Frame):
         btns = ttk.Frame(side)
         btns.pack(side="right")
         ttk.Button(btns, text="Calcular",
-                   command=lambda: self.estimate_to_target(show_message=False, reset_kgs=True, log_it=True)).pack(side="left")
+                   command=lambda: self.estimate_to_target(show_message=False, reset_kgs=True, log_it=False, log_calc=True)).pack(side="left")
         ttk.Button(btns, text="Calcular %", command=self.calculate_partial).pack(side="left", padx=6)
         ttk.Button(btns, text="Aplicar", command=self.apply_adjustment).pack(side="left")
         ttk.Button(btns, text="Guardar sesión", command=self.save_current_session).pack(side="left", padx=6)
@@ -291,6 +299,7 @@ class TabAjuste(ttk.Frame):
             "colada": self.colada.get(),  # solo "NNNN /YY"
             "session_started_at": self.session_started_at,
             "ajustes_log": self.ajustes_log,
+            "calc_log": self.calc_log,
         }
 
     def set_state(self, st):
@@ -329,6 +338,7 @@ class TabAjuste(ttk.Frame):
             self.session_started_at = st.get("session_started_at", None)
             self.ajustes_log = st.get("ajustes_log", [])
             self._refresh_hist()
+            self.calc_log = st.get("calc_log", [])
         finally:
             self._restoring = False
             self._schedule_auto()
@@ -389,6 +399,7 @@ class TabAjuste(ttk.Frame):
                 t.config(state="readonly")
             self.ajustes_log = []
             self._refresh_hist()
+            self.calc_log = []
             self._predicted = None
             self._status("Ajuste reiniciado.")
             self._fire_save()
@@ -871,14 +882,15 @@ class TabAjuste(ttk.Frame):
             return None
         return num / denom
 
-    def estimate_to_target(self, show_message=True, reset_kgs=True, return_plan=False, log_it=False):
-        ok = self._estimate_core(reset_kgs=reset_kgs, log_it=log_it, silent=not show_message, return_plan=return_plan)
+    def estimate_to_target(self, show_message=True, reset_kgs=True, return_plan=False, log_it=False, log_calc=False):
+        ok = self._estimate_core(reset_kgs=reset_kgs, log_it=log_it, log_calc=log_calc,
+                                 silent=not show_message, return_plan=return_plan)
         if return_plan:
             return ok
         if not ok and show_message:
             messagebox.showerror("Estimar", "No se pudo calcular el plan. Revisá objetivo y materiales.")
 
-    def _estimate_core(self, reset_kgs=True, log_it=False, silent=False, return_plan=False):
+    def _estimate_core(self, reset_kgs=True, log_it=False, log_calc=False, silent=False, return_plan=False):
         try:
             name = self.cb_obj.get().strip()
             if not name:
@@ -1212,13 +1224,17 @@ class TabAjuste(ttk.Frame):
             except Exception:
                 pass
 
-            if log_it:
+            if log_it or log_calc:
                 pred_pct_snapshot = {e: (100.0 * masses[e] / M if M > 0 else 0.0) for e in ELEMENTS}
                 ce_min, ce_max, ce_formula, ce_custom = self._objective_ce_data()
                 ce_now = ce_from_percent(comp0, ce_formula, ce_custom)
                 ce_pred = ce_from_percent(pred_pct_snapshot, ce_formula, ce_custom)
-                self._log_ajuste(plan, 100.0, comp0, M0, pred_pct_snapshot, M, name,
-                                 ce_formula, ce_now, ce_pred, self._target_comp())
+                if log_it:
+                    self._log_ajuste(plan, 100.0, comp0, M0, pred_pct_snapshot, M, name,
+                                     ce_formula, ce_now, ce_pred, self._target_comp())
+                if log_calc:
+                    self._log_calc(plan, 100.0, comp0, M0, pred_pct_snapshot, M, name,
+                                   ce_formula, ce_now, ce_pred)
 
             if return_plan:
                 return plan
@@ -1242,7 +1258,7 @@ class TabAjuste(ttk.Frame):
         if self.auto_est.get():
             # Evita que auto-estimar sobrescriba el cálculo parcial
             self.auto_est.set(False)
-        plan = self._estimate_core(reset_kgs=True, log_it=False, silent=True, return_plan=True)
+        plan = self._estimate_core(reset_kgs=True, log_it=False, log_calc=False, silent=True, return_plan=True)
         if not plan:
             self._status("No hay plan para calcular %. Revisá objetivo/materiales.")
             return
@@ -1274,8 +1290,8 @@ class TabAjuste(ttk.Frame):
             ce_now = ce_from_percent(comp0, ce_formula, ce_custom)
             ce_pred = ce_from_percent(pred_pct, ce_formula, ce_custom)
 
-            self._log_ajuste(plan_scaled, float(pct), comp0, M0, pred_pct, pred_M,
-                             self.cb_obj.get().strip(), ce_formula, ce_now, ce_pred, self._target_comp())
+            self._log_calc(plan_scaled, float(pct), comp0, M0, pred_pct, pred_M,
+                           self.cb_obj.get().strip(), ce_formula, ce_now, ce_pred)
             self._status(f"Calculado {pct}% del plan.")
         finally:
             self._busy = False
@@ -1287,6 +1303,19 @@ class TabAjuste(ttk.Frame):
                 self.calc_prediction()
                 if not hasattr(self, "_predicted"):
                     return
+            # Guardar el ajuste aplicado en historial principal
+            try:
+                M0 = self._bath_mass()
+                comp0 = self._current_comp()
+                plan = {n: to_float(v.get()) for n, v in self.kg_vars.items() if to_float(v.get()) > 0}
+                Mnew, pred_pct = self._predicted
+                ce_min, ce_max, ce_formula, ce_custom = self._objective_ce_data()
+                ce_now = ce_from_percent(comp0, ce_formula, ce_custom)
+                ce_pred = ce_from_percent(pred_pct, ce_formula, ce_custom)
+                self._log_ajuste(plan, 100.0, comp0, M0, pred_pct, Mnew,
+                                 self.cb_obj.get().strip(), ce_formula, ce_now, ce_pred, self._target_comp())
+            except Exception:
+                pass
             Mnew, pred_pct = self._predicted
             for el, e in self.actual_rows:
                 e.delete(0, tk.END)
@@ -1305,6 +1334,26 @@ class TabAjuste(ttk.Frame):
             return ""
         return "; ".join(f"{k}: {fmt(v, 3)} kg" for k, v in sorted(plan.items()))
 
+    def _summarize_changes(self, comp0, comp1):
+        out = []
+        for e in ELEMENTS:
+            v0 = to_float(comp0.get(e, 0.0))
+            v1 = to_float(comp1.get(e, 0.0))
+            d = v1 - v0
+            if abs(d) > 1e-12:
+                out.append((e, v0, v1, d))
+        return out
+
+    def _changes_preview(self, changes):
+        if not changes:
+            return ""
+        ordered = sorted(changes, key=lambda x: abs(x[3]), reverse=True)
+        top = ordered[:4]
+        labels = [f"{e}: {fmt(v0, 4)} → {fmt(v1, 4)}" for e, v0, v1, _ in top]
+        if len(ordered) > 4:
+            labels[-1] = "Ver más…"
+        return "; ".join(labels)
+
     def _refresh_hist(self):
         if not hasattr(self, "tree_hist"):
             return
@@ -1317,9 +1366,15 @@ class TabAjuste(ttk.Frame):
             self.tree_hist.delete(i)
         items = sorted(getattr(self, "ajustes_log", []), key=lambda x: x.get("fecha", ""))
         for it in items:
-            self.tree_hist.insert("", "end", values=(it.get("fecha", ""), it.get("objetivo", ""), it.get("resumen", "")))
+            preview = self._changes_preview(it.get("cambios_list", []))
+            self.tree_hist.insert(
+                "",
+                "end",
+                values=(it.get("fecha", ""), it.get("objetivo", ""), preview, it.get("resumen", "")),
+            )
         if changed:
             self._fire_save()
+        self._refresh_changes_window()
 
     def _log_ajuste(self, plan, porcentaje, comp0, M0, pred_pct, Mnew, objetivo_name,
                      ce_formula, ce_now, ce_pred, objetivo_comp):
@@ -1327,6 +1382,7 @@ class TabAjuste(ttk.Frame):
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             _, _, _, ce_custom = self._objective_ce_data()
             ce_obj = ce_from_percent(objetivo_comp or {}, ce_formula, ce_custom)
+            cambios = self._summarize_changes(comp0, pred_pct)
             entry = {
                 "id": uuid.uuid4().hex,
                 "fecha": ts,
@@ -1338,6 +1394,8 @@ class TabAjuste(ttk.Frame):
                 "objetivo_comp": objetivo_comp,
                 "materiales": plan,
                 "resumen": self._summarize_plan(plan),
+                "cambios_list": cambios,
+                "cambios": self._changes_preview(cambios),
                 "ce_formula": ce_formula,
                 "ce_custom": ce_custom or {},
                 "ce_inicial": ce_now,
@@ -1349,6 +1407,86 @@ class TabAjuste(ttk.Frame):
             self._fire_save()
         except Exception:
             pass
+
+    def _log_calc(self, plan, porcentaje, comp0, M0, pred_pct, Mnew, objetivo_name, ce_formula, ce_now, ce_pred):
+        try:
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cambios = self._summarize_changes(comp0, pred_pct)
+            entry = {
+                "fecha": ts,
+                "objetivo": objetivo_name or "",
+                "porcentaje": porcentaje,
+                "inicial": {"masa": M0, "comp": comp0},
+                "estimado": {"masa": Mnew, "comp": pred_pct},
+                "materiales": plan,
+                "resumen": self._summarize_plan(plan),
+                "cambios_list": cambios,
+                "cambios": self._changes_preview(cambios),
+                "ce_formula": ce_formula,
+                "ce_inicial": ce_now,
+                "ce_estimado": ce_pred,
+            }
+            self.calc_log.append(entry)
+            self._fire_save()
+            self._refresh_calc_log_window()
+        except Exception:
+            pass
+
+    def _open_calc_log(self):
+        win = tk.Toplevel(self)
+        win.title("Historial de cálculos")
+        win.transient(self)
+        win.geometry("760x480")
+        self._calc_log_win = win
+
+        cols = ("fecha", "objetivo", "porcentaje", "cambios", "resumen")
+        tree = ttk.Treeview(win, columns=cols, show="headings", height=14)
+        self._calc_log_tree = tree
+        for cid, title, w in (
+            ("fecha", "Fecha/Hora", 160),
+            ("objetivo", "Objetivo", 180),
+            ("porcentaje", "%", 60),
+            ("cambios", "Cambios", 120),
+            ("resumen", "Materiales", 440),
+        ):
+            tree.heading(cid, text=title)
+            tree.column(cid, width=w, anchor="w")
+        tree.pack(fill="both", expand=True, padx=8, pady=8)
+
+        self._refresh_calc_log_window()
+
+        def on_open_changes(_evt=None):
+            sel = tree.selection()
+            if not sel:
+                return
+            idx = tree.index(sel[0])
+            if idx < 0 or idx >= len(self.calc_log):
+                return
+            entry = self.calc_log[idx]
+            changes_list = entry.get("cambios_list", [])
+            changes = entry.get("cambios", "")
+            w2 = tk.Toplevel(win)
+            w2.title("Cambios de composición")
+            w2.transient(win)
+            w2.geometry("520x420")
+            self._changes_win = w2
+            self._changes_idx = ("calc", idx)
+            txt = tk.Text(w2, wrap="word")
+            txt.pack(fill="both", expand=True, padx=8, pady=8)
+            if changes_list:
+                lines = [f"{e}: {fmt(v0, 4)} → {fmt(v1, 4)}" for e, v0, v1, _ in changes_list]
+                txt.insert("1.0", "\n".join(lines))
+            else:
+                txt.insert("1.0", changes or "(Sin cambios)")
+            txt.config(state="disabled")
+            ttk.Button(w2, text="Cerrar", command=w2.destroy).pack(pady=(0, 8))
+
+        tree.bind("<Double-Button-1>", on_open_changes)
+
+        btns = ttk.Frame(win)
+        btns.pack(fill="x", padx=8, pady=(0, 8))
+        ttk.Button(btns, text="Cerrar", command=win.destroy).pack(side="right")
+        win.protocol("WM_DELETE_WINDOW", lambda: (setattr(self, "_calc_log_win", None), setattr(self, "_calc_log_tree", None), win.destroy()))
 
     # --------- editar / eliminar ajuste seleccionado en esta pestaña ---
     def _selected_hist_index(self):
@@ -1370,6 +1508,77 @@ class TabAjuste(ttk.Frame):
             if it.get("fecha") == fecha:
                 return i
         return None
+
+    def _open_selected_changes(self):
+        idx = self._selected_hist_index()
+        if idx is None:
+            self._status("Seleccioná un ajuste para ver cambios.")
+            return
+        entry = self.ajustes_log[idx]
+        changes_list = entry.get("cambios_list", [])
+        changes = entry.get("cambios", "")
+        win = tk.Toplevel(self)
+        win.title("Cambios de composición")
+        win.transient(self)
+        win.geometry("520x420")
+        self._changes_win = win
+        self._changes_idx = ("applied", idx)
+
+        txt = tk.Text(win, wrap="word")
+        txt.pack(fill="both", expand=True, padx=8, pady=8)
+        if changes_list:
+            lines = [f"{e}: {fmt(v0, 4)} → {fmt(v1, 4)}" for e, v0, v1, _ in changes_list]
+            txt.insert("1.0", "\n".join(lines))
+        else:
+            txt.insert("1.0", changes or "(Sin cambios)")
+        txt.config(state="disabled")
+
+        ttk.Button(win, text="Cerrar", command=win.destroy).pack(pady=(0, 8))
+        win.protocol("WM_DELETE_WINDOW", lambda: (setattr(self, "_changes_win", None), setattr(self, "_changes_idx", None), win.destroy()))
+
+    def _refresh_calc_log_window(self):
+        if not self._calc_log_win or not self._calc_log_tree:
+            return
+        tree = self._calc_log_tree
+        for i in tree.get_children():
+            tree.delete(i)
+        for it in self.calc_log:
+            tree.insert(
+                "", "end",
+                values=(
+                    it.get("fecha", ""),
+                    it.get("objetivo", ""),
+                    it.get("porcentaje", ""),
+                    it.get("cambios", ""),
+                    it.get("resumen", ""),
+                ),
+            )
+
+    def _refresh_changes_window(self):
+        if not self._changes_win or not self._changes_idx:
+            return
+        kind, idx = self._changes_idx
+        if kind == "calc":
+            if idx < 0 or idx >= len(self.calc_log):
+                return
+            entry = self.calc_log[idx]
+        else:
+            if idx < 0 or idx >= len(self.ajustes_log):
+                return
+            entry = self.ajustes_log[idx]
+        changes_list = entry.get("cambios_list", [])
+        changes = entry.get("cambios", "")
+        # reemplaza el contenido del Text
+        for w in self._changes_win.winfo_children():
+            if isinstance(w, tk.Text):
+                w.config(state="normal")
+                w.delete("1.0", tk.END)
+                if changes_list:
+                    lines = [f"{e}: {fmt(v0, 4)} → {fmt(v1, 4)}" for e, v0, v1, _ in changes_list]
+                    w.insert("1.0", "\n".join(lines))
+                else:
+                    w.insert("1.0", changes or "(Sin cambios)")
+                w.config(state="disabled")
 
     def _edit_selected_adjustment(self):
         idx = self._selected_hist_index()
@@ -1577,6 +1786,7 @@ class TabAjuste(ttk.Frame):
                 "started_at": self.session_started_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "ended_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 "ajustes": self.ajustes_log,
+                "calculos": self.calc_log,
             }
             append_history(session)
 

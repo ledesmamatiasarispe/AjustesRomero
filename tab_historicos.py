@@ -107,6 +107,7 @@ class TabHistoricos(ttk.Frame):
     # ---------------------------- data load --------------------------------
     def refresh(self):
         self.hist = load_history()
+        self._alloy_cache = None
         for i in self.tree.get_children():
             self.tree.delete(i)
         for s in self.hist:
@@ -118,6 +119,10 @@ class TabHistoricos(ttk.Frame):
                 "end",
                 values=(id_show, s.get("started_at", ""), s.get("ended_at", ""), len(s.get("ajustes", []))),
             )
+        self._refresh_open_tabs()
+
+    def refresh_catalog(self):
+        self._alloy_cache = None
         self._refresh_open_tabs()
 
     def _refresh_open_tabs(self):

@@ -282,6 +282,25 @@ class TabAjuste(ttk.Frame):
         self.after(300, self.ensure_colada)
 
     # ------------------------- estado / guardado -------------------------
+    def refresh_objectives(self):
+        # called when catalog changes
+        self._alloy_cache = None
+        values = self._own_alloy_names()
+        prev = self.cb_obj.get().strip()
+        self.cb_obj["values"] = values
+        if prev and prev in values:
+            self.cb_obj.set(prev)
+            self.load_objective()
+        elif values:
+            self.cb_obj.current(0)
+            self.load_objective()
+        else:
+            self.cb_obj.set("")
+        # ajustar lista de materiales de ajuste si quedaron huérfanos
+        self.adjust_list = [n for n in self.adjust_list if self._alloy_by_name(n)]
+        self._rebuild_adjust_ui()
+        self._schedule_auto()
+
     def set_save_callback(self, cb):
         self._save_cb = cb
 
@@ -705,14 +724,15 @@ class TabAjuste(ttk.Frame):
         win.title(title)
         win.transient(self)
         win.grab_set()
-        win.geometry("420x460")
+        win.geometry("460x520")
+        win.minsize(420, 480)
         win.resizable(False, False)
 
         tk.Label(win, text="Buscar:").pack(anchor="w", padx=8, pady=(8, 2))
         q = tk.StringVar()
         ent = ttk.Entry(win, textvariable=q)
         ent.pack(fill="x", padx=8)
-        lb = tk.Listbox(win, height=18)
+        lb = tk.Listbox(win, height=14)
         lb.pack(fill="both", expand=True, padx=8, pady=8)
 
         def refresh_list():

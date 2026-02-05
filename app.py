@@ -95,6 +95,7 @@ class App(tk.Frame):
         nb.add(self.tab_hist,     text="Históricos")
 
         self.tab_ajuste.bind("<<HistoryUpdated>>", lambda e: self.tab_hist.refresh())
+        self.tab_catalogo.bind("<<CatalogUpdated>>", lambda e: (self.tab_ajuste.refresh_objectives(), self.tab_hist.refresh_catalog()))
 
         self._save_job = None
         self.master.protocol("WM_DELETE_WINDOW", self._on_close)

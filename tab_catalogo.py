@@ -124,7 +124,7 @@ class TabCatalogo(ttk.Frame):
 
     def reset_basics(self):
         if messagebox.askyesno("Restablecer básicos", "Reemplaza TODO el catálogo por las aleaciones básicas. ¿Continuar?"):
-            self.model.clear(); self.model.extend(_basic_alloys()); save_alloys(self.model); self.apply_filter()
+            self.model.clear(); self.model.extend(_basic_alloys()); self._save_and_refresh()
 
     def refresh(self):
         for i in self.tree.get_children(): self.tree.delete(i)
@@ -167,11 +167,11 @@ class TabCatalogo(ttk.Frame):
         if idx is not None:
             new_item = json.loads(json.dumps(self.model[idx]))
             new_item["nombre"] = (new_item.get("nombre","") + " (copia)").strip()
-            self.model.append(new_item); save_alloys(self.model); self.apply_filter()
+            self.model.append(new_item); self._save_and_refresh()
     def del_item(self):
         idx = self._selected_index()
         if idx is not None and messagebox.askyesno("Eliminar", "¿Eliminar la aleación seleccionada?"):
-            self.model.pop(idx); save_alloys(self.model); self.apply_filter()
+            self.model.pop(idx); self._save_and_refresh()
 
     # ---------------------- import/export catálogo ----------------------------
     def export_csv(self):
@@ -206,7 +206,7 @@ class TabCatalogo(ttk.Frame):
                     })
             if messagebox.askyesno("Importar", "Esto reemplazará el catálogo actual. ¿Continuar?"):
                 self.model.clear(); self.model.extend(new_list)
-                save_alloys(self.model); self.apply_filter()
+                self._save_and_refresh()
         except Exception as ex:
             messagebox.showerror("Importar", f"No se pudo importar:\n{ex}")
 
@@ -268,7 +268,7 @@ class TabCatalogo(ttk.Frame):
                     found["limites"] = lim
                     if found.get("tipo","") != "Aleación propia": found["tipo"] = "Aleación propia"
                     updated += 1
-            save_alloys(self.model); self.apply_filter()
+            self._save_and_refresh()
             messagebox.showinfo("Importar límites", f"Actualizadas: {updated}\nIgnoradas: {skipped}")
         except Exception as ex:
             messagebox.showerror("Importar límites", f"No se pudo importar:\n{ex}")
@@ -482,7 +482,6 @@ class TabCatalogo(ttk.Frame):
         _toggle_cust()
 
         # --- Guardar/Cancelar ---
-        actions = ttk.Frame(form); actions.pack(fill="x", pady=(10,0))
         def accept():
             try:
                 a = {
@@ -536,9 +535,22 @@ class TabCatalogo(ttk.Frame):
                     self.model.append(a)
                 else:
                     self.model[idx] = a
-                save_alloys(self.model); self.apply_filter(); win.destroy()
+                self._save_and_refresh(); win.destroy()
             except Exception as ex:
                 messagebox.showerror("Validación", str(ex))
 
+        actions = ttk.Frame(win, padding=8)
+        actions.grid(row=1, column=0, sticky="ew")
+        actions.columnconfigure(0, weight=1)
         ttk.Button(actions, text="Guardar", command=accept).pack(side="right")
-        ttk.Button(actions, text="Cancelar", command=win.destroy).pack(side="right")
+        ttk.Button(actions, text="Cancelar", command=win.destroy).pack(side="right", padx=6)
+
+    # -------------------------- helpers ----------------------------
+    def _save_and_refresh(self):
+        save_alloys(self.model)
+        self.apply_filter()
+        try:
+            self.event_generate("<<CatalogUpdated>>", when="tail")
+        except Exception:
+            pass
+

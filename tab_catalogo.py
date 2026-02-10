@@ -17,8 +17,9 @@ def _normalize_limites(lim_dict):
         out[e] = {
             "soft_min": src.get("soft_min", None),
             "soft_max": src.get("soft_max", None),
-            "hard_min": src.get("hard_min", None),
-            "hard_max": src.get("hard_max", None),
+            # hard eliminado en UI, se mantiene por compatibilidad
+            "hard_min": None,
+            "hard_max": None,
         }
     return out
 
@@ -118,7 +119,7 @@ class TabCatalogo(ttk.Frame):
         lim = a.get("limites", {})
         for e in ELEMENTS:
             d = lim.get(e, {})
-            if any(d.get(k) is not None for k in ("soft_min","soft_max","hard_min","hard_max")):
+            if any(d.get(k) is not None for k in ("soft_min","soft_max")):
                 return True
         return False
 
@@ -219,18 +220,18 @@ class TabCatalogo(ttk.Frame):
                 w = csv.writer(f)
                 header = ["nombre","CE_formula","CE_min","CE_max"]
                 for e in ELEMENTS:
-                    header += [f"{e}_soft_min", f"{e}_soft_max", f"{e}_hard_min", f"{e}_hard_max"]
+                    header += [f"{e}_soft_min", f"{e}_soft_max"]
                 w.writerow(header)
                 for a in self.model:
-                    if a.get("tipo","") != "Aleación propia": continue
+                    if a.get("tipo","") != "Aleación propia":
+                        continue
                     row = [a.get("nombre","")]
                     esp = a.get("especiales", {})
                     row += [esp.get("CE_formula","FUNDICION"), fmt_opt(esp.get("CE_min")), fmt_opt(esp.get("CE_max"))]
                     lim = a.get("limites", {})
                     for e in ELEMENTS:
                         d = lim.get(e, {})
-                        row += [fmt_opt(d.get("soft_min")), fmt_opt(d.get("soft_max")),
-                                fmt_opt(d.get("hard_min")), fmt_opt(d.get("hard_max"))]
+                        row += [fmt_opt(d.get("soft_min")), fmt_opt(d.get("soft_max"))]
                     w.writerow(row)
             messagebox.showinfo("Exportar límites", "Límites exportados.")
         except Exception as ex:
@@ -256,14 +257,14 @@ class TabCatalogo(ttk.Frame):
                     esp["CE_min"] = to_float_or_none(row.get("CE_min",""))
                     esp["CE_max"] = to_float_or_none(row.get("CE_max",""))
                     found["especiales"] = _normalize_especiales(esp)
-                    # límites
+                    # límites (soft)
                     lim = found.get("limites", {})
                     for e in ELEMENTS:
                         lim_e = lim.get(e, {"soft_min":None,"soft_max":None,"hard_min":None,"hard_max":None})
                         lim_e["soft_min"] = to_float_or_none(row.get(f"{e}_soft_min", ""))
                         lim_e["soft_max"] = to_float_or_none(row.get(f"{e}_soft_max", ""))
-                        lim_e["hard_min"] = to_float_or_none(row.get(f"{e}_hard_min", ""))
-                        lim_e["hard_max"] = to_float_or_none(row.get(f"{e}_hard_max", ""))
+                        lim_e["hard_min"] = None
+                        lim_e["hard_max"] = None
                         lim[e] = lim_e
                     found["limites"] = lim
                     if found.get("tipo","") != "Aleación propia": found["tipo"] = "Aleación propia"
@@ -338,25 +339,20 @@ class TabCatalogo(ttk.Frame):
             frm = ttk.Frame(win, padding=10)
             frm.pack(fill="both", expand=True)
 
-            ttk.Label(frm, text="Porcentaje para SOFT (±%)").grid(row=0, column=0, sticky="w")
-            v_soft = tk.StringVar(value="5")
-            e_soft = ttk.Entry(frm, textvariable=v_soft, width=8)
-            e_soft.grid(row=0, column=1, padx=6)
+            ttk.Label(frm, text="Rango ± absoluto").grid(row=0, column=0, sticky="w")
+            v_abs = tk.StringVar(value="0.10")
+            e_abs = ttk.Entry(frm, textvariable=v_abs, width=8)
+            e_abs.grid(row=0, column=1, padx=6)
 
-            ttk.Label(frm, text="Porcentaje para HARD (±%)").grid(row=1, column=0, sticky="w", pady=(6,0))
-            v_hard = tk.StringVar(value="10")
-            e_hard = ttk.Entry(frm, textvariable=v_hard, width=8)
-            e_hard.grid(row=1, column=1, padx=6, pady=(6,0))
-
-            ttk.Label(frm, text="Elementos a aplicar").grid(row=2, column=0, columnspan=2, sticky="w", pady=(10,0))
+            ttk.Label(frm, text="Elementos a aplicar").grid(row=1, column=0, columnspan=2, sticky="w", pady=(10,0))
             lb = tk.Listbox(frm, selectmode=tk.MULTIPLE, height=8, exportselection=False)
-            lb.grid(row=3, column=0, columnspan=2, sticky="we", pady=(4,0))
+            lb.grid(row=2, column=0, columnspan=2, sticky="we", pady=(4,0))
             for el in ELEMENTS:
                 lb.insert(tk.END, el)
                 lb.selection_set(tk.END)
 
             sel_btns = ttk.Frame(frm)
-            sel_btns.grid(row=4, column=0, columnspan=2, sticky="e", pady=(4,0))
+            sel_btns.grid(row=3, column=0, columnspan=2, sticky="e", pady=(4,0))
             def select_all():
                 lb.selection_set(0, tk.END)
             def select_none():
@@ -365,33 +361,24 @@ class TabCatalogo(ttk.Frame):
             ttk.Button(sel_btns, text="Ninguno", command=select_none).pack(side="right", padx=6)
 
             btns2 = ttk.Frame(frm)
-            btns2.grid(row=5, column=0, columnspan=2, pady=(10,0), sticky="e")
+            btns2.grid(row=4, column=0, columnspan=2, pady=(10,0), sticky="e")
 
             def apply():
                 try:
-                    soft_pct = to_float_or_none(v_soft.get())
-                    hard_pct = to_float_or_none(v_hard.get())
-                    if soft_pct is None or hard_pct is None or soft_pct < 0 or hard_pct < 0:
-                        raise ValueError("Porcentajes inválidos.")
+                    abs_rng = to_float_or_none(v_abs.get())
+                    if abs_rng is None or abs_rng < 0:
+                        raise ValueError("Rango inválido.")
                     sel_idx = set(lb.curselection())
                     for i, el in enumerate(ELEMENTS):
                         if sel_idx and i not in sel_idx:
                             continue
                         ideal = to_float_or_none(comp_vars[el].get())
                         if ideal is None or ideal <= 0:
-                            v_sm, v_sM, v_hm, v_hM, *_ = limit_vars[el]
-                            v_sm.set("")
-                            v_sM.set("")
-                            v_hm.set("")
-                            v_hM.set("")
+                            v_rng, *_ = limit_vars[el]
+                            v_rng.set("")
                             continue
-                        soft = ideal * soft_pct / 100.0
-                        hard = ideal * hard_pct / 100.0
-                        v_sm, v_sM, v_hm, v_hM, *_ = limit_vars[el]
-                        v_sm.set(fmt_opt(ideal - soft))
-                        v_sM.set(fmt_opt(ideal + soft))
-                        v_hm.set(fmt_opt(ideal - hard))
-                        v_hM.set(fmt_opt(ideal + hard))
+                        v_rng, *_ = limit_vars[el]
+                        v_rng.set(fmt_opt(abs_rng))
                     win.destroy()
                 except Exception as ex:
                     messagebox.showerror("Auto-límites", str(ex), parent=win)
@@ -399,18 +386,18 @@ class TabCatalogo(ttk.Frame):
             ttk.Button(btns2, text="Aplicar", command=apply).pack(side="right")
             ttk.Button(btns2, text="Cancelar", command=win.destroy).pack(side="right", padx=6)
 
-            e_soft.focus_set()
+            e_abs.focus_set()
             win.wait_window()
 
         ttk.Button(btns, text="Auto-límites...", command=auto_limits).pack(side="left", padx=6)
 
         # --- Límites (solo Aleación propia) ---
-        limits_frame = ttk.LabelFrame(form, text="Límites (solo Aleación propia)", padding=8)
+        limits_frame = ttk.LabelFrame(form, text="Rango ± (solo Aleación propia)", padding=8)
         limits_frame.pack(fill="both", expand=True, pady=(12,0))
 
         sf_lim = ScrollFrame(limits_frame); sf_lim.pack(fill="both", expand=True)
         head = ttk.Frame(sf_lim.inner); head.grid(row=0, column=0, sticky="ew", padx=2, pady=2)
-        for j, c in enumerate(("Elemento","Soft min","Soft max","Hard min","Hard max")):
+        for j, c in enumerate(("Elemento","± absoluto")):
             ttk.Label(head, text=c, font=("Segoe UI",10,"bold")).grid(row=0, column=j, padx=6, pady=2)
 
         limit_vars = {}
@@ -418,23 +405,25 @@ class TabCatalogo(ttk.Frame):
         for i, el in enumerate(ELEMENTS, start=1):
             r = ttk.Frame(sf_lim.inner); r.grid(row=i, column=0, sticky="ew", padx=2, pady=1)
             ttk.Label(r, text=el, width=6).grid(row=0, column=0, padx=4)
-            v_sm = tk.StringVar(value=fmt_opt(existing_limits[el]["soft_min"]))
-            v_sM = tk.StringVar(value=fmt_opt(existing_limits[el]["soft_max"]))
-            v_hm = tk.StringVar(value=fmt_opt(existing_limits[el]["hard_min"]))
-            v_hM = tk.StringVar(value=fmt_opt(existing_limits[el]["hard_max"]))
-            e_sm = ttk.Entry(r, textvariable=v_sm, width=10)
-            e_sM = ttk.Entry(r, textvariable=v_sM, width=10)
-            e_hm = ttk.Entry(r, textvariable=v_hm, width=10)
-            e_hM = ttk.Entry(r, textvariable=v_hM, width=10)
-            e_sm.grid(row=0, column=1, padx=4); e_sM.grid(row=0, column=2, padx=4)
-            e_hm.grid(row=0, column=3, padx=4); e_hM.grid(row=0, column=4, padx=4)
-            limit_vars[el] = (v_sm, v_sM, v_hm, v_hM, e_sm, e_sM, e_hm, e_hM)
+            ideal = to_float_or_none(comp_vars[el].get())
+            sm = existing_limits[el]["soft_min"]
+            sM = existing_limits[el]["soft_max"]
+            delta = ""
+            if ideal is not None and sm is not None and sM is not None:
+                d1 = ideal - sm
+                d2 = sM - ideal
+                if d1 >= 0 and d2 >= 0:
+                    delta = fmt_opt(min(d1, d2))
+            v_rng = tk.StringVar(value=delta)
+            e_rng = ttk.Entry(r, textvariable=v_rng, width=10)
+            e_rng.grid(row=0, column=1, padx=4)
+            limit_vars[el] = (v_rng, e_rng)
 
         def _toggle_limits_state(*_):
             state = "normal" if tipo.get() == "Aleación propia" else "disabled"
             for el in ELEMENTS:
-                _, _, _, _, e_sm, e_sM, e_hm, e_hM = limit_vars[el]
-                e_sm.config(state=state); e_sM.config(state=state); e_hm.config(state=state); e_hM.config(state=state)
+                _, e_rng = limit_vars[el]
+                e_rng.config(state=state)
         cb_tipo.bind("<<ComboboxSelected>>", lambda e: _toggle_limits_state())
         _toggle_limits_state()
 
@@ -499,16 +488,21 @@ class TabCatalogo(ttk.Frame):
                 if not (0 < a["rendimiento"] <= 100):
                     raise ValueError("Rendimiento debe estar entre 0 y 100.")
 
-                # límites
+                # limites (solo soft por rango ± absoluto)
                 for el in ELEMENTS:
-                    v_sm, v_sM, v_hm, v_hM, *_ = limit_vars[el]
-                    sm = to_float_or_none(v_sm.get()); sM = to_float_or_none(v_sM.get())
-                    hm = to_float_or_none(v_hm.get()); hM = to_float_or_none(v_hM.get())
-                    if hm is not None and hM is not None and hm > hM: raise ValueError(f"[{el}] Hard min > Hard max")
-                    if sm is not None and sM is not None and sm > sM: raise ValueError(f"[{el}] Soft min > Soft max")
-                    if hm is not None and sm is not None and sm < hm: raise ValueError(f"[{el}] Soft min < Hard min")
-                    if hM is not None and sM is not None and sM > hM: raise ValueError(f"[{el}] Soft max > Hard max")
-                    a["limites"][el] = {"soft_min": sm, "soft_max": sM, "hard_min": hm, "hard_max": hM}
+                    v_rng, *_ = limit_vars[el]
+                    rng = to_float_or_none(v_rng.get())
+                    ideal = to_float_or_none(comp_vars[el].get())
+                    if rng is None or ideal is None or ideal <= 0:
+                        sm = None; sM = None
+                    else:
+                        if rng < 0:
+                            raise ValueError(f"[{el}] Rango inválido.")
+                        sm = ideal - rng
+                        sM = ideal + rng
+                        if sm > sM:
+                            raise ValueError(f"[{el}] Rango inválido.")
+                    a["limites"][el] = {"soft_min": sm, "soft_max": sM, "hard_min": None, "hard_max": None}
 
                 # CE
                 ce_min = to_float_or_none(v_ce_min.get()); ce_max = to_float_or_none(v_ce_max.get())

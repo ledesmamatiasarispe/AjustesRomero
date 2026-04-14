@@ -8,6 +8,7 @@ This file is for ChatGPT handoff. It is intentionally verbose so a new chat can 
 3. Data is saved under user home (not the repo).
 4. Current algorithms: Greedy and Lineal only.
 5. Ranges (soft_min/soft_max) are for UI coloring only and are NOT enforced by algorithms.
+6. Lineal uses normal equations and can be unstable on singular data.
 
 ## How to Run
 1. From repo root: `python app.py`.
@@ -29,6 +30,16 @@ This file is for ChatGPT handoff. It is intentionally verbose so a new chat can 
 1. Catalog: `~/ajuste_comp_catalogo.json`.
 2. History: `~/ajuste_comp_history.json`.
 3. UI state: `~/ajuste_comp_ui.json`.
+
+## Repo JSON vs Runtime JSON
+1. Repo includes `materiales.json`, `ajuste_estado.json`, `ajustes_historicos.json`.
+2. These are NOT used by the running app.
+3. Runtime persistence uses the files in user home listed above.
+
+## Encoding / Mojibake
+1. Some UI strings show mojibake (e.g., `Â±`, `Ã¡`, `Ã³`).
+2. This is caused by inconsistent file encoding.
+3. If UI text looks broken, normalize source files to UTF-8.
 
 ## Catalog Data Model
 Each catalog entry is a dict with keys:
@@ -54,6 +65,7 @@ Important: UI now uses ONLY "soft" limits, and hard_min/hard_max are set to None
 2. CE settings are stored in catalog under `especiales`.
 3. CE is shown in UI and logged in history.
 4. Current algorithms do not enforce CE as a hard constraint.
+5. CE min/max fields are informational only right now.
 
 ## Ajuste Tab (Main Algorithm Flow)
 Primary entry: `TabAjuste._estimate_core`.
@@ -83,7 +95,7 @@ Greedy:
 
 Lineal:
 1. Builds a linear system for non C/Si/Fe target elements.
-2. Solves with `_solve_linear`.
+2. Solves with `_solve_linear` using normal equations (AᵀA), no regularization.
 3. Applies solution, then same dilution and C/Si raise steps.
 4. Targets objective values, not soft range.
 
@@ -115,6 +127,13 @@ Important: There is no range enforcement in algorithms. Ranges are used only for
 1. Indentation errors in `tab_catalogo.py` can break dialogs.
 2. Changing catalog requires refreshing objective combobox.
 3. Adjuster lists can contain names not in catalog if not refreshed.
+4. `to_float` returns 0.0 on parse errors, which can hide bad inputs.
+5. `APP_TITLE` exists in `config.py`, but the app uses `APP_TITLE` defined in `app.py`.
+
+## Known Failure Modes
+1. `_solve_linear` can return None if the system is singular or ill-conditioned.
+2. Greedy/Lineal can fail if a target element has no valid adjuster.
+3. Lineal may produce negative kg; current code effectively ignores non-positive values.
 
 ## Debug Checklist
 1. If UI has missing buttons: check indentation in `tab_catalogo.py`.
@@ -123,11 +142,23 @@ Important: There is no range enforcement in algorithms. Ranges are used only for
 4. If C/Si stays low/high: check target values and adjuster compositions.
 
 ## What Changed Recently
-1. Catalog limits are now only "± absoluto" (soft only).
+1. Catalog limits are now only "? absoluto" (soft only).
 2. Hard limits removed from UI and imports/exports.
 3. Algorithms ignore ranges; ranges are UI only.
 4. Historicos redesigned as docked tabs.
 5. Catalog updates refresh Ajuste and Historicos.
+6. `Calidad` now reads final-material defaults from catalog metadata (`calidad_meta.defaults`) instead of a hardcoded seed.
+7. Report generation in `Calidad` reloads catalog data before creating reports, so edited defaults like `cementita` should propagate into new reports.
+8. `Ajuste` now separates duplicated names by type: objective lookup prefers `Aleaci?n propia`, current alloy selection prefers `Aleaci?n propia`, and adjuster lookup excludes `Aleaci?n final`.
+9. `Historicos` simulation also separates duplicated names by type: objective composition prefers `Aleaci?n propia`, and plan simulation prefers valid non-final adjusters.
+10. The PySide experiment folders were removed on purpose; future migration should happen in a separate cloned workspace, not inside this main repo.
+
+## Duplicate Name Risk
+1. The catalog can legitimately contain the same `nombre` for different `tipo` values, especially `Aleaci?n propia` and `Aleaci?n final`.
+2. Any lookup keyed only by `nombre` is unsafe.
+3. The most dangerous collisions are with numeric codes like `2`, `5`, `7`, `8`, `10`, `12`, `13`.
+4. When reviewing code, always verify whether a lookup should prefer `Aleaci?n propia`, a valid non-final adjuster, or `Aleaci?n final`.
+5. Critical protections are already added in `tab_ajuste.py` and `tab_historicos.py`, but the design would be safer long-term with unique internal ids.
 
 ## Suggested Future Work
 1. If range enforcement is desired, rewrite algorithms with range constraints.

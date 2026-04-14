@@ -5,6 +5,7 @@ import json
 # Archivos de datos (catálogo e históricos) en la carpeta del usuario
 ALLOYS_FILE  = os.path.join(os.path.expanduser("~"), "ajuste_comp_catalogo.json")
 HISTORY_FILE = os.path.join(os.path.expanduser("~"), "ajuste_comp_history.json")
+QUALITY_FILE = os.path.join(os.path.expanduser("~"), "ajuste_comp_quality_reports.json")
 
 
 def _atomic_write(path, data):
@@ -82,3 +83,18 @@ def delete_adjustment(session_index, adj_index):
             del ajustes[adj_index]
             hist[session_index]["ajustes"] = ajustes
             save_history(hist)
+
+
+# ---------- Informes de calidad ----------
+def load_quality_reports():
+    if not os.path.exists(QUALITY_FILE):
+        return []
+    with open(QUALITY_FILE, "r", encoding="utf-8") as f:
+        try:
+            return json.load(f)
+        except Exception:
+            return []
+
+
+def save_quality_reports(reports):
+    _atomic_write(QUALITY_FILE, reports or [])

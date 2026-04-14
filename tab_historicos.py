@@ -27,6 +27,8 @@ class TabHistoricos(ttk.Frame):
         self.hist = []
         self._session_tabs = {}
         self._alloy_cache = None
+        self._root_notebook = None
+        self._quality_tab = None
 
         # ---- Layout principal (dock)
         root = ttk.PanedWindow(self, orient="horizontal")
@@ -47,12 +49,14 @@ class TabHistoricos(ttk.Frame):
         act = ttk.Frame(left); act.pack(fill="x", pady=(6, 0))
         ttk.Button(act, text="Editar colada", command=self.edit_session_meta).pack(side="left")
         ttk.Button(act, text="Eliminar sesion", command=self.delete_session).pack(side="left", padx=6)
+        ttk.Button(act, text="Generar informe de calidad", command=self.generate_quality_report_for_selected).pack(side="left")
 
         # ---- Tabla de sesiones (coladas)
-        cols = ("id", "inicio", "fin", "cant")
+        cols = ("id", "guardado", "inicio", "fin", "cant")
         self.tree = ttk.Treeview(left, columns=cols, show="headings", height=20)
         for cid, title, w in (
             ("id", "ID", 260),
+            ("guardado", "Guardado", 90),
             ("inicio", "Inicio", 170),
             ("fin", "Fin", 170),
             ("cant", "# ajustes", 90),
@@ -72,21 +76,46 @@ class TabHistoricos(ttk.Frame):
 
         self.refresh()
 
+    def set_quality_target(self, notebook, quality_tab):
+        self._root_notebook = notebook
+        self._quality_tab = quality_tab
+
     # ---------------------------- helpers catalogo -------------------------
-    def _alloy_by_name(self, name):
+    def _alloys_named(self, name):
         if not name:
-            return None
+            return []
         if self._alloy_cache is None:
-            self._alloy_cache = {a.get("nombre", ""): a for a in self.alloys}
-        a = self._alloy_cache.get(name)
-        if a is None:
-            self._alloy_cache = {a.get("nombre", ""): a for a in self.alloys}
-            a = self._alloy_cache.get(name)
-        return a
+            cache = {}
+            for alloy in self.alloys:
+                cache.setdefault(alloy.get("nombre", ""), []).append(alloy)
+            self._alloy_cache = cache
+        items = list(self._alloy_cache.get(name, []))
+        if not items:
+            cache = {}
+            for alloy in self.alloys:
+                cache.setdefault(alloy.get("nombre", ""), []).append(alloy)
+            self._alloy_cache = cache
+            items = list(self._alloy_cache.get(name, []))
+        return items
+
+    def _alloy_by_name(self, name, prefer_type=None, require_adjust=False):
+        items = self._alloys_named(name)
+        if require_adjust:
+            for alloy in items:
+                if bool(alloy.get("ajuste", False)) and alloy.get("tipo", "") != "Aleación final":
+                    return alloy
+            for alloy in items:
+                if alloy.get("tipo", "") != "Aleación final":
+                    return alloy
+        if prefer_type:
+            for alloy in items:
+                if alloy.get("tipo", "") == prefer_type:
+                    return alloy
+        return items[0] if items else None
 
     def _objective_comp(self, session):
         name = session.get("objetivo", "")
-        a = self._alloy_by_name(name)
+        a = self._alloy_by_name(name, prefer_type="Aleación propia")
         return (a or {}).get("composicion", {}) or {}
 
     def _effective_total_perkg(self, alloy):
@@ -101,7 +130,13 @@ class TabHistoricos(ttk.Frame):
 
     def _simulate_with_plan(self, M0, comp0, plan):
         return simulate_with_plan(
-            M0, comp0, plan, ELEMENTS, self._alloy_by_name, self._effective_add, self._effective_total_perkg
+            M0,
+            comp0,
+            plan,
+            ELEMENTS,
+            lambda name: self._alloy_by_name(name, require_adjust=True),
+            self._effective_add,
+            self._effective_total_perkg,
         )
 
     # ---------------------------- data load --------------------------------
@@ -117,7 +152,13 @@ class TabHistoricos(ttk.Frame):
             self.tree.insert(
                 "",
                 "end",
-                values=(id_show, s.get("started_at", ""), s.get("ended_at", ""), len(s.get("ajustes", []))),
+                values=(
+                    id_show,
+                    "Auto" if s.get("auto_saved") else "",
+                    s.get("started_at", ""),
+                    s.get("ended_at", ""),
+                    len(s.get("ajustes", [])),
+                ),
             )
         self._refresh_open_tabs()
 
@@ -131,6 +172,100 @@ class TabHistoricos(ttk.Frame):
                 self._close_session_tab(idx)
                 continue
             self._fill_session_tab(idx)
+
+    def generate_quality_report_for_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showinfo("Historial", "Selecciona una colada primero.", parent=self)
+            return
+        idx = self.tree.index(sel[0])
+        self._generate_quality_report(idx)
+
+    def _generate_quality_report(self, idx):
+        if idx < 0 or idx >= len(self.hist):
+            return
+        if self._quality_tab is None or self._root_notebook is None:
+            messagebox.showerror("Historial", "La pesta?a de Calidad no esta disponible.", parent=self)
+            return
+        session = self.hist[idx]
+        try:
+            selected = self._pick_quality_materials(session)
+            if selected is None:
+                return
+            if not selected:
+                messagebox.showinfo("Historial", "No seleccionaste materiales para generar.", parent=self)
+                return
+            count = self._quality_tab.generate_reports_from_history_session(session, selected_materials=selected)
+            self._root_notebook.select(self._quality_tab)
+            if count:
+                messagebox.showinfo("Historial", f"Se generaron/actualizaron {count} informes de calidad.", parent=self)
+        except Exception as ex:
+            messagebox.showerror("Historial", f"No se pudo generar el informe de calidad.\n\n{ex}", parent=self)
+
+    def _pick_quality_materials(self, session):
+        info = self._quality_tab.get_material_options_for_session(session)
+        materials = info.get("materials", [])
+        if not materials:
+            return []
+
+        picked = {"value": None}
+        win = tk.Toplevel(self)
+        win.title("Generar informe de calidad")
+        win.transient(self.winfo_toplevel())
+        win.grab_set()
+        win.resizable(False, False)
+
+        box = ttk.Frame(win, padding=12)
+        box.pack(fill="both", expand=True)
+
+        family = info.get("family", "")
+        lote = info.get("lote", "")
+        base = info.get("base", "")
+        base_display = info.get("base_display", base)
+        material_base = str(info.get("material_base", "") or "").strip()
+        material_inferido = str(info.get("material_inferido", "") or "").strip()
+        default_materials = set(str(m) for m in (info.get("default_materials", []) or []))
+        ttk.Label(box, text=f"Base {base_display} - {family}".strip(" -")).pack(anchor="w")
+        if lote:
+            ttk.Label(box, text=lote).pack(anchor="w", pady=(0, 8))
+        ttk.Label(box, text="Selecciona los materiales a generar:").pack(anchor="w", pady=(0, 6))
+
+        checks = ttk.LabelFrame(box, text="Materiales", padding=8)
+        checks.pack(fill="x", expand=True)
+        vars_by_material = []
+        for material in materials:
+            if default_materials:
+                checked = material in default_materials
+            else:
+                checked = (
+                    (material == material_base and material_base in materials)
+                    or (material == material_inferido and material_inferido in materials)
+                )
+            var = tk.BooleanVar(value=checked)
+            ttk.Checkbutton(checks, text=f"Material {material}", variable=var).pack(anchor="w")
+            vars_by_material.append((material, var))
+
+        btns = ttk.Frame(box)
+        btns.pack(fill="x", pady=(10, 0))
+
+        def accept():
+            picked["value"] = [material for material, var in vars_by_material if var.get()]
+            win.destroy()
+
+        def cancel():
+            picked["value"] = None
+            win.destroy()
+
+        ttk.Button(btns, text="Aceptar", command=accept).pack(side="right")
+        ttk.Button(btns, text="Cancelar", command=cancel).pack(side="right", padx=6)
+
+        win.update_idletasks()
+        root = self.winfo_toplevel()
+        x = root.winfo_rootx() + max(0, (root.winfo_width() - win.winfo_width()) // 2)
+        y = root.winfo_rooty() + max(0, (root.winfo_height() - win.winfo_height()) // 2)
+        win.geometry(f"+{x}+{y}")
+        win.wait_window()
+        return picked["value"]
 
     # ---------------------------- dock tabs --------------------------------
     def _open_session_tab(self):
@@ -333,6 +468,7 @@ class TabHistoricos(ttk.Frame):
         return (
             f"Colada: {session.get('colada', '')}\\n"
             f"Objetivo: {session.get('objetivo', '')}\\n"
+            f"Guardado: {'Automatico' if session.get('auto_saved') else 'Manual'}\\n"
             f"Inicio: {session.get('started_at', '')}\\n"
             f"Fin: {session.get('ended_at', '')}\\n"
             f"Ajustes: {len(session.get('ajustes', []))} | Calculos: {len(session.get('calculos', []))}"

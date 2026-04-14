@@ -5,7 +5,7 @@ from datetime import datetime
 import re
 import uuid
 
-from config import ELEMENTS, COLOR_OK, COLOR_FAIL, COLOR_WARN, TOL_NO_LIMITS, BG_ENTRY, FG
+from config import ELEMENTS, COLOR_OK, COLOR_FAIL, COLOR_WARN, TOL_NO_LIMITS, BG_ENTRY, FG, ACCENT
 from utils import to_float, fmt, _norm, simulate_with_plan
 from ce import ce_from_percent
 from storage import append_history, save_alloys
@@ -13,7 +13,7 @@ from widgets import ScrollFrame
 
 
 class TabAjuste(ttk.Frame):
-    DEFAULT_ADJUST = ["Carbón de grafito", "Silicio", "Acero 1010"]
+    DEFAULT_ADJUST = ["Carbón de grafito", "Silicio", "Acero 1010", "FeCr alto C"]
 
     def __init__(self, master, alloys_model):
         super().__init__(master, padding=10)
@@ -59,11 +59,8 @@ class TabAjuste(ttk.Frame):
 
         ttk.Label(top, text="Aleación objetivo (Aleación propia):", padding=(20, 0)).pack(side="left")
         self.cb_obj = ttk.Combobox(top, values=self._own_alloy_names(), width=28, state="readonly")
-        if self.cb_obj["values"]:
-            self.cb_obj.current(0)
         self.cb_obj.pack(side="left", padx=5)
-        self.cb_obj.bind("<<ComboboxSelected>>",
-                         lambda e: (self.load_objective(), self._schedule_auto(), self._fire_save()))
+        self.cb_obj.bind("<<ComboboxSelected>>", self._on_objective_selected)
         if not self.cb_obj["values"]:
             messagebox.showinfo("Objetivo", "No hay 'Aleación propia' en el Catálogo. Creá una y volvé a esta pestaña.")
 
@@ -72,6 +69,10 @@ class TabAjuste(ttk.Frame):
         ttk.Label(top, textvariable=self.colada).pack(side="left", padx=4)
         ttk.Button(top, text="Editar...", command=self.edit_colada).pack(side="left")
         self.session_started_at = None
+        self.session_start_var = tk.StringVar(value="Inicio: -")
+        self.session_elapsed_var = tk.StringVar(value="Transcurrido: -")
+        ttk.Label(top, textvariable=self.session_start_var, padding=(14, 0)).pack(side="left")
+        ttk.Label(top, textvariable=self.session_elapsed_var, padding=(10, 0)).pack(side="left")
 
         # ===================== fila 1: 4 columnas redimensionables =====================
         pan_cols = ttk.Panedwindow(self, orient="horizontal")
@@ -87,7 +88,7 @@ class TabAjuste(ttk.Frame):
 
         boxA = ttk.LabelFrame(paneA, text="Aleación actual (%)", padding=6)
         boxA.pack(fill="both", expand=True)
-        self.ceA = ttk.Label(boxA, text="CE actual: -")
+        self.ceA = tk.Label(boxA, text="CE actual: -", anchor="w", bg=BG_ENTRY, fg=FG, padx=6, pady=2)
         self.ceA.pack(anchor="w", padx=2, pady=(2, 0))
         self.sfA = ScrollFrame(boxA)
         self.sfA.pack(fill="both", expand=True)
@@ -115,7 +116,7 @@ class TabAjuste(ttk.Frame):
 
         boxE = ttk.LabelFrame(paneE, text="Estimado con ajuste (%)", padding=6)
         boxE.pack(fill="both", expand=True)
-        self.ceE = ttk.Label(boxE, text="CE estimado: -")
+        self.ceE = tk.Label(boxE, text="CE estimado: -", anchor="w", bg=BG_ENTRY, fg=FG, padx=6, pady=2)
         self.ceE.pack(anchor="w", padx=2, pady=(2, 0))
         self.massE = ttk.Label(boxE, text="Masa estimada (efectiva): - kg")
         self.massE.pack(anchor="w", padx=2, pady=(0, 4))
@@ -130,8 +131,8 @@ class TabAjuste(ttk.Frame):
             r = ttk.Frame(self.sfE.inner)
             r.grid(row=i, column=0, sticky="ew", padx=2, pady=1)
             ttk.Label(r, text=el, width=6).grid(row=0, column=0, padx=4)
-            t = tk.Entry(r, width=12, state="readonly", readonlybackground=BG_ENTRY,
-                         fg=FG, bg=BG_ENTRY, insertbackground=FG)
+            t = tk.Entry(r, width=12, state="readonly", readonlybackground=ACCENT,
+                         fg=FG, bg=ACCENT, insertbackground=FG)
             t.grid(row=0, column=1, padx=4)
             self.est_rows.append((el, t))
 
@@ -145,7 +146,7 @@ class TabAjuste(ttk.Frame):
 
         boxT = ttk.LabelFrame(paneT, text="Aleación objetivo (%)", padding=6)
         boxT.pack(fill="both", expand=True)
-        self.ceT = ttk.Label(boxT, text="CE objetivo: -")
+        self.ceT = tk.Label(boxT, text="CE objetivo: -", anchor="w", bg=BG_ENTRY, fg=FG, padx=6, pady=2)
         self.ceT.pack(anchor="w", padx=2, pady=(2, 0))
         self.sfT = ScrollFrame(boxT)
         self.sfT.pack(fill="both", expand=True)
@@ -257,10 +258,17 @@ class TabAjuste(ttk.Frame):
 
         btns = ttk.Frame(side)
         btns.pack(side="right")
-        ttk.Button(btns, text="Calcular",
-                   command=lambda: self.estimate_to_target(show_message=False, reset_kgs=True, log_it=False, log_calc=True)).pack(side="left")
-        ttk.Button(btns, text="Calcular %", command=self.calculate_partial).pack(side="left", padx=6)
-        ttk.Button(btns, text="Aplicar", command=self.apply_adjustment).pack(side="left")
+        self.btn_calcular = ttk.Button(
+            btns,
+            text="Calcular",
+            command=lambda: self.estimate_to_target(show_message=False, reset_kgs=True, log_it=False, log_calc=True),
+        )
+        self.btn_calcular.pack(side="left")
+        self.btn_calcular_pct = ttk.Button(btns, text="Calcular %", command=self.calculate_partial)
+        self.btn_calcular_pct.pack(side="left", padx=6)
+        self.btn_aplicar = ttk.Button(btns, text="Aplicar", command=self.apply_adjustment)
+        self.btn_aplicar.pack(side="left")
+        ttk.Button(btns, text="Cancelar sesión", command=self.cancel_session_start).pack(side="left", padx=(6, 0))
         ttk.Button(btns, text="Guardar sesión", command=self.save_current_session).pack(side="left", padx=6)
         ttk.Button(btns, text="Limpiar kg",
                    command=lambda: (self.clear_adjust_kgs(), self._fire_save())).pack(side="left", padx=(6, 0))
@@ -272,13 +280,12 @@ class TabAjuste(ttk.Frame):
         # --------- Datos iniciales de materiales / hist ----------
         self.kg_vars = {}
         self._ensure_adjusters_in_catalog()
-        self.adjust_list = [n for n in self.DEFAULT_ADJUST if self._alloy_by_name(n)]
+        self.adjust_list = [n for n in self.DEFAULT_ADJUST if self._adjuster_alloy(n)]
         self._rebuild_adjust_ui()
 
         self._refresh_hist()
 
-        if self.cb_obj["values"]:
-            self.load_objective()
+        self._update_objective_selector_state()
         self.calc_prediction()
         self.after(300, self.ensure_colada)
 
@@ -292,13 +299,12 @@ class TabAjuste(ttk.Frame):
         if prev and prev in values:
             self.cb_obj.set(prev)
             self.load_objective()
-        elif values:
-            self.cb_obj.current(0)
-            self.load_objective()
         else:
             self.cb_obj.set("")
+            self.load_objective()
+        self._update_objective_selector_state()
         # ajustar lista de materiales de ajuste si quedaron huérfanos
-        self.adjust_list = [n for n in self.adjust_list if self._alloy_by_name(n)]
+        self.adjust_list = [n for n in self.adjust_list if self._adjuster_alloy(n)]
         self._rebuild_adjust_ui()
         self._schedule_auto()
 
@@ -344,7 +350,7 @@ class TabAjuste(ttk.Frame):
 
             adj = st.get("adjust_list", [])
             if adj:
-                self.adjust_list = [n for n in adj if self._alloy_by_name(n)]
+                self.adjust_list = [n for n in adj if self._adjuster_alloy(n)]
                 self._rebuild_adjust_ui()
 
             kg = st.get("kg", {})
@@ -362,6 +368,8 @@ class TabAjuste(ttk.Frame):
             self.ajustes_log = st.get("ajustes_log", [])
             self._refresh_hist()
             self.calc_log = st.get("calc_log", [])
+            self._refresh_session_timer_labels()
+            self._update_objective_selector_state()
         finally:
             self._restoring = False
             self._schedule_auto()
@@ -374,33 +382,143 @@ class TabAjuste(ttk.Frame):
             pass
 
     def _schedule_auto(self):
+        try:
+            delay_ms = int(getattr(self.winfo_toplevel(), "_auto_refresh_ms", 250))
+        except Exception:
+            delay_ms = 250
+        if delay_ms < 100:
+            delay_ms = 100
         if self._auto_job is not None:
             try:
                 self.after_cancel(self._auto_job)
             except Exception:
                 pass
-        self._auto_job = self.after(250, self._auto_run)
+        self._auto_job = self.after(delay_ms, self._auto_run)
+
+    def _refresh_session_timer_labels(self):
+        started_raw = self.session_started_at
+        if not started_raw:
+            self.session_start_var.set("Inicio: -")
+            self.session_elapsed_var.set("Transcurrido: -")
+            return
+        try:
+            started = datetime.fromisoformat(str(started_raw))
+        except Exception:
+            self.session_start_var.set(f"Inicio: {started_raw}")
+            self.session_elapsed_var.set("Transcurrido: -")
+            return
+        self.session_start_var.set(f"Inicio: {started.strftime('%d/%m %H:%M')}")
+        delta = datetime.now() - started
+        total_min = max(0, int(delta.total_seconds() // 60))
+        hours = total_min // 60
+        minutes = total_min % 60
+        self.session_elapsed_var.set(f"Transcurrido: {hours} h {minutes:02d} min")
+
+    def _update_objective_selector_state(self):
+        try:
+            top = self.winfo_toplevel()
+            style = ttk.Style(top)
+            alert_bg = getattr(top, "_highlight_bg", "#ffd966")
+            alert_fg = getattr(top, "_highlight_fg", "#000000")
+            style.configure(
+                "ObjectiveRequired.TCombobox",
+                fieldbackground=alert_bg,
+                foreground=alert_fg,
+                background=alert_bg,
+                arrowcolor=alert_fg,
+            )
+            style.map(
+                "ObjectiveRequired.TCombobox",
+                fieldbackground=[("readonly", alert_bg), ("disabled", alert_bg), ("!disabled", alert_bg)],
+                foreground=[("readonly", alert_fg), ("disabled", alert_fg), ("!disabled", alert_fg)],
+            )
+            self.cb_obj.configure(style="ObjectiveRequired.TCombobox" if not self.cb_obj.get().strip() else "TCombobox")
+        except Exception:
+            pass
+        started = bool(self.cb_obj.get().strip())
+        for btn in (
+            getattr(self, "btn_calcular", None),
+            getattr(self, "btn_calcular_pct", None),
+            getattr(self, "btn_aplicar", None),
+        ):
+            if btn is None:
+                continue
+            try:
+                btn.configure(state="normal" if started else "disabled")
+            except Exception:
+                pass
+
+    def _clear_objective_selection(self):
+        try:
+            self.cb_obj.set("")
+        except Exception:
+            pass
+        self.load_objective()
+        self._update_objective_selector_state()
+
+    def cancel_session_start(self):
+        self.session_started_at = None
+        self._clear_objective_selection()
+        self._refresh_session_timer_labels()
+        self._fire_save()
+        self._status("Inicio de sesión cancelado.")
+
+    def _ensure_session_started_from_objective(self):
+        name = self.cb_obj.get().strip()
+        if not name:
+            self._update_objective_selector_state()
+            self._status("Seleccioná o modificá el material objetivo para iniciar la sesión.")
+            return False
+        if not self.session_started_at:
+            self.session_started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self._refresh_session_timer_labels()
+            self._update_objective_selector_state()
+            self._schedule_auto()
+            self._fire_save()
+            self._status("Temporizador de sesión iniciado por material objetivo.")
+        return True
+
+    def _require_started_session(self):
+        return self._ensure_session_started_from_objective()
+
+    def _on_objective_selected(self, _evt=None):
+        self.load_objective()
+        if self.cb_obj.get().strip():
+            if self.session_started_at:
+                self._status("Material objetivo actualizado. La sesión continúa.")
+            else:
+                self._ensure_session_started_from_objective()
+        self._refresh_session_timer_labels()
+        self._update_objective_selector_state()
+        self._schedule_auto()
+        self._fire_save()
 
     def _auto_run(self):
-        if self._busy:
-            return
-        if self.auto_est.get():
-            try:
-                self._busy = True
-                plan = self._estimate_core(reset_kgs=True, log_it=False, silent=True, return_plan=True)
-                if plan:
-                    pct = max(1, min(100, int(self.partial_pct.get())))
-                    p = pct / 100.0
-                    plan_scaled = {k: v * p for k, v in plan.items()}
-                    for name in plan_scaled.keys():
-                        self._ensure_adjuster_present(name)
-                    for v in self.kg_vars.values():
-                        v.set("0")
-                    for name, kg in plan_scaled.items():
-                        self.kg_vars[name].set(fmt(kg, 3))
-            finally:
-                self._busy = False
-        self.calc_prediction()
+        self._auto_job = None
+        try:
+            if self._busy:
+                return
+            if self.auto_est.get() and self.cb_obj.get().strip() and self.session_started_at:
+                try:
+                    self._busy = True
+                    plan = self._estimate_core(reset_kgs=True, log_it=False, silent=True, return_plan=True)
+                    if plan:
+                        pct = max(1, min(100, int(self.partial_pct.get())))
+                        p = pct / 100.0
+                        plan_scaled = {k: v * p for k, v in plan.items()}
+                        for name in plan_scaled.keys():
+                            self._ensure_adjuster_present(name)
+                        for v in self.kg_vars.values():
+                            v.set("0")
+                        for name, kg in plan_scaled.items():
+                            self.kg_vars[name].set(fmt(kg, 3))
+                finally:
+                    self._busy = False
+            self.calc_prediction()
+            self._maybe_auto_save_session()
+            self._refresh_session_timer_labels()
+        finally:
+            self._schedule_auto()
 
     def clear_adjust_kgs(self):
         try:
@@ -413,6 +531,7 @@ class TabAjuste(ttk.Frame):
     def reset_adjustment(self):
         try:
             self._busy = True
+            self.mass.set("1000")
             for v in self.kg_vars.values():
                 v.set("0")
             for _, t in self.est_rows:
@@ -428,40 +547,91 @@ class TabAjuste(ttk.Frame):
         finally:
             self._busy = False
 
+    def _reset_session_workspace(self):
+        self.mass.set("1000")
+        for _, e in self.actual_rows:
+            e.config(state="normal")
+            e.delete(0, tk.END)
+        for _, t in self.est_rows:
+            t.config(state="normal")
+            t.delete(0, tk.END)
+            t.config(state="readonly")
+        for v in self.kg_vars.values():
+            v.set("0")
+        self.ajustes_log = []
+        self.calc_log = []
+        self._predicted = None
+        self.session_started_at = None
+        self._clear_objective_selection()
+        self._refresh_session_timer_labels()
+        self._refresh_hist()
+        self._refresh_calc_log_window()
+        self.ceA.config(text="CE actual: -")
+        self.ceE.config(text="CE estimado: -")
+        self.massE.config(text="Masa estimada (efectiva): -")
+        self._set_ce_widget_color(self.ceA, BG_ENTRY)
+        self._set_ce_widget_color(self.ceE, BG_ENTRY)
+        self._set_ce_widget_color(self.ceT, BG_ENTRY)
+
     def _own_alloy_names(self):
         return [a["nombre"] for a in self.alloys if (a.get("tipo", "") == "Aleación propia")]
 
-    def _alloy_by_name(self, name):
+    def _alloys_named(self, name):
         if not name:
-            return None
+            return []
         if self._alloy_cache is None:
-            self._alloy_cache = {a.get("nombre", ""): a for a in self.alloys}
-        a = self._alloy_cache.get(name)
-        if a is None:
+            cache = {}
+            for alloy in self.alloys:
+                cache.setdefault(alloy.get("nombre", ""), []).append(alloy)
+            self._alloy_cache = cache
+        items = list(self._alloy_cache.get(name, []))
+        if not items:
             # Rebuild in case the catalog changed
-            self._alloy_cache = {a.get("nombre", ""): a for a in self.alloys}
-            a = self._alloy_cache.get(name)
-        return a
+            cache = {}
+            for alloy in self.alloys:
+                cache.setdefault(alloy.get("nombre", ""), []).append(alloy)
+            self._alloy_cache = cache
+            items = list(self._alloy_cache.get(name, []))
+        return items
+
+    def _alloy_by_name(self, name, prefer_type=None):
+        items = self._alloys_named(name)
+        if prefer_type:
+            for alloy in items:
+                if alloy.get("tipo", "") == prefer_type:
+                    return alloy
+        return items[0] if items else None
+
+    def _objective_alloy(self):
+        name = self.cb_obj.get()
+        return self._alloy_by_name(name, prefer_type="Aleación propia") if name else None
+
+    def _adjuster_alloy(self, name):
+        items = self._alloys_named(name)
+        for alloy in items:
+            if bool(alloy.get("ajuste", False)) and alloy.get("tipo", "") != "Aleación final":
+                return alloy
+        for alloy in items:
+            if alloy.get("tipo", "") != "Aleación final":
+                return alloy
+        return None
 
     def _objective_limits(self, element):
-        name = self.cb_obj.get()
-        a = self._alloy_by_name(name) if name else None
+        a = self._objective_alloy()
         if not a:
             return (None, None)
         lim = (a.get("limites") or {}).get(element, {})
         return (lim.get("soft_min"), lim.get("soft_max"))
 
     def _objective_limits_full(self, element):
-        name = self.cb_obj.get()
-        a = self._alloy_by_name(name) if name else None
+        a = self._objective_alloy()
         if not a:
             return (None, None)
         lim = (a.get("limites") or {}).get(element, {}) or {}
         return (lim.get("soft_min"), lim.get("soft_max"))
 
     def _objective_ce_data(self):
-        name = self.cb_obj.get()
-        a = self._alloy_by_name(name) if name else None
+        a = self._objective_alloy()
         esp = (a or {}).get("especiales", {})
         frm = esp.get("CE_formula", "FUNDICION") or "FUNDICION"
         return (esp.get("CE_min", None), esp.get("CE_max", None), _norm(frm), esp.get("CE_custom", {}) or {})
@@ -556,7 +726,7 @@ class TabAjuste(ttk.Frame):
         best_si = (None, 0.0)  # (alloy, %Si)
         best_fe = (None, -1.0) # (alloy, %Fe)
         for nm in adjust_names:
-            a = self._alloy_by_name(nm)
+            a = self._adjuster_alloy(nm)
             if not a:
                 continue
             comp = a.get("composicion", {}) or {}
@@ -578,9 +748,9 @@ class TabAjuste(ttk.Frame):
         return M
 
     def _get_adjuster(self, name):
-        a = self._alloy_by_name(name)
+        a = self._adjuster_alloy(name)
         if not a:
-            messagebox.showerror("Catálogo", f"No se encontró {name} en el catálogo.")
+            messagebox.showerror("Catálogo", f"No se encontró un material de ajuste válido para {name}.")
         return a
 
     # ------------------------------- UI auxiliares --------------------------
@@ -654,14 +824,29 @@ class TabAjuste(ttk.Frame):
                                "CE_custom": {"C": 1.0, "Si": 1/3, "P": 1/3, "S": 0.0}},
                 "ajuste": True
             })
+        if "FeCr alto C" not in existing:
+            comp = {e: 0.0 for e in ELEMENTS}
+            comp.update({"Cr": 62.5, "C": 7.5, "Si": 1.5, "S": 0.03, "P": 0.03})
+            comp["Fe"] = max(0.0, 100.0 - sum(v for k, v in comp.items() if k != "Fe"))
+            to_add.append({
+                "nombre": "FeCr alto C",
+                "tipo": "Ferroaleación",
+                "rendimiento": 90.0,
+                "costo": 0.0,
+                "composicion": comp,
+                "limites": {e: {"soft_min": None, "soft_max": None, "hard_min": None, "hard_max": None} for e in ELEMENTS},
+                "especiales": {"CE_formula": "FUNDICION", "CE_min": None, "CE_max": None,
+                               "CE_custom": {"C": 1.0, "Si": 1/3, "P": 1/3, "S": 0.0}},
+                "ajuste": True
+            })
         if to_add:
             self.alloys.extend(to_add)
             save_alloys(self.alloys)
 
     def _ensure_adjuster_present(self, name):
         if name not in self.adjust_list:
-            if not self._alloy_by_name(name):
-                self._status(f"'{name}' no está en catálogo.")
+            if not self._adjuster_alloy(name):
+                self._status(f"'{name}' no es un material de ajuste válido en catálogo.")
                 return False
             self.adjust_list.append(name)
             self._rebuild_adjust_ui()
@@ -686,14 +871,25 @@ class TabAjuste(ttk.Frame):
         btns.pack(fill="x", padx=10, pady=(0, 10))
 
         def do_add():
-            name = self._select_alloy_name(title="Agregar material de ajuste (desde catálogo)")
+            valid_adjusters = sorted(
+                {
+                    a.get("nombre", "")
+                    for a in self.alloys
+                    if a.get("nombre", "") and a.get("tipo", "") != "Aleación final"
+                },
+                key=lambda val: (0, int(val)) if str(val).isdigit() else (1, str(val).lower()),
+            )
+            name = self._select_alloy_name(
+                title="Agregar material de ajuste (desde catálogo)",
+                names=valid_adjusters,
+            )
             if not name:
                 return
             if name in self.adjust_list:
                 messagebox.showinfo("Agregar", f"'{name}' ya está en la lista.", parent=win)
                 return
-            if not self._alloy_by_name(name):
-                messagebox.showerror("Catálogo", f"'{name}' no existe en el catálogo.", parent=win)
+            if not self._adjuster_alloy(name):
+                messagebox.showerror("Catálogo", f"'{name}' no es un material válido para ajuste.", parent=win)
                 return
             self.adjust_list.append(name)
             lb.insert(tk.END, name)
@@ -720,8 +916,10 @@ class TabAjuste(ttk.Frame):
         win.wait_window()
 
     # ---------------------------- selección actual --------------------------
-    def _select_alloy_name(self, title="Seleccionar aleación", only_type=None):
-        names = [a["nombre"] for a in self.alloys if (only_type is None or a.get("tipo", "") == only_type)]
+    def _select_alloy_name(self, title="Seleccionar aleación", only_type=None, names=None):
+        if names is None:
+            names = [a["nombre"] for a in self.alloys if (only_type is None or a.get("tipo", "") == only_type)]
+        names = list(dict.fromkeys([str(name).strip() for name in names if str(name).strip()]))
         sel = {"name": None}
         win = tk.Toplevel(self)
         win.title(title)
@@ -767,12 +965,12 @@ class TabAjuste(ttk.Frame):
         return sel["name"]
 
     def pick_actual(self):
-        name = self._select_alloy_name(title="Seleccionar aleación actual")
+        name = self._select_alloy_name(title="Seleccionar aleación actual", only_type="Aleación propia")
         if name:
             self.load_actual_by_name(name)
 
     def load_actual_by_name(self, name):
-        a = self._alloy_by_name(name)
+        a = self._alloy_by_name(name, prefer_type="Aleación propia")
         for el, e in self.actual_rows:
             e.config(state="normal")
         if not a:
@@ -792,8 +990,7 @@ class TabAjuste(ttk.Frame):
 
     # ------------------------------ objetivo --------------------------------
     def load_objective(self):
-        name = self.cb_obj.get()
-        a = self._alloy_by_name(name) if name else None
+        a = self._objective_alloy()
         if not a:
             for el, t_obj, t_min, t_max in self.target_rows:
                 for w in (t_obj, t_min, t_max):
@@ -801,6 +998,9 @@ class TabAjuste(ttk.Frame):
                     w.delete(0, tk.END)
                     w.config(state="readonly")
             self.ceT.config(text="CE objetivo: -")
+            self._set_ce_widget_color(self.ceT, BG_ENTRY)
+            self._set_ce_widget_color(self.ceA, BG_ENTRY)
+            self._set_ce_widget_color(self.ceE, BG_ENTRY)
             return
         for el, t_obj, t_min, t_max in self.target_rows:
             t_obj.config(state="normal")
@@ -824,6 +1024,9 @@ class TabAjuste(ttk.Frame):
         smin = "" if ce_min is None else f" | min: {fmt(ce_min, 4)}"
         smax = "" if ce_max is None else f" | max: {fmt(ce_max, 4)}"
         self.ceT.config(text=f"CE objetivo ({ce_formula}): {fmt(ce_tgt, 4)}{smin}{smax}")
+        ce_now = ce_from_percent(self._current_comp(), ce_formula, ce_custom)
+        ce_est = ce_from_percent(getattr(self, "_predicted", (0.0, self._current_comp()))[1], ce_formula, ce_custom)
+        self._apply_ce_colors(ce_now, ce_est, ce_tgt, ce_min, ce_max)
         self._fire_save()
 
     # --------------------------- baño y colores -----------------------------
@@ -869,6 +1072,36 @@ class TabAjuste(ttk.Frame):
             except Exception:
                 pass
 
+    def _ce_display_color(self, ce_val, ce_min, ce_max, ce_tgt):
+        if ce_min is not None or ce_max is not None:
+            bad = (ce_min is not None and ce_val < ce_min - 1e-12) or (ce_max is not None and ce_val > ce_max + 1e-12)
+            return COLOR_FAIL if bad else COLOR_OK
+        return COLOR_OK if abs(ce_val - ce_tgt) <= TOL_NO_LIMITS else COLOR_WARN
+
+    def _ce_text_color(self, bg_color):
+        try:
+            bg = (bg_color or "").lstrip("#")
+            if len(bg) != 6:
+                return FG
+            r = int(bg[0:2], 16)
+            g = int(bg[2:4], 16)
+            b = int(bg[4:6], 16)
+            luminance = (0.299 * r) + (0.587 * g) + (0.114 * b)
+            return "#000000" if luminance >= 160 else "#ffffff"
+        except Exception:
+            return FG
+
+    def _set_ce_widget_color(self, widget, bg_color):
+        try:
+            widget.configure(bg=bg_color, fg=self._ce_text_color(bg_color))
+        except Exception:
+            pass
+
+    def _apply_ce_colors(self, ce_now, ce_est, ce_tgt, ce_min, ce_max):
+        self._set_ce_widget_color(self.ceA, self._ce_display_color(ce_now, ce_min, ce_max, ce_tgt))
+        self._set_ce_widget_color(self.ceE, self._ce_display_color(ce_est, ce_min, ce_max, ce_tgt))
+        self._set_ce_widget_color(self.ceT, BG_ENTRY)
+
     # ------------------------ cálculo continuo ------------------------------
     def calc_prediction(self):
         try:
@@ -897,9 +1130,13 @@ class TabAjuste(ttk.Frame):
                 t.config(state="readonly")
 
             ce_min, ce_max, ce_formula, ce_custom = self._objective_ce_data()
-            self.ceA.config(text=f"CE actual ({ce_formula}): {fmt(ce_from_percent(self._current_comp(), ce_formula, ce_custom), 4)}")
-            self.ceE.config(text=f"CE estimado ({ce_formula}): {fmt(ce_from_percent(pred_pct, ce_formula, ce_custom), 4)}")
+            ce_now = ce_from_percent(self._current_comp(), ce_formula, ce_custom)
+            ce_est = ce_from_percent(pred_pct, ce_formula, ce_custom)
+            ce_tgt = ce_from_percent(self._target_comp(), ce_formula, ce_custom)
+            self.ceA.config(text=f"CE actual ({ce_formula}): {fmt(ce_now, 4)}")
+            self.ceE.config(text=f"CE estimado ({ce_formula}): {fmt(ce_est, 4)}")
             self.massE.config(text=f"Masa estimada (efectiva): {fmt(Mnew)} kg")
+            self._apply_ce_colors(ce_now, ce_est, ce_tgt, ce_min, ce_max)
             self._apply_estimated_colors(pred_pct)
             self._predicted = (Mnew, pred_pct)
         except Exception as ex:
@@ -926,6 +1163,8 @@ class TabAjuste(ttk.Frame):
             name = self.cb_obj.get().strip()
             if not name:
                 self._status("Definí una aleación objetivo (propia).")
+                return {} if return_plan else False
+            if not self._ensure_session_started_from_objective():
                 return {} if return_plan else False
 
             if reset_kgs:
@@ -1290,6 +1529,8 @@ class TabAjuste(ttk.Frame):
 
     def apply_adjustment(self):
         try:
+            if not self._require_started_session():
+                return
             if not hasattr(self, "_predicted"):
                 self.calc_prediction()
                 if not hasattr(self, "_predicted"):
@@ -1373,6 +1614,7 @@ class TabAjuste(ttk.Frame):
                      ce_formula, ce_now, ce_pred, objetivo_comp):
         try:
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # La sesión comienza cuando se registra el primer ajuste real
             _, _, _, ce_custom = self._objective_ce_data()
             ce_obj = ce_from_percent(objetivo_comp or {}, ce_formula, ce_custom)
             cambios = self._summarize_changes(comp0, pred_pct)
@@ -1600,7 +1842,7 @@ class TabAjuste(ttk.Frame):
     # -------- editor simple de ajuste (en esta pestaña) ----------
     def _simulate_with_plan(self, M0, comp0, plan):
         return simulate_with_plan(
-            M0, comp0, plan, ELEMENTS, self._alloy_by_name, self._effective_add, self._effective_total_perkg
+            M0, comp0, plan, ELEMENTS, self._adjuster_alloy, self._effective_add, self._effective_total_perkg
         )
 
     def _edit_adjust_dialog(self, adj_entry, on_save):
@@ -1683,6 +1925,12 @@ class TabAjuste(ttk.Frame):
     def build_colada_idyy(id_num, yy):
         return f"{int(id_num):04d} /{str(yy).zfill(2)}"
 
+    def _next_colada_idyy(self):
+        cur_id, _ = self.parse_colada_idyy(self.colada.get())
+        next_id = (cur_id + 1) if cur_id is not None else 1
+        next_yy = datetime.now().strftime("%y")
+        return self.build_colada_idyy(next_id, next_yy)
+
     def build_colada_full(self):
         material = self.cb_obj.get().strip()
         base = self.colada.get().strip()
@@ -1742,46 +1990,68 @@ class TabAjuste(ttk.Frame):
             new_val = self._prompt_colada_idyy()
             if new_val:
                 self.colada.set(new_val)
-                self.session_started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 self._fire_save()
 
     def edit_colada(self):
         new_val = self._prompt_colada_idyy(title="Editar N° de colada")
         if new_val:
             self.colada.set(new_val)
-            if not self.session_started_at:
-                self.session_started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self._fire_save()
 
     # -------------------------- Guardar sesión ------------------------------
+    def _append_current_session_to_history(self, ended_at=None, auto=False):
+        if not self.ajustes_log:
+            return False
+        ended_ts = ended_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        started_at = self.session_started_at or self.ajustes_log[0].get("fecha") or ended_ts
+        session = {
+            "colada": self.build_colada_full(),
+            "objetivo": self.cb_obj.get().strip(),
+            "started_at": started_at,
+            "ended_at": ended_ts,
+            "ajustes": list(self.ajustes_log),
+            "calculos": list(self.calc_log),
+            "auto_saved": bool(auto),
+        }
+        append_history(session)
+        try:
+            self.event_generate("<<HistoryUpdated>>", when="tail")
+        except Exception:
+            pass
+        return True
+
+    def _maybe_auto_save_session(self):
+        if not self.ajustes_log or not self.session_started_at:
+            return
+        try:
+            started = datetime.fromisoformat(str(self.session_started_at))
+        except Exception:
+            return
+        try:
+            limit_hours = float(getattr(self.winfo_toplevel(), "_auto_save_hours", 3.0))
+        except Exception:
+            limit_hours = 3.0
+        if limit_hours <= 0:
+            limit_hours = 3.0
+        now = datetime.now()
+        if (now - started).total_seconds() < (limit_hours * 3600.0):
+            return
+        ended_ts = now.strftime("%Y-%m-%d %H:%M:%S")
+        if not self._append_current_session_to_history(ended_at=ended_ts, auto=True):
+            return
+        self.colada.set(self._next_colada_idyy())
+        self._reset_session_workspace()
+        self._fire_save()
+        self._status("Sesión guardada automáticamente por superar 3 horas.")
+
     def save_current_session(self):
         try:
             if not self.ajustes_log:
                 self._status("No hay ajustes para guardar.")
                 return
-            session = {
-                "colada": self.build_colada_full(),  # "NNNN /YY - MATERIAL"
-                "objetivo": self.cb_obj.get().strip(),
-                "started_at": self.session_started_at or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "ended_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "ajustes": self.ajustes_log,
-                "calculos": self.calc_log,
-            }
-            append_history(session)
-
-            try:
-                self.event_generate("<<HistoryUpdated>>", when="tail")
-            except Exception:
-                pass
-
-            new_val = self._prompt_colada_idyy(title="Nueva colada")
-            if new_val:
-                self.colada.set(new_val)
-                self.session_started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            else:
-                self.session_started_at = None
-            self.ajustes_log = []
-            self._refresh_hist()
+            self._append_current_session_to_history()
+            self.colada.set(self._next_colada_idyy())
+            self._reset_session_workspace()
             self._fire_save()
             self._status("Sesión guardada.")
         except Exception as ex:

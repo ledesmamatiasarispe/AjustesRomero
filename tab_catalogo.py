@@ -54,8 +54,11 @@ def _basic_alloys():
 
     a1010 = {"C":0.10, "Mn":0.50, "P":0.02, "S":0.02}
     a1010["Fe"] = max(0.0, 100.0 - sum(a1010.values()))
+    fecr_alto_c = {"Cr": 62.5, "C": 7.5, "Si": 1.5, "S": 0.03, "P": 0.03}
+    fecr_alto_c["Fe"] = max(0.0, 100.0 - sum(fecr_alto_c.values()))
 
     return [
+        alloy("FeCr alto C", "Ferroaleación", 90.0, 0.0, fecr_alto_c, ajuste=True),
         alloy("FeSi", "Ferroaleación", 90.0, 0.0, {"Si": 75.0}, ajuste=True),
         alloy("FeMn", "Ferroaleación", 90.0, 0.0, {"Mn": 80.0}, ajuste=True),
         alloy("FeCr", "Ferroaleación", 90.0, 0.0, {"Cr": 65.0}, ajuste=True),
@@ -69,7 +72,7 @@ def _basic_alloys():
 class TabCatalogo(ttk.Frame):
     BASE_COLS = ("Nombre","Tipo","Rendimiento %","Costo","Límites")
     COLS = BASE_COLS + tuple(ELEMENTS)
-    TYPES = ["Ferroaleación", "Metal puro", "Recorte", "Retorno", "Aditivo", "Aleación propia", "Otro"]
+    TYPES = ["Ferroaleación", "Metal puro", "Recorte", "Retorno", "Aditivo", "Aleación propia", "Aleación final", "Otro"]
 
     def __init__(self, master, model):
         super().__init__(master, padding=8)
@@ -128,6 +131,11 @@ class TabCatalogo(ttk.Frame):
             self.model.clear(); self.model.extend(_basic_alloys()); self._save_and_refresh()
 
     def refresh(self):
+        valid_idx = [i for i in self.filtered_idx if 0 <= i < len(self.model)]
+        if len(valid_idx) != len(self.model) and not self.q.get().strip():
+            self.filtered_idx = list(range(len(self.model)))
+        else:
+            self.filtered_idx = valid_idx
         for i in self.tree.get_children(): self.tree.delete(i)
         for idx in self.filtered_idx:
             a = self.model[idx]
@@ -213,7 +221,7 @@ class TabCatalogo(ttk.Frame):
 
     # ---------------------- import/export límites -----------------------------
     def export_limits_csv(self):
-        fp = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV","*.csv")], title="Exportar límites (Aleación propia)")
+        fp = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV","*.csv")], title="Exportar límites (Aleación propia/final)")
         if not fp: return
         try:
             with open(fp, "w", newline="", encoding="utf-8") as f:
@@ -223,7 +231,7 @@ class TabCatalogo(ttk.Frame):
                     header += [f"{e}_soft_min", f"{e}_soft_max"]
                 w.writerow(header)
                 for a in self.model:
-                    if a.get("tipo","") != "Aleación propia":
+                    if a.get("tipo","") not in ("Aleación propia", "Aleación final"):
                         continue
                     row = [a.get("nombre","")]
                     esp = a.get("especiales", {})
@@ -238,7 +246,7 @@ class TabCatalogo(ttk.Frame):
             messagebox.showerror("Exportar límites", f"No se pudo exportar:\n{ex}")
 
     def import_limits_csv(self):
-        fp = filedialog.askopenfilename(filetypes=[("CSV","*.csv")], title="Importar límites (Aleación propia)")
+        fp = filedialog.askopenfilename(filetypes=[("CSV","*.csv")], title="Importar límites (Aleación propia/final)")
         if not fp: return
         try:
             updated = 0; skipped = 0
@@ -267,7 +275,8 @@ class TabCatalogo(ttk.Frame):
                         lim_e["hard_max"] = None
                         lim[e] = lim_e
                     found["limites"] = lim
-                    if found.get("tipo","") != "Aleación propia": found["tipo"] = "Aleación propia"
+                    if found.get("tipo","") not in ("Aleación propia", "Aleación final"):
+                        found["tipo"] = "Aleación propia"
                     updated += 1
             self._save_and_refresh()
             messagebox.showinfo("Importar límites", f"Actualizadas: {updated}\nIgnoradas: {skipped}")
@@ -293,6 +302,21 @@ class TabCatalogo(ttk.Frame):
         rend   = tk.StringVar(value=fmt(to_float((item or {}).get("rendimiento",90)),6))
         costo  = tk.StringVar(value=fmt(to_float((item or {}).get("costo",0)),6))
         v_ajuste = tk.BooleanVar(value=bool((item or {}).get("ajuste", False)))
+        calidad_meta = (item or {}).get("calidad_meta", {}) or {}
+        q_defaults = calidad_meta.get("defaults", {}) if isinstance(calidad_meta.get("defaults", {}), dict) else {}
+        base_candidates = []
+        for a in self.model:
+            if a is item:
+                continue
+            if a.get("tipo", "") != "Aleación propia":
+                continue
+            name = str(a.get("nombre", "")).strip()
+            if name:
+                base_candidates.append(name)
+        for b in (calidad_meta.get("bases") or []):
+            if str(b).strip():
+                base_candidates.append(str(b).strip())
+        base_candidates = sorted(set(base_candidates), key=lambda v: (0, int(v)) if str(v).isdigit() else (1, str(v)))
 
         row0 = ttk.Frame(form); row0.pack(fill="x", pady=4)
         ttk.Label(row0, text="Nombre", width=16).pack(side="left")
@@ -310,7 +334,68 @@ class TabCatalogo(ttk.Frame):
         ttk.Label(row2, text="Costo (opcional)", width=16).pack(side="left", padx=(20,0))
         ttk.Entry(row2, textvariable=costo, width=12).pack(side="left", padx=6)
 
-        ttk.Label(form, text="Composición (% en peso)", font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(8,2))
+        final_frame = ttk.LabelFrame(form, text="Ficha de calidad (Aleación final)", padding=8)
+        saved_bases = [str(b).strip() for b in (calidad_meta.get("bases") or []) if str(b).strip()]
+        if not saved_bases:
+            base_ref_seed = str(calidad_meta.get("base_ref", "")).strip()
+            saved_bases = [base_ref_seed] if base_ref_seed else []
+        base_vars = {base: tk.BooleanVar(value=(base in saved_bases)) for base in base_candidates}
+        final_family = tk.StringVar(value=str(calidad_meta.get("family", "")))
+        final_traccion = tk.StringVar(value=str(q_defaults.get("traccion", "")))
+        final_seccion = tk.StringVar(value=str((calidad_meta.get("section_options") or ["", "", ""])[0] if len(calidad_meta.get("section_options") or []) == 1 else q_defaults.get("seccion", "")))
+        final_dureza = tk.StringVar(value=str(q_defaults.get("dureza", "")))
+        final_tam = tk.StringVar(value=str(q_defaults.get("tam_grafito", "")))
+        final_morf = tk.StringVar(value=str(q_defaults.get("morfologia", "")))
+        final_tipo_graf = tk.StringVar(value=str(q_defaults.get("tipo_grafito", "")))
+        final_conteo = tk.StringVar(value=str(q_defaults.get("conteo_nodulos", "")))
+        final_pct_nod = tk.StringVar(value=str(q_defaults.get("pct_nodularizacion", "")))
+        final_alarg = tk.StringVar(value=str(q_defaults.get("alargamiento", "")))
+        final_perlita = tk.StringVar(value=str(q_defaults.get("perlita", "")))
+        final_ferrita = tk.StringVar(value=str(q_defaults.get("ferrita", "")))
+        final_cementita = tk.StringVar(value=str(q_defaults.get("cementita", "0")))
+
+        rowf0 = ttk.Frame(final_frame); rowf0.pack(fill="x", pady=2)
+        ttk.Label(rowf0, text="Bases válidas", width=16).pack(side="left")
+        for base in base_candidates:
+            ttk.Checkbutton(rowf0, text=base, variable=base_vars[base]).pack(side="left", padx=(0, 6))
+        ttk.Label(rowf0, text="Familia", width=10).pack(side="left", padx=(20,0))
+        cb_final_family = ttk.Combobox(rowf0, textvariable=final_family, values=("Gris", "Nodular"), state="readonly", width=16)
+        cb_final_family.pack(side="left", padx=6)
+
+        rowf1 = ttk.Frame(final_frame); rowf1.pack(fill="x", pady=2)
+        ttk.Label(rowf1, text="Tracción", width=16).pack(side="left")
+        ttk.Entry(rowf1, textvariable=final_traccion, width=12).pack(side="left", padx=6)
+        ttk.Label(rowf1, text="Sección muestra", width=16).pack(side="left", padx=(20,0))
+        ttk.Entry(rowf1, textvariable=final_seccion, width=18).pack(side="left", padx=6)
+        ttk.Label(rowf1, text="Dureza", width=10).pack(side="left", padx=(20,0))
+        ttk.Entry(rowf1, textvariable=final_dureza, width=12).pack(side="left", padx=6)
+
+        rowf2 = ttk.Frame(final_frame); rowf2.pack(fill="x", pady=2)
+        ttk.Label(rowf2, text="Tamaño grafito", width=16).pack(side="left")
+        ttk.Entry(rowf2, textvariable=final_tam, width=12).pack(side="left", padx=6)
+        ttk.Label(rowf2, text="Morfología", width=16).pack(side="left", padx=(20,0))
+        ttk.Entry(rowf2, textvariable=final_morf, width=18).pack(side="left", padx=6)
+        ttk.Label(rowf2, text="Tipo grafito", width=10).pack(side="left", padx=(20,0))
+        ttk.Entry(rowf2, textvariable=final_tipo_graf, width=18).pack(side="left", padx=6)
+
+        rowf3 = ttk.Frame(final_frame); rowf3.pack(fill="x", pady=2)
+        ttk.Label(rowf3, text="Conteo nódulos", width=16).pack(side="left")
+        ttk.Entry(rowf3, textvariable=final_conteo, width=12).pack(side="left", padx=6)
+        ttk.Label(rowf3, text="% nodularización", width=16).pack(side="left", padx=(20,0))
+        ttk.Entry(rowf3, textvariable=final_pct_nod, width=18).pack(side="left", padx=6)
+        ttk.Label(rowf3, text="Alargamiento", width=10).pack(side="left", padx=(20,0))
+        ttk.Entry(rowf3, textvariable=final_alarg, width=12).pack(side="left", padx=6)
+
+        rowf4 = ttk.Frame(final_frame); rowf4.pack(fill="x", pady=2)
+        ttk.Label(rowf4, text="Perlita", width=16).pack(side="left")
+        ttk.Entry(rowf4, textvariable=final_perlita, width=12).pack(side="left", padx=6)
+        ttk.Label(rowf4, text="Ferrita", width=16).pack(side="left", padx=(20,0))
+        ttk.Entry(rowf4, textvariable=final_ferrita, width=18).pack(side="left", padx=6)
+        ttk.Label(rowf4, text="Cementita", width=10).pack(side="left", padx=(20,0))
+        ttk.Entry(rowf4, textvariable=final_cementita, width=12).pack(side="left", padx=6)
+
+        comp_title = ttk.Label(form, text="Composición (% en peso)", font=("Segoe UI", 10, "bold"))
+        comp_title.pack(anchor="w", pady=(8,2))
         comp_vars = {}
         grid = ttk.Frame(form); grid.pack(fill="x")
         ncols = 4
@@ -391,8 +476,8 @@ class TabCatalogo(ttk.Frame):
 
         ttk.Button(btns, text="Auto-límites...", command=auto_limits).pack(side="left", padx=6)
 
-        # --- Límites (solo Aleación propia) ---
-        limits_frame = ttk.LabelFrame(form, text="Rango ± (solo Aleación propia)", padding=8)
+        # --- Límites (solo Aleación propia/final) ---
+        limits_frame = ttk.LabelFrame(form, text="Rango ± (solo Aleación propia/final)", padding=8)
         limits_frame.pack(fill="both", expand=True, pady=(12,0))
 
         sf_lim = ScrollFrame(limits_frame); sf_lim.pack(fill="both", expand=True)
@@ -420,7 +505,7 @@ class TabCatalogo(ttk.Frame):
             limit_vars[el] = (v_rng, e_rng)
 
         def _toggle_limits_state(*_):
-            state = "normal" if tipo.get() == "Aleación propia" else "disabled"
+            state = "normal" if tipo.get() in ("Aleación propia", "Aleación final") else "disabled"
             for el in ELEMENTS:
                 _, e_rng = limit_vars[el]
                 e_rng.config(state=state)
@@ -429,7 +514,7 @@ class TabCatalogo(ttk.Frame):
 
         # --- Valores especiales (CE) ---
         esp = _normalize_especiales((item or {}).get("especiales", {}))
-        esp_frame = ttk.LabelFrame(form, text="Valores especiales (solo Aleación propia)", padding=8)
+        esp_frame = ttk.LabelFrame(form, text="Valores especiales (solo Aleación propia/final)", padding=8)
         esp_frame.pack(fill="x", pady=(12,0))
 
         ttk.Label(esp_frame, text="Carbono equivalente (CE)").grid(row=0, column=0, columnspan=6, sticky="w", padx=4, pady=(0,4))
@@ -470,6 +555,40 @@ class TabCatalogo(ttk.Frame):
         cbf.bind("<<ComboboxSelected>>", lambda e: _toggle_cust())
         _toggle_cust()
 
+        def _selected_final_bases():
+            return [base for base, var in base_vars.items() if var.get()]
+        if not final_family.get().strip():
+            final_family.set("Gris")
+
+        final_frame.pack(fill="x", pady=(12, 0))
+
+        def _toggle_dialog_mode(*_):
+            is_final = (tipo.get().strip() == "Aleación final")
+            if is_final:
+                comp_title.pack_forget()
+                grid.pack_forget()
+                btns.pack_forget()
+                limits_frame.pack_forget()
+                esp_frame.pack_forget()
+                final_frame.pack(fill="x", pady=(12, 0))
+                v_ajuste.set(False)
+            else:
+                final_frame.pack_forget()
+                if not comp_title.winfo_manager():
+                    comp_title.pack(anchor="w", pady=(8,2))
+                if not grid.winfo_manager():
+                    grid.pack(fill="x")
+                if not btns.winfo_manager():
+                    btns.pack(fill="x", pady=(8,0))
+                if not limits_frame.winfo_manager():
+                    limits_frame.pack(fill="both", expand=True, pady=(12,0))
+                if not esp_frame.winfo_manager():
+                    esp_frame.pack(fill="x", pady=(12,0))
+            _toggle_limits_state()
+
+        cb_tipo.bind("<<ComboboxSelected>>", lambda e: (_toggle_limits_state(), _toggle_dialog_mode()))
+        _toggle_dialog_mode()
+
         # --- Guardar/Cancelar ---
         def accept():
             try:
@@ -483,10 +602,59 @@ class TabCatalogo(ttk.Frame):
                     "especiales": {},
                     "ajuste": bool(v_ajuste.get()),
                 }
+                src_item = item or {}
+                for extra_key, extra_val in src_item.items():
+                    if extra_key not in a:
+                        a[extra_key] = extra_val
                 if not a["nombre"]:
                     raise ValueError("El nombre es obligatorio.")
                 if not (0 < a["rendimiento"] <= 100):
                     raise ValueError("Rendimiento debe estar entre 0 y 100.")
+
+                if a["tipo"] == "Aleación final":
+                    bases = [base for base, var in base_vars.items() if var.get()]
+                    if not bases:
+                        raise ValueError("Seleccioná al menos una base válida.")
+                    family = final_family.get().strip()
+                    if family not in ("Gris", "Nodular"):
+                        raise ValueError("Seleccioná una familia válida.")
+                    base_ref = bases[0]
+                    defaults = {
+                        "traccion": final_traccion.get().strip(),
+                        "seccion": final_seccion.get().strip(),
+                        "dureza": final_dureza.get().strip(),
+                        "tam_grafito": final_tam.get().strip(),
+                        "morfologia": final_morf.get().strip(),
+                        "tipo_grafito": final_tipo_graf.get().strip(),
+                        "conteo_nodulos": final_conteo.get().strip(),
+                        "pct_nodularizacion": final_pct_nod.get().strip(),
+                        "alargamiento": final_alarg.get().strip(),
+                        "perlita": final_perlita.get().strip(),
+                        "ferrita": final_ferrita.get().strip(),
+                        "cementita": final_cementita.get().strip(),
+                    }
+                    src_item = item or {}
+                    prev_meta = src_item.get("calidad_meta", {}) if isinstance(src_item.get("calidad_meta", {}), dict) else {}
+                    a["ajuste"] = False
+                    a["composicion"] = src_item.get("composicion", {})
+                    a["limites"] = src_item.get("limites", {})
+                    a["especiales"] = src_item.get("especiales", {})
+                    a["calidad_meta"] = {
+                        "es_material_final": True,
+                        "codigo": a["nombre"],
+                        "base_ref": base_ref,
+                        "bases": bases,
+                        "family": family,
+                        "section_options": prev_meta.get("section_options", []),
+                        "defaults": defaults,
+                    }
+                    if idx is None:
+                        self.model.append(a)
+                    else:
+                        self.model[idx] = a
+                    self._save_and_refresh()
+                    win.destroy()
+                    return
 
                 # limites (solo soft por rango ± absoluto)
                 for el in ELEMENTS:

@@ -1,0 +1,2 @@
+PUBLIC_TUNNEL_SUBDOMAIN = "phorno-k91m-ajc26-zeta84"
+PUBLIC_TUNNEL_URL = f"https://{PUBLIC_TUNNEL_SUBDOMAIN}.loca.lt/"

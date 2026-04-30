@@ -3,14 +3,15 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import json
 import re
+from datetime import datetime
 
-from storage import load_history, update_session, delete_session, update_adjustment, delete_adjustment
+from storage import DuplicateColadaError, load_history, load_ladles_state, prune_ladles_history_for_sessions, update_session, delete_session, update_adjustment, delete_adjustment
 from widgets import ScrollFrame
 from config import ELEMENTS
 from utils import fmt, to_float, simulate_with_plan
 from ce import ce_from_percent
 
-COLADA_RE = re.compile(r"^\\s*(\\d+)\\s*/\\s*(\\d{2})\\s*-\\s*(.+?)\\s*$")
+COLADA_RE = re.compile(r"^\s*(\d+)\s*/\s*(\d{2})\s*-\s*(.+?)\s*$")
 
 
 def split_colada(s):
@@ -25,10 +26,12 @@ class TabHistoricos(ttk.Frame):
         super().__init__(master, padding=8)
         self.alloys = alloys_model
         self.hist = []
+        self.ladles = {}
         self._session_tabs = {}
         self._alloy_cache = None
         self._root_notebook = None
         self._quality_tab = None
+        self._thermal_tab = None
 
         # ---- Layout principal (dock)
         root = ttk.PanedWindow(self, orient="horizontal")
@@ -79,6 +82,10 @@ class TabHistoricos(ttk.Frame):
     def set_quality_target(self, notebook, quality_tab):
         self._root_notebook = notebook
         self._quality_tab = quality_tab
+
+    def set_thermal_target(self, notebook, thermal_tab):
+        self._root_notebook = notebook
+        self._thermal_tab = thermal_tab
 
     # ---------------------------- helpers catalogo -------------------------
     def _alloys_named(self, name):
@@ -142,6 +149,8 @@ class TabHistoricos(ttk.Frame):
     # ---------------------------- data load --------------------------------
     def refresh(self):
         self.hist = load_history()
+        prune_ladles_history_for_sessions(self.hist)
+        self.ladles = load_ladles_state()
         self._alloy_cache = None
         for i in self.tree.get_children():
             self.tree.delete(i)
@@ -290,8 +299,20 @@ class TabHistoricos(ttk.Frame):
         summary = ttk.Label(tab, text="", justify="left")
         summary.pack(anchor="w", pady=(0, 6))
 
-        # Split inside session tab
-        split = ttk.PanedWindow(tab, orient="vertical")
+        session_nb = ttk.Notebook(tab)
+        session_nb.pack(fill="both", expand=True)
+
+        tab_activity = ttk.Frame(session_nb, padding=0)
+        tab_carbon = ttk.Frame(session_nb, padding=6)
+        tab_ladles = ttk.Frame(session_nb, padding=6)
+        tab_thermal = ttk.Frame(session_nb, padding=6)
+        session_nb.add(tab_activity, text="Ajustes / Calculos")
+        session_nb.add(tab_carbon, text="Carbono")
+        session_nb.add(tab_ladles, text="Cucharas")
+        session_nb.add(tab_thermal, text="Analisis termico")
+
+        # Split solo para Ajustes / Calculos + detalle.
+        split = ttk.PanedWindow(tab_activity, orient="vertical")
         split.pack(fill="both", expand=True)
 
         top = ttk.Frame(split)
@@ -299,7 +320,6 @@ class TabHistoricos(ttk.Frame):
         split.add(top, weight=3)
         split.add(bottom, weight=2)
 
-        # Dock interno para Ajustes / Calculos
         top_nb = ttk.Notebook(top)
         top_nb.pack(fill="both", expand=True)
 
@@ -328,6 +348,110 @@ class TabHistoricos(ttk.Frame):
             tree_calc.heading(cid, text=title)
             tree_calc.column(cid, width=w, anchor="w")
         tree_calc.pack(fill="both", expand=True)
+
+        carbon_summary = ttk.Label(tab_carbon, text="", justify="left")
+        carbon_summary.pack(anchor="w", pady=(0, 8))
+        carbon_box = ttk.LabelFrame(tab_carbon, text="Carbomax aplicado durante la sesion", padding=6)
+        carbon_box.pack(fill="both", expand=True)
+        tree_carbon = ttk.Treeview(
+            carbon_box,
+            columns=("fecha", "inicio", "fuente", "c", "si", "ce", "ajuste", "resumen"),
+            show="headings",
+            height=14,
+        )
+        for cid, title, w in (
+            ("fecha", "Aplicado", 150),
+            ("inicio", "Analisis", 140),
+            ("fuente", "Fuente", 180),
+            ("c", "C %", 70),
+            ("si", "Si %", 70),
+            ("ce", "CE %", 70),
+            ("ajuste", "Ajuste", 150),
+            ("resumen", "Materiales", 360),
+        ):
+            tree_carbon.heading(cid, text=title)
+            tree_carbon.column(cid, width=w, anchor="w")
+        tree_carbon.pack(fill="both", expand=True)
+
+        ladles_summary_box = ttk.LabelFrame(tab_ladles, text="Cantidad total por material", padding=6)
+        ladles_summary_box.pack(fill="x")
+        tree_ladles_summary = ttk.Treeview(
+            ladles_summary_box,
+            columns=("material", "total"),
+            show="headings",
+            height=5,
+        )
+        for cid, title, w in (
+            ("material", "Material", 180),
+            ("total", "cantidad total de cada material", 260),
+        ):
+            tree_ladles_summary.heading(cid, text=title)
+            tree_ladles_summary.column(cid, width=w, anchor="w")
+        tree_ladles_summary.pack(fill="x", expand=True)
+
+        ladles_metrics = ttk.Frame(tab_ladles)
+        ladles_metrics.pack(fill="x", pady=(12, 12))
+        ladle_metric_values = {}
+        for col, (key, title) in enumerate((
+            ("first", "tiempo primera"),
+            ("last", "tiempo ultima"),
+            ("duration", "tiempo entre primera y ultima"),
+            ("avg", "tiempo promedio entre cada una"),
+        )):
+            box = ttk.LabelFrame(ladles_metrics, text=title, padding=8)
+            box.grid(row=0, column=col, sticky="nsew", padx=(0, 6))
+            value = ttk.Label(box, text="", font=("TkDefaultFont", 10, "bold"))
+            value.pack(anchor="w")
+            ladle_metric_values[key] = value
+            ladles_metrics.columnconfigure(col, weight=1)
+
+        ladles_events_box = ttk.LabelFrame(tab_ladles, text="Registro cronologico", padding=6)
+        ladles_events_box.pack(fill="both", expand=True)
+        tree_ladles_events = ttk.Treeview(
+            ladles_events_box,
+            columns=("material", "tiempo"),
+            show="headings",
+            height=14,
+        )
+        for cid, title, w in (
+            ("material", "material", 180),
+            ("tiempo", "tiempo", 240),
+        ):
+            tree_ladles_events.heading(cid, text=title)
+            tree_ladles_events.column(cid, width=w, anchor="w")
+        tree_ladles_events.pack(fill="both", expand=True)
+        ladles_btns = ttk.Frame(tab_ladles)
+        ladles_btns.pack(fill="x", pady=(6, 0))
+        ttk.Button(ladles_btns, text="Cerrar pestaÃ±a", command=lambda: self._close_session_tab(idx)).pack(side="right")
+
+        thermal_summary = ttk.Label(tab_thermal, text="", justify="left")
+        thermal_summary.pack(anchor="w", pady=(0, 8))
+        thermal_box = ttk.LabelFrame(tab_thermal, text="Analisis adjuntos", padding=6)
+        thermal_box.pack(fill="both", expand=True)
+        tree_thermal = ttk.Treeview(
+            thermal_box,
+            columns=("fecha", "modo", "base", "archivo", "tse", "tre", "rec", "tf", "pts"),
+            show="headings",
+            height=14,
+        )
+        for cid, title, w in (
+            ("fecha", "Adjuntado", 150),
+            ("modo", "Modo", 120),
+            ("base", "Material base", 110),
+            ("archivo", "Archivo", 180),
+            ("tse", "TSE", 70),
+            ("tre", "TRE", 70),
+            ("rec", "REC", 70),
+            ("tf", "TF", 70),
+            ("pts", "Puntos", 70),
+        ):
+            tree_thermal.heading(cid, text=title)
+            tree_thermal.column(cid, width=w, anchor="w")
+        tree_thermal.pack(fill="both", expand=True)
+        tree_thermal.bind("<Double-Button-1>", lambda e: self._open_thermal_in_analysis_tab(idx))
+        thermal_btns = ttk.Frame(tab_thermal)
+        thermal_btns.pack(fill="x", pady=(6, 0))
+        ttk.Button(thermal_btns, text="Cerrar pestaÃ±a", command=lambda: self._close_session_tab(idx)).pack(side="right")
 
         # Detalle (dock interno)
         detail_nb = ttk.Notebook(bottom)
@@ -381,8 +505,8 @@ class TabHistoricos(ttk.Frame):
         tree_mats.column("kg", width=80, anchor="e")
         tree_mats.pack(fill="both", expand=True)
 
-        # Botones
-        btns = ttk.Frame(tab)
+        # Botones solo para Ajustes / Calculos
+        btns = ttk.Frame(tab_activity)
         btns.pack(fill="x", pady=(6, 0))
         ttk.Button(btns, text="Editar ajuste", command=lambda: self._edit_adjustment_in_session(idx)).pack(side="left")
         ttk.Button(btns, text="Eliminar ajuste", command=lambda: self._delete_adjustment_in_session(idx)).pack(side="left", padx=6)
@@ -403,6 +527,14 @@ class TabHistoricos(ttk.Frame):
             "summary": summary,
             "tree_adj": tree_adj,
             "tree_calc": tree_calc,
+            "carbon_summary": carbon_summary,
+            "tree_carbon": tree_carbon,
+            "tree_ladles_summary": tree_ladles_summary,
+            "tree_ladles_events": tree_ladles_events,
+            "ladle_metric_values": ladle_metric_values,
+            "thermal_summary": thermal_summary,
+            "tree_thermal": tree_thermal,
+            "thermal_items": [],
             "detail_nb": detail_nb,
             "detail_tab": detail_tab,
             "comp_rows": comp_rows,
@@ -447,6 +579,13 @@ class TabHistoricos(ttk.Frame):
             pass
         tree_adj = data["tree_adj"]
         tree_calc = data["tree_calc"]
+        carbon_summary = data["carbon_summary"]
+        tree_carbon = data["tree_carbon"]
+        tree_ladles_summary = data["tree_ladles_summary"]
+        tree_ladles_events = data["tree_ladles_events"]
+        ladle_metric_values = data["ladle_metric_values"]
+        thermal_summary = data["thermal_summary"]
+        tree_thermal = data["tree_thermal"]
         for i in tree_adj.get_children():
             tree_adj.delete(i)
         for it in s.get("ajustes", []):
@@ -459,20 +598,255 @@ class TabHistoricos(ttk.Frame):
             ce_est = it.get("ce_estimado", "")
             ce_est = fmt(ce_est, 4) if isinstance(ce_est, (int, float)) else (ce_est or "")
             tree_calc.insert("", "end", values=(it.get("fecha", ""), it.get("porcentaje", ""), ce_est, it.get("resumen", "")))
+        for tree in (tree_carbon, tree_ladles_summary, tree_ladles_events, tree_thermal):
+            for item in tree.get_children():
+                tree.delete(item)
+        carbon_items = s.get("carbono", []) if isinstance(s.get("carbono", []), list) else []
+        for item in carbon_items:
+            if not isinstance(item, dict):
+                continue
+            ce_val = item.get("ce", "")
+            ce_val = fmt(ce_val, 4) if isinstance(ce_val, (int, float)) else (ce_val or "")
+            tree_carbon.insert(
+                "",
+                "end",
+                values=(
+                    item.get("fecha", ""),
+                    item.get("dt_inicio", "") or item.get("dt_termino", ""),
+                    item.get("source_name", ""),
+                    fmt(item.get("carbono", 0), 4),
+                    fmt(item.get("silicio", 0), 4),
+                    ce_val,
+                    item.get("ajuste_fecha", ""),
+                    item.get("ajuste_resumen", ""),
+                ),
+            )
+        if carbon_items:
+            latest = carbon_items[-1] if isinstance(carbon_items[-1], dict) else {}
+            carbon_summary.config(
+                text=(
+                    f"Analisis Carbono aplicados: {len(carbon_items)}\n"
+                    f"Ultimo: {latest.get('source_name', '')} | "
+                    f"C={fmt(latest.get('carbono', 0), 4)} | Si={fmt(latest.get('silicio', 0), 4)}"
+                )
+            )
+        else:
+            carbon_summary.config(text="Sin analisis Carbono aplicados por Carbomax automatico.")
+        for label in ladle_metric_values.values():
+            label.config(text="")
+        ladle_entry = self._ladle_entry_for_session(s)
+        if ladle_entry:
+            all_events = self._all_ladle_events(ladle_entry)
+            stats = ladle_entry.get("statistics", {})
+            ladle_metric_values["first"].config(text=str(stats.get("first_saved_at", "") or ""))
+            ladle_metric_values["last"].config(text=str(stats.get("last_saved_at", "") or ""))
+            ladle_metric_values["duration"].config(text=str(stats.get("duration_label", "") or ""))
+            ladle_metric_values["avg"].config(text=self._avg_ladle_interval_label(all_events))
+            rows = ladle_entry.get("rows", []) if isinstance(ladle_entry.get("rows", []), list) else []
+            for row in rows:
+                material = str(row.get("material_final", "") or "")
+                cantidad = int(row.get("cantidad", 0) or 0)
+                if cantidad <= 0:
+                    continue
+                tree_ladles_summary.insert("", "end", values=(material, cantidad))
+            for event in all_events:
+                tree_ladles_events.insert("", "end", values=(event.get("material", ""), event.get("time", "")))
+        if not tree_ladles_summary.get_children():
+            tree_ladles_summary.insert("", "end", values=("Sin cucharas cargadas", ""))
+        if not tree_ladles_events.get_children():
+            tree_ladles_events.insert("", "end", values=("", ""))
+
+        thermal_items = s.get("thermal_analysis", []) if isinstance(s.get("thermal_analysis", []), list) else []
+        data["thermal_items"] = list(thermal_items)
+        for item in thermal_items:
+            if not isinstance(item, dict):
+                continue
+            info = item.get("info", {}) if isinstance(item.get("info"), dict) else {}
+            tree_thermal.insert(
+                "",
+                "end",
+                values=(
+                    item.get("attached_at", ""),
+                    info.get("Modo", ""),
+                    item.get("material_base", ""),
+                    item.get("source_name", ""),
+                    info.get("TSE", ""),
+                    info.get("TRE", ""),
+                    info.get("REC", ""),
+                    info.get("TF", ""),
+                    item.get("point_count", ""),
+                ),
+            )
+        if thermal_items:
+            latest = thermal_items[-1] if isinstance(thermal_items[-1], dict) else {}
+            latest_info = latest.get("info", {}) if isinstance(latest.get("info"), dict) else {}
+            thermal_summary.config(
+                text=(
+                    f"Analisis termicos adjuntos: {len(thermal_items)}\n"
+                    f"Ultimo archivo: {latest.get('source_name', '')}\n"
+                    f"TSE: {latest_info.get('TSE', '')} | TRE: {latest_info.get('TRE', '')} | "
+                    f"REC: {latest_info.get('REC', '')} | TF: {latest_info.get('TF', '')}"
+                )
+            )
+        else:
+            thermal_summary.config(text="Sin analisis termicos adjuntos.")
 
         # Si habia detalle seleccionado, re-pintar
         if data["detail_kind"] is not None and data["detail_row"] is not None:
             self._open_detail_in_tab(idx, data["detail_kind"], data["detail_row"])
 
     def _summary_text(self, session):
+        ladle_entry = self._ladle_entry_for_session(session)
+        ladles_count = int((ladle_entry or {}).get("total_cucharas", 0) or 0)
         return (
             f"Colada: {session.get('colada', '')}\\n"
             f"Objetivo: {session.get('objetivo', '')}\\n"
             f"Guardado: {'Automatico' if session.get('auto_saved') else 'Manual'}\\n"
             f"Inicio: {session.get('started_at', '')}\\n"
             f"Fin: {session.get('ended_at', '')}\\n"
-            f"Ajustes: {len(session.get('ajustes', []))} | Calculos: {len(session.get('calculos', []))}"
+            f"Ajustes: {len(session.get('ajustes', []))} | Calculos: {len(session.get('calculos', []))} | "
+            f"Carbono: {len(session.get('carbono', []) or [])} | Cucharas: {ladles_count} | "
+            f"Analisis termico: {len(session.get('thermal_analysis', []) or [])}"
         )
+
+    def _open_thermal_in_analysis_tab(self, idx):
+        data = self._session_tabs.get(idx)
+        if not data:
+            return
+        tree_thermal = data.get("tree_thermal")
+        if tree_thermal is None:
+            return
+        selection = tree_thermal.selection()
+        if not selection:
+            return
+        row_idx = tree_thermal.index(selection[0])
+        thermal_items = data.get("thermal_items", [])
+        if row_idx < 0 or row_idx >= len(thermal_items):
+            return
+        item = thermal_items[row_idx]
+        if not isinstance(item, dict):
+            return
+        source_file = str(item.get("source_file", "") or "").strip()
+        if not source_file:
+            messagebox.showinfo("Historial", "Este analisis termico no tiene origen vinculado.", parent=self)
+            return
+        if self._thermal_tab is None or self._root_notebook is None:
+            messagebox.showerror("Historial", "La pestaÃ±a de Analisis termico no esta disponible.", parent=self)
+            return
+        if not self._thermal_tab.open_records([source_file], additive=True):
+            messagebox.showerror(
+                "Historial",
+                "No se pudo encontrar ese analisis en la pestaÃ±a de Analisis termico.",
+                parent=self,
+            )
+            return
+        self._root_notebook.select(self._thermal_tab)
+
+    def _ladle_entries_for_session(self, session):
+        entry = self._ladle_entry_for_session(session)
+        return [entry] if entry else []
+
+    def _ladle_entry_for_session(self, session):
+        idn, yy, _ = split_colada(session.get("colada", ""))
+        if not idn:
+            key = str(session.get("colada", "")).strip()
+        else:
+            key = f"{int(idn):04d} /{str(yy).zfill(2)}"
+        history_by_colada = self.ladles.get("history_by_colada", {}) if isinstance(self.ladles, dict) else {}
+        entries = history_by_colada.get(key, [])
+        if isinstance(entries, list):
+            if not entries:
+                return None
+            latest = entries[-1] if isinstance(entries[-1], dict) else {}
+            rows = latest.get("rows", []) if isinstance(latest.get("rows", []), list) else []
+            return {
+                "saved_at": latest.get("saved_at", ""),
+                "material_objetivo": latest.get("material_objetivo", ""),
+                "rows": rows,
+                "events": {},
+                "total_cucharas": latest.get("total_cucharas", sum(int(row.get("cantidad", 0) or 0) for row in rows)),
+                "statistics": {},
+            }
+        if not isinstance(entries, dict):
+            return None
+        stats = entries.get("statistics", {}) if isinstance(entries.get("statistics", {}), dict) else {}
+        stat_rows = stats.get("rows", []) if isinstance(stats.get("rows", []), list) else []
+        rows = []
+        if stat_rows:
+            for row in stat_rows:
+                if not isinstance(row, dict):
+                    continue
+                rows.append({
+                    "material_final": row.get("material_final", ""),
+                    "cantidad": row.get("total", 0),
+                })
+        else:
+            counts = entries.get("counts", {}) if isinstance(entries.get("counts", {}), dict) else {}
+            rows = [{"material_final": key, "cantidad": value} for key, value in sorted(counts.items())]
+        return {
+            "saved_at": entries.get("updated_at", ""),
+            "material_objetivo": entries.get("material_objetivo", ""),
+            "rows": rows,
+            "events": entries.get("events", {}) if isinstance(entries.get("events", {}), dict) else {},
+            "total_cucharas": stats.get("total_cucharas", sum(int(row.get("cantidad", 0) or 0) for row in rows)),
+            "statistics": stats,
+        }
+
+    def _ladle_event_times(self, entry, material):
+        events = entry.get("events", {}) if isinstance(entry, dict) else {}
+        raw = events.get(material, []) if isinstance(events, dict) else []
+        if not isinstance(raw, list):
+            return []
+        out = []
+        for item in raw:
+            if isinstance(item, dict):
+                value = str(item.get("saved_at", "") or "").strip()
+            else:
+                value = str(item or "").strip()
+            if value:
+                out.append(value)
+        return out
+
+    def _all_ladle_events(self, entry):
+        events = entry.get("events", {}) if isinstance(entry, dict) else {}
+        out = []
+        if not isinstance(events, dict):
+            return out
+        for material, raw in events.items():
+            if not isinstance(raw, list):
+                continue
+            for item in raw:
+                if isinstance(item, dict):
+                    value = str(item.get("saved_at", "") or "").strip()
+                else:
+                    value = str(item or "").strip()
+                if value:
+                    out.append({"material": str(material), "time": value})
+        return sorted(out, key=lambda row: row.get("time", ""))
+
+    def _avg_ladle_interval_label(self, events):
+        parsed = []
+        for event in events or []:
+            try:
+                parsed.append(datetime.fromisoformat(str(event.get("time", ""))))
+            except Exception:
+                pass
+        parsed.sort()
+        if len(parsed) < 2:
+            return ""
+        total_seconds = (parsed[-1] - parsed[0]).total_seconds()
+        avg_seconds = total_seconds / max(1, len(parsed) - 1)
+        return self._duration_label(avg_seconds)
+
+    def _duration_label(self, seconds):
+        total = max(0, int(seconds or 0))
+        hours, rem = divmod(total, 3600)
+        minutes, secs = divmod(rem, 60)
+        if hours:
+            return f"{hours}h {minutes:02d}m"
+        if minutes:
+            return f"{minutes}m {secs:02d}s"
+        return f"{secs}s"
 
     def _open_detail_in_tab(self, session_idx, kind, row_idx):
         if row_idx is None:
@@ -572,7 +946,11 @@ class TabHistoricos(ttk.Frame):
         btns = ttk.Frame(win); btns.pack(fill="x", padx=10, pady=8)
         def save():
             s2 = dict(s); s2["colada"] = v.get().strip()
-            update_session(idx, s2)
+            try:
+                update_session(idx, s2)
+            except DuplicateColadaError as ex:
+                messagebox.showerror("Editar", str(ex), parent=win)
+                return
             self.refresh(); win.destroy()
         ttk.Button(btns, text="Guardar", command=save).pack(side="right")
         ttk.Button(btns, text="Cancelar", command=win.destroy).pack(side="right", padx=6)

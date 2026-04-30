@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pie de Horno</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Host ajuste_comp</p>
+        <div class="title-row">
+          <h1>Pie de horno</h1>
+          <div class="topbar-actions" aria-label="Acciones rapidas">
+            <button class="topbar-button" id="reload-app-btn" type="button">Recargar</button>
+            <button class="topbar-button" id="keyboard-toggle-btn" type="button">Teclado</button>
+          </div>
+        </div>
+      </div>
+      <div class="topbar-meta">
+        <div class="status-pill" id="status-pill">Sin conectar</div>
+        <div class="meta-block">
+          <span class="meta-label">Ultima actualizacion</span>
+          <strong id="updated-at">-</strong>
+        </div>
+      </div>
+    </header>
+
+    <div class="approval-banner" id="approval-banner"></div>
+    <input class="keyboard-focus-input" id="keyboard-focus-input" autocomplete="off" aria-label="Activador de teclado">
+
+    <div class="device-name-modal" id="device-name-modal" aria-hidden="true">
+      <form class="device-name-card" id="device-name-form">
+        <p class="card-kicker">Identificacion</p>
+        <h2>Nombre de este dispositivo</h2>
+        <p>
+          Escribi un nombre para que el host sepa quien esta intentando conectarse.
+        </p>
+        <input
+          id="device-name-input"
+          maxlength="80"
+          autocomplete="off"
+          placeholder="Ej: Raspberry pie horno 1"
+        >
+        <button class="action-button big" type="submit">Continuar</button>
+      </form>
+    </div>
+
+    <nav class="tabbar" aria-label="Secciones">
+      <button class="tab is-active" data-tab-target="ajuste-panel" type="button">Pestana ajuste</button>
+      <button class="tab" data-tab-target="cucharas-panel" type="button">Pestana cucharas</button>
+    </nav>
+
+    <main class="panels">
+      <section class="panel is-active" id="ajuste-panel">
+        <div class="summary-grid">
+          <article class="summary-card">
+            <span class="summary-label">Numero colada actual</span>
+            <strong class="summary-value" id="colada-actual"></strong>
+          </article>
+          <article class="summary-card" hidden>
+            <span class="summary-label">Material objetivo</span>
+            <strong class="summary-value" id="material-objetivo"></strong>
+          </article>
+          <article class="summary-card">
+            <span class="summary-label">Hora actual</span>
+            <strong class="summary-value" id="hora-actual"></strong>
+          </article>
+        </div>
+
+        <div class="content-grid">
+          <section class="data-card">
+            <div class="card-header">
+              <div>
+                <p class="card-kicker">Ajuste aplicado</p>
+                <h2>Materiales de ajuste a anadir al horno</h2>
+              </div>
+              <div class="toolbar-actions editor-actions" id="ajuste-editor-actions">
+                <button class="action-button secondary" data-ajuste-all-pct="25" type="button">25%</button>
+                <button class="action-button secondary" data-ajuste-all-pct="50" type="button">50%</button>
+                <button class="action-button secondary" data-ajuste-all-pct="75" type="button">75%</button>
+                <button class="action-button" data-ajuste-all-pct="100" type="button">100%</button>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Material</th>
+                    <th>KG plan</th>
+                    <th>% horno</th>
+                    <th>KG horno</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="materiales-body"></tbody>
+              </table>
+              <p class="empty-state" id="materiales-empty">Sin ajuste aplicado.</p>
+            </div>
+            <div class="toolbar">
+              <div class="toolbar-status" id="ajuste-status"></div>
+              <div class="toolbar-actions editor-actions" id="ajuste-save-actions">
+                <button class="action-button big" id="ajuste-save-btn" type="button">Guardar</button>
+              </div>
+            </div>
+          </section>
+
+          <section class="data-card">
+            <div class="card-header">
+              <div>
+                <p class="card-kicker">Composicion</p>
+                <h2>Quimica actual</h2>
+              </div>
+            </div>
+            <div class="ce-banner" id="ce-actual-banner">
+              <span class="ce-label">Carbono equivalente</span>
+              <strong id="ce-actual-value"></strong>
+            </div>
+            <div class="table-wrap narrow">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Elemento</th>
+                    <th>Valor</th>
+                  </tr>
+                </thead>
+                <tbody id="comp-actual-body"></tbody>
+              </table>
+              <p class="empty-state" id="comp-actual-empty">Sin datos enviados.</p>
+            </div>
+          </section>
+
+          <section class="data-card">
+            <div class="card-header">
+              <div>
+                <p class="card-kicker">Composicion</p>
+                <h2>Quimica estimada</h2>
+              </div>
+            </div>
+            <div class="ce-banner" id="ce-estimada-banner">
+              <span class="ce-label">Carbono equivalente</span>
+              <strong id="ce-estimada-value"></strong>
+            </div>
+            <div class="table-wrap narrow">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Elemento</th>
+                    <th>Valor</th>
+                  </tr>
+                </thead>
+                <tbody id="comp-estimada-body"></tbody>
+              </table>
+              <p class="empty-state" id="comp-estimada-empty">Sin datos enviados.</p>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="panel" id="cucharas-panel">
+        <div class="danger-banner" id="cucharas-saved-warning"></div>
+
+        <div class="cucharas-topline">
+          <nav class="subtabbar" aria-label="Cucharas">
+            <button class="subtab is-active" data-cucharas-tab-target="cucharas-count-panel" type="button">Conteo</button>
+            <button class="subtab" data-cucharas-tab-target="cucharas-stats-panel" type="button">Estadisticas</button>
+          </nav>
+          <div class="toolbar-actions editor-actions primary-editor-actions" id="cucharas-editor-actions">
+            <button class="action-button big secondary" id="cucharas-start-btn" type="button">Iniciar</button>
+            <button class="action-button big" id="cucharas-save-btn" type="button">Guardar</button>
+          </div>
+        </div>
+
+        <section class="cucharas-subpanel is-active" id="cucharas-count-panel">
+          <div class="summary-grid">
+            <article class="summary-card">
+              <span class="summary-label">Numero colada actual</span>
+              <strong class="summary-value" id="cucharas-colada"></strong>
+            </article>
+            <article class="summary-card">
+              <span class="summary-label">Hora actual</span>
+              <strong class="summary-value" id="cucharas-hora"></strong>
+            </article>
+            <article class="summary-card">
+              <span class="summary-label">Total cucharas</span>
+              <strong class="summary-value" id="total-cucharas">0</strong>
+            </article>
+            <article class="summary-card" hidden>
+              <span class="summary-label">Material objetivo</span>
+              <strong class="summary-value" id="cucharas-material"></strong>
+            </article>
+          </div>
+
+          <section class="data-card">
+            <div class="card-header">
+              <div>
+                <p class="card-kicker">Conteo operativo</p>
+                <h2>Cucharas por material final</h2>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Material final</th>
+                    <th>Cucharas cantidad</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody id="cucharas-body"></tbody>
+              </table>
+              <p class="empty-state" id="cucharas-empty">No hay materiales finales configurados para el material objetivo actual.</p>
+            </div>
+            <div class="toolbar">
+              <div class="toolbar-status" id="cucharas-status"></div>
+            </div>
+          </section>
+        </section>
+
+        <section class="cucharas-subpanel" id="cucharas-stats-panel">
+          <div class="summary-grid stats-summary">
+            <article class="summary-card">
+              <span class="summary-label">Total cucharas</span>
+              <strong class="summary-value" id="stats-total-cucharas">0</strong>
+            </article>
+            <article class="summary-card">
+              <span class="summary-label">Tiempo primera a ultima</span>
+              <strong class="summary-value" id="stats-duration"></strong>
+            </article>
+            <article class="summary-card">
+              <span class="summary-label">Primera carga</span>
+              <strong class="summary-value small" id="stats-first"></strong>
+            </article>
+            <article class="summary-card">
+              <span class="summary-label">Ultima carga</span>
+              <strong class="summary-value small" id="stats-last"></strong>
+            </article>
+          </div>
+
+          <section class="data-card">
+            <div class="card-header">
+              <div>
+                <p class="card-kicker">Estadisticas</p>
+                <h2>Cucharas por material</h2>
+              </div>
+            </div>
+            <div class="table-wrap stats-table">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Material final</th>
+                    <th>Total</th>
+                    <th>Primera</th>
+                    <th>Ultima</th>
+                    <th>Tiempo</th>
+                  </tr>
+                </thead>
+                <tbody id="cucharas-stats-body"></tbody>
+              </table>
+              <p class="empty-state" id="cucharas-stats-empty">Sin cucharas cargadas todavia.</p>
+            </div>
+            <div class="stats-reserved">
+              Espacio reservado para nuevas estadisticas.
+            </div>
+          </section>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <div class="idle-clock-overlay" id="idle-clock-overlay" aria-hidden="true">
+    <div class="idle-clock-time" id="idle-clock-time">--:--</div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

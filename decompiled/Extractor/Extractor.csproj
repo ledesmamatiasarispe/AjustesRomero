@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk.WindowsDesktop">
+  <PropertyGroup>
+    <AssemblyName>Extractor</AssemblyName>
+    <GenerateAssemblyInfo>False</GenerateAssemblyInfo>
+    <OutputType>WinExe</OutputType>
+    <UseWindowsForms>True</UseWindowsForms>
+    <TargetFramework>net451</TargetFramework>
+    <PlatformTarget>x86</PlatformTarget>
+  </PropertyGroup>
+  <PropertyGroup>
+    <LangVersion>Preview</LangVersion>
+    <AllowUnsafeBlocks>True</AllowUnsafeBlocks>
+  </PropertyGroup>
+  <PropertyGroup>
+    <ApplicationIcon>app.ico</ApplicationIcon>
+    <RootNamespace />
+  </PropertyGroup>
+  <ItemGroup>
+    <None Remove="CarbomaxDelta.Reports.rdlc.Rep.rdlc" />
+    <None Remove="CarbomaxDelta.Reports.rdlc.Rep.rdlc" />
+    <None Remove="CarbomaxDelta.Reports.rdlc.Rep.rdlc" />
+    <None Remove="CarbomaxDelta.Reports.rdlc.Rep.rdlc" />
+    <None Remove="CarbomaxDelta.Reports.rdlc.Rep.rdlc" />
+    <EmbeddedResource Include="CarbomaxDelta.Reports.rdlc.Rep.rdlc" />
+    <EmbeddedResource Include="CarbomaxDelta.Reports.rdlc.Rep.rdlc" />
+    <EmbeddedResource Include="CarbomaxDelta.Reports.rdlc.Rep.rdlc" />
+    <EmbeddedResource Include="CarbomaxDelta.Reports.rdlc.Rep.rdlc" />
+    <EmbeddedResource Include="CarbomaxDelta.Reports.rdlc.Rep.rdlc" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="System.Data" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Data.SQLite">
+      <HintPath>..\..\..\..\..\..\ITALTERM Software\Extractor CarbomaxDelta\System.Data.SQLite.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Windows.Forms.DataVisualization" />
+    <Reference Include="System.Configuration" />
+    <Reference Include="Microsoft.ReportViewer.WinForms" />
+    <Reference Include="Microsoft.CSharp" />
+    <Reference Include="Newtonsoft.Json">
+      <HintPath>..\..\..\..\..\..\ITALTERM Software\Extractor CarbomaxDelta\Newtonsoft.Json.dll</HintPath>
+    </Reference>
+    <Reference Include="System.Data.DataSetExtensions" />
+  </ItemGroup>
+</Project>

@@ -40,6 +40,22 @@ def _normalize_especiales(esp_dict):
         if clean: esp["CE_custom"] = clean
     return esp
 
+def _catalog_entries_named(model, name):
+    target = str(name or "").strip()
+    if not target:
+        return []
+    return [a for a in model if str(a.get("nombre", "")).strip() == target]
+
+def _find_limit_targets(model, name, alloy_type=None):
+    matches = _catalog_entries_named(model, name)
+    if not matches:
+        return []
+    wanted_type = str(alloy_type or "").strip()
+    if wanted_type:
+        return [a for a in matches if a.get("tipo", "") == wanted_type]
+    preferred = [a for a in matches if a.get("tipo", "") in ("Aleación propia", "Aleación final")]
+    return preferred or matches
+
 def _basic_alloys():
     def alloy(nombre, tipo, rendimiento, costo, comp, limites=None, especiales=None, ajuste=False):
         cdict = {e: 0.0 for e in ELEMENTS}; cdict.update(comp)
@@ -226,14 +242,14 @@ class TabCatalogo(ttk.Frame):
         try:
             with open(fp, "w", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
-                header = ["nombre","CE_formula","CE_min","CE_max"]
+                header = ["nombre","tipo","CE_formula","CE_min","CE_max"]
                 for e in ELEMENTS:
                     header += [f"{e}_soft_min", f"{e}_soft_max"]
                 w.writerow(header)
                 for a in self.model:
                     if a.get("tipo","") not in ("Aleación propia", "Aleación final"):
                         continue
-                    row = [a.get("nombre","")]
+                    row = [a.get("nombre",""), a.get("tipo","")]
                     esp = a.get("especiales", {})
                     row += [esp.get("CE_formula","FUNDICION"), fmt_opt(esp.get("CE_min")), fmt_opt(esp.get("CE_max"))]
                     lim = a.get("limites", {})
@@ -249,37 +265,49 @@ class TabCatalogo(ttk.Frame):
         fp = filedialog.askopenfilename(filetypes=[("CSV","*.csv")], title="Importar límites (Aleación propia/final)")
         if not fp: return
         try:
-            updated = 0; skipped = 0
+            updated = 0; skipped = 0; ambiguous = 0
             with open(fp, "r", encoding="utf-8") as f:
                 r = csv.DictReader(f)
                 for row in r:
                     name = (row.get("nombre","") or "").strip()
                     if not name: skipped += 1; continue
-                    found = None
-                    for a in self.model:
-                        if a.get("nombre","") == name: found = a; break
-                    if not found: skipped += 1; continue
-                    # especiales
-                    esp = found.get("especiales", {})
-                    esp["CE_formula"] = _norm(row.get("CE_formula","FUNDICION")) or "FUNDICION"
-                    esp["CE_min"] = to_float_or_none(row.get("CE_min",""))
-                    esp["CE_max"] = to_float_or_none(row.get("CE_max",""))
-                    found["especiales"] = _normalize_especiales(esp)
-                    # límites (soft)
-                    lim = found.get("limites", {})
-                    for e in ELEMENTS:
-                        lim_e = lim.get(e, {"soft_min":None,"soft_max":None,"hard_min":None,"hard_max":None})
-                        lim_e["soft_min"] = to_float_or_none(row.get(f"{e}_soft_min", ""))
-                        lim_e["soft_max"] = to_float_or_none(row.get(f"{e}_soft_max", ""))
-                        lim_e["hard_min"] = None
-                        lim_e["hard_max"] = None
-                        lim[e] = lim_e
-                    found["limites"] = lim
-                    if found.get("tipo","") not in ("Aleación propia", "Aleación final"):
-                        found["tipo"] = "Aleación propia"
-                    updated += 1
+                    alloy_type = (row.get("tipo", "") or "").strip()
+                    targets = _find_limit_targets(self.model, name, alloy_type=alloy_type)
+                    if alloy_type:
+                        if not targets:
+                            skipped += 1
+                            continue
+                    else:
+                        if len(targets) != 1:
+                            skipped += 1
+                            if len(targets) > 1:
+                                ambiguous += 1
+                            continue
+                    for found in targets:
+                        # especiales
+                        esp = found.get("especiales", {})
+                        esp["CE_formula"] = _norm(row.get("CE_formula","FUNDICION")) or "FUNDICION"
+                        esp["CE_min"] = to_float_or_none(row.get("CE_min",""))
+                        esp["CE_max"] = to_float_or_none(row.get("CE_max",""))
+                        found["especiales"] = _normalize_especiales(esp)
+                        # límites (soft)
+                        lim = found.get("limites", {})
+                        for e in ELEMENTS:
+                            lim_e = lim.get(e, {"soft_min":None,"soft_max":None,"hard_min":None,"hard_max":None})
+                            lim_e["soft_min"] = to_float_or_none(row.get(f"{e}_soft_min", ""))
+                            lim_e["soft_max"] = to_float_or_none(row.get(f"{e}_soft_max", ""))
+                            lim_e["hard_min"] = None
+                            lim_e["hard_max"] = None
+                            lim[e] = lim_e
+                        found["limites"] = lim
+                        if found.get("tipo","") not in ("Aleación propia", "Aleación final"):
+                            found["tipo"] = "Aleación propia"
+                        updated += 1
             self._save_and_refresh()
-            messagebox.showinfo("Importar límites", f"Actualizadas: {updated}\nIgnoradas: {skipped}")
+            msg = f"Actualizadas: {updated}\nIgnoradas: {skipped}"
+            if ambiguous:
+                msg += f"\nAmbiguas sin tipo: {ambiguous}"
+            messagebox.showinfo("Importar límites", msg)
         except Exception as ex:
             messagebox.showerror("Importar límites", f"No se pudo importar:\n{ex}")
 
@@ -373,9 +401,12 @@ class TabCatalogo(ttk.Frame):
         rowf2 = ttk.Frame(final_frame); rowf2.pack(fill="x", pady=2)
         ttk.Label(rowf2, text="Tamaño grafito", width=16).pack(side="left")
         ttk.Entry(rowf2, textvariable=final_tam, width=12).pack(side="left", padx=6)
-        ttk.Label(rowf2, text="Morfología", width=16).pack(side="left", padx=(20,0))
-        ttk.Entry(rowf2, textvariable=final_morf, width=18).pack(side="left", padx=6)
-        ttk.Label(rowf2, text="Tipo grafito", width=10).pack(side="left", padx=(20,0))
+        final_morf_label = ttk.Label(rowf2, text="Morfología", width=16)
+        final_morf_label.pack(side="left", padx=(20,0))
+        final_morf_entry = ttk.Entry(rowf2, textvariable=final_morf, width=18)
+        final_morf_entry.pack(side="left", padx=6)
+        final_tipo_label = ttk.Label(rowf2, text="Tipo grafito", width=10)
+        final_tipo_label.pack(side="left", padx=(20,0))
         ttk.Entry(rowf2, textvariable=final_tipo_graf, width=18).pack(side="left", padx=6)
 
         rowf3 = ttk.Frame(final_frame); rowf3.pack(fill="x", pady=2)
@@ -560,6 +591,20 @@ class TabCatalogo(ttk.Frame):
         if not final_family.get().strip():
             final_family.set("Gris")
 
+        def _toggle_final_family_fields(*_):
+            if final_family.get().strip() == "Nodular":
+                final_morf.set("")
+                final_morf_label.pack_forget()
+                final_morf_entry.pack_forget()
+            else:
+                if not final_morf_label.winfo_manager():
+                    final_morf_label.pack(side="left", padx=(20,0), before=final_tipo_label)
+                if not final_morf_entry.winfo_manager():
+                    final_morf_entry.pack(side="left", padx=6, before=final_tipo_label)
+
+        cb_final_family.bind("<<ComboboxSelected>>", _toggle_final_family_fields)
+        _toggle_final_family_fields()
+
         final_frame.pack(fill="x", pady=(12, 0))
 
         def _toggle_dialog_mode(*_):
@@ -624,7 +669,7 @@ class TabCatalogo(ttk.Frame):
                         "seccion": final_seccion.get().strip(),
                         "dureza": final_dureza.get().strip(),
                         "tam_grafito": final_tam.get().strip(),
-                        "morfologia": final_morf.get().strip(),
+                        "morfologia": "" if family == "Nodular" else final_morf.get().strip(),
                         "tipo_grafito": final_tipo_graf.get().strip(),
                         "conteo_nodulos": final_conteo.get().strip(),
                         "pct_nodularizacion": final_pct_nod.get().strip(),

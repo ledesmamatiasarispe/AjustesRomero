@@ -1,6 +1,8 @@
 # tab_historicos.py
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+import csv
+import html
 import json
 import re
 from datetime import datetime
@@ -511,6 +513,8 @@ class TabHistoricos(ttk.Frame):
         ttk.Button(btns, text="Editar ajuste", command=lambda: self._edit_adjustment_in_session(idx)).pack(side="left")
         ttk.Button(btns, text="Eliminar ajuste", command=lambda: self._delete_adjustment_in_session(idx)).pack(side="left", padx=6)
         ttk.Button(btns, text="Resumen de ajustes", command=lambda: self._show_resumen_ajustes(idx)).pack(side="left", padx=6)
+        ttk.Button(btns, text="PDF composicion final", command=lambda: self._export_final_composition_pdf_for_session(idx)).pack(side="left", padx=6)
+        ttk.Button(btns, text="CSV composicion final", command=lambda: self._export_final_composition_csv_for_session(idx)).pack(side="left", padx=6)
         ttk.Button(btns, text="Cerrar pestaña", command=lambda: self._close_session_tab(idx)).pack(side="right")
 
         tree_adj.bind(
@@ -1055,6 +1059,218 @@ class TabHistoricos(ttk.Frame):
         ttk.Button(btns, text="Cancelar", command=win.destroy).pack(side="right", padx=6)
 
     # ---------------------------- export -----------------------------------
+    def _selected_adjustment_index(self, session_idx):
+        data = self._session_tabs.get(session_idx)
+        ajustes = self.hist[session_idx].get("ajustes", []) if 0 <= session_idx < len(self.hist) else []
+        tree = data.get("tree_adj") if data else None
+        if tree is not None:
+            sel = tree.selection()
+            if sel:
+                return tree.index(sel[0])
+        if ajustes:
+            return len(ajustes) - 1
+        return None
+
+    def _safe_filename_part(self, value):
+        text = str(value or "").strip()
+        text = re.sub(r"[^A-Za-z0-9_.-]+", "_", text)
+        return text.strip("_") or "sesion"
+
+    def _export_final_composition_pdf_for_session(self, session_idx):
+        if session_idx < 0 or session_idx >= len(self.hist):
+            return
+        session = self.hist[session_idx]
+        ajustes = self._session_adjustments(session)
+        if not ajustes:
+            messagebox.showinfo("Exportar PDF", "Esta sesion no tiene ajustes guardados.", parent=self)
+            return
+        adj_idx = self._selected_adjustment_index(session_idx)
+        if adj_idx is None or adj_idx < 0 or adj_idx >= len(ajustes):
+            adj_idx = len(ajustes) - 1
+        adj = ajustes[adj_idx]
+
+        colada = self._safe_filename_part(session.get("colada", ""))
+        fecha = self._safe_filename_part(adj.get("fecha", ""))
+        initialfile = f"composicion_final_{colada}_ajuste_{adj_idx + 1}_{fecha}.pdf"
+        fp = filedialog.asksaveasfilename(
+            defaultextension=".pdf",
+            filetypes=[("PDF", "*.pdf")],
+            title="Exportar composicion final a PDF",
+            initialfile=initialfile,
+            parent=self,
+        )
+        if not fp:
+            return
+        try:
+            self._write_final_composition_pdf(fp, session, adj, adj_idx)
+        except ImportError:
+            messagebox.showerror(
+                "Exportar PDF",
+                "No se pudo importar reportlab. Instala reportlab para exportar PDF.",
+                parent=self,
+            )
+        except Exception as ex:
+            messagebox.showerror("Exportar PDF", f"No se pudo generar el PDF.\n\n{ex}", parent=self)
+        else:
+            messagebox.showinfo("Exportar PDF", f"PDF generado:\n{fp}", parent=self)
+
+    def _export_final_composition_csv_for_session(self, session_idx):
+        if session_idx < 0 or session_idx >= len(self.hist):
+            return
+        session = self.hist[session_idx]
+        ajustes = self._session_adjustments(session)
+        if not ajustes:
+            messagebox.showinfo("Exportar CSV", "Esta sesion no tiene ajustes guardados.", parent=self)
+            return
+        adj_idx = self._selected_adjustment_index(session_idx)
+        if adj_idx is None or adj_idx < 0 or adj_idx >= len(ajustes):
+            adj_idx = len(ajustes) - 1
+        adj = ajustes[adj_idx]
+
+        colada = self._safe_filename_part(session.get("colada", ""))
+        fecha = self._safe_filename_part(adj.get("fecha", ""))
+        initialfile = f"composicion_final_{colada}_ajuste_{adj_idx + 1}_{fecha}.csv"
+        fp = filedialog.asksaveasfilename(
+            defaultextension=".csv",
+            filetypes=[("CSV", "*.csv")],
+            title="Exportar composicion final a CSV",
+            initialfile=initialfile,
+            parent=self,
+        )
+        if not fp:
+            return
+        try:
+            self._write_final_composition_csv(fp, session, adj, adj_idx)
+        except Exception as ex:
+            messagebox.showerror("Exportar CSV", f"No se pudo generar el CSV.\n\n{ex}", parent=self)
+        else:
+            messagebox.showinfo("Exportar CSV", f"CSV generado:\n{fp}", parent=self)
+
+    def _session_adjustments(self, session):
+        ajustes = session.get("ajustes", [])
+        return ajustes if isinstance(ajustes, list) else []
+
+    def _final_composition_export_data(self, session, adj, adj_idx):
+        inicial = adj.get("inicial", {}) if isinstance(adj.get("inicial", {}), dict) else {}
+        estimado = adj.get("estimado", {}) if isinstance(adj.get("estimado", {}), dict) else {}
+        comp_ini = inicial.get("comp", {}) if isinstance(inicial.get("comp", {}), dict) else {}
+        comp_fin = estimado.get("comp", {}) if isinstance(estimado.get("comp", {}), dict) else {}
+        comp_obj = adj.get("objetivo_comp", {}) if isinstance(adj.get("objetivo_comp", {}), dict) else {}
+        if not comp_obj:
+            comp_obj = self._objective_comp(session)
+
+        info_rows = [
+            ["Campo", "Valor"],
+            ["Colada", session.get("colada", "")],
+            ["Objetivo", session.get("objetivo", "") or adj.get("objetivo", "")],
+            ["Inicio sesion", session.get("started_at", "")],
+            ["Fin sesion", session.get("ended_at", "")],
+            ["Ajuste", str(adj_idx + 1)],
+            ["Fecha ajuste", adj.get("fecha", "")],
+            ["Masa inicial kg", fmt(inicial.get("masa", 0), 3)],
+            ["Masa final kg", fmt(estimado.get("masa", 0), 3)],
+            ["CE inicial", fmt(adj.get("ce_inicial", ""), 4) if adj.get("ce_inicial", "") != "" else ""],
+            ["CE final", fmt(adj.get("ce_estimado", ""), 4) if adj.get("ce_estimado", "") != "" else ""],
+            ["CE objetivo", fmt(adj.get("ce_objetivo", ""), 4) if adj.get("ce_objetivo", "") != "" else ""],
+            ["Formula CE", adj.get("ce_formula", "")],
+        ]
+
+        comp_rows = [["Elemento", "Inicial %", "Final %", "Objetivo %", "Delta final-objetivo"]]
+        for el in ELEMENTS:
+            v_ini = to_float(comp_ini.get(el, 0.0))
+            v_fin = to_float(comp_fin.get(el, 0.0))
+            v_obj = to_float(comp_obj.get(el, 0.0))
+            if abs(v_ini) > 1e-12 or abs(v_fin) > 1e-12 or abs(v_obj) > 1e-12:
+                comp_rows.append([el, fmt(v_ini, 4), fmt(v_fin, 4), fmt(v_obj, 4), fmt(v_fin - v_obj, 4)])
+        if len(comp_rows) == 1:
+            comp_rows.append(["Sin datos", "", "", "", ""])
+
+        mats = adj.get("materiales", {}) if isinstance(adj.get("materiales", {}), dict) else {}
+        mat_rows = [["Material", "kg"]]
+        for name, kg in sorted(mats.items()):
+            mat_rows.append([str(name), fmt(kg, 3)])
+        if len(mat_rows) == 1:
+            mat_rows.append(["Sin materiales", ""])
+        return info_rows, comp_rows, mat_rows
+
+    def _write_final_composition_csv(self, fp, session, adj, adj_idx):
+        info_rows, comp_rows, mat_rows = self._final_composition_export_data(session, adj, adj_idx)
+        with open(fp, "w", encoding="utf-8-sig", newline="") as f:
+            writer = csv.writer(f, delimiter=";")
+            writer.writerow(["Composicion quimica final"])
+            writer.writerows(info_rows)
+            writer.writerow([])
+            writer.writerow(["Composicion"])
+            writer.writerows(comp_rows)
+            writer.writerow([])
+            writer.writerow(["Materiales aplicados"])
+            writer.writerows(mat_rows)
+            resumen = str(adj.get("resumen", "") or "").strip()
+            if resumen:
+                writer.writerow([])
+                writer.writerow(["Resumen", resumen])
+            writer.writerow([])
+            writer.writerow(["Generado", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+
+    def _write_final_composition_pdf(self, fp, session, adj, adj_idx):
+        from reportlab.lib import colors
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet
+        from reportlab.lib.units import mm
+        from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+        styles = getSampleStyleSheet()
+        doc = SimpleDocTemplate(
+            fp,
+            pagesize=A4,
+            leftMargin=14 * mm,
+            rightMargin=14 * mm,
+            topMargin=14 * mm,
+            bottomMargin=14 * mm,
+        )
+        story = []
+        story.append(Paragraph("Composicion quimica final", styles["Title"]))
+        story.append(Paragraph(f"Sesion: {html.escape(str(session.get('colada', '') or ''))}", styles["Heading2"]))
+        story.append(Spacer(1, 6))
+        info_rows, comp_rows, mat_rows = self._final_composition_export_data(session, adj, adj_idx)
+        story.append(self._pdf_table(info_rows, colors.HexColor("#eef2f7")))
+        story.append(Spacer(1, 10))
+
+        story.append(Paragraph("Composicion", styles["Heading2"]))
+        story.append(self._pdf_table(comp_rows, colors.HexColor("#e8f5ef"), repeat_rows=1))
+        story.append(Spacer(1, 10))
+
+        story.append(Paragraph("Materiales aplicados", styles["Heading2"]))
+        story.append(self._pdf_table(mat_rows, colors.HexColor("#fff4df"), repeat_rows=1))
+
+        resumen = str(adj.get("resumen", "") or "").strip()
+        if resumen:
+            story.append(Spacer(1, 8))
+            story.append(Paragraph(f"Resumen: {html.escape(resumen)}", styles["BodyText"]))
+
+        story.append(Spacer(1, 12))
+        story.append(Paragraph(f"Generado: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles["BodyText"]))
+        doc.build(story)
+
+    def _pdf_table(self, rows, header_color, repeat_rows=0):
+        from reportlab.lib import colors
+        from reportlab.platypus import Table, TableStyle
+
+        table = Table(rows, hAlign="LEFT", repeatRows=repeat_rows)
+        table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), header_color),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.HexColor("#1f2937")),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d1d5db")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        return table
+
     def export_json(self):
         hist = load_history()
         fp = filedialog.asksaveasfilename(

@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 from storage import save_alloys
+from config import BG_ENTRY, FG, ACCENT
 
 
 SPECIAL_TYPE = "Aleación especial"
@@ -164,16 +165,14 @@ class TabInoculaciones(ttk.Frame):
     # ── Diálogo de edición ────────────────────────────────────────────────────
 
     def _make_listbox(self, parent):
-        top = self.winfo_toplevel()
-        bg  = getattr(top, "_input_bg",  "#2b2b2b")
-        fg  = getattr(top, "_input_fg",  "#e6e6e6")
-        sb  = tk.Scrollbar(parent, orient="vertical")
-        lb  = tk.Listbox(
+        sb = tk.Scrollbar(parent, orient="vertical")
+        lb = tk.Listbox(
             parent,
             selectmode=tk.MULTIPLE,
             exportselection=False,
-            bg=bg, fg=fg,
-            selectbackground="#3a7bd5",
+            bg=BG_ENTRY,
+            fg=FG,
+            selectbackground=ACCENT,
             selectforeground="#ffffff",
             activestyle="none",
             yscrollcommand=sb.set,

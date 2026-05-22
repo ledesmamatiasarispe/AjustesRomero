@@ -34,6 +34,7 @@ class TabHistoricos(ttk.Frame):
         self._root_notebook = None
         self._quality_tab = None
         self._thermal_tab = None
+        self._adjust_tab = None
 
         # ---- Layout principal (dock)
         root = ttk.PanedWindow(self, orient="horizontal")
@@ -54,6 +55,7 @@ class TabHistoricos(ttk.Frame):
         act = ttk.Frame(left); act.pack(fill="x", pady=(6, 0))
         ttk.Button(act, text="Editar colada", command=self.edit_session_meta).pack(side="left")
         ttk.Button(act, text="Eliminar sesion", command=self.delete_session).pack(side="left", padx=6)
+        ttk.Button(act, text="Visualizar en Ajuste", command=self.view_selected_in_adjust).pack(side="left", padx=6)
         ttk.Button(act, text="Generar informe de calidad", command=self.generate_quality_report_for_selected).pack(side="left")
 
         # ---- Tabla de sesiones (coladas)
@@ -88,6 +90,10 @@ class TabHistoricos(ttk.Frame):
     def set_thermal_target(self, notebook, thermal_tab):
         self._root_notebook = notebook
         self._thermal_tab = thermal_tab
+
+    def set_adjust_view_target(self, notebook, adjust_tab):
+        self._root_notebook = notebook
+        self._adjust_tab = adjust_tab
 
     # ---------------------------- helpers catalogo -------------------------
     def _alloys_named(self, name):
@@ -191,6 +197,23 @@ class TabHistoricos(ttk.Frame):
             return
         idx = self.tree.index(sel[0])
         self._generate_quality_report(idx)
+
+    def view_selected_in_adjust(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showinfo("Historial", "Selecciona una colada primero.", parent=self)
+            return
+        idx = self.tree.index(sel[0])
+        if idx < 0 or idx >= len(self.hist):
+            return
+        if self._adjust_tab is None or self._root_notebook is None:
+            messagebox.showerror("Historial", "La pestaña Ajuste no esta disponible.", parent=self)
+            return
+        try:
+            self._adjust_tab.enter_view_session(self.hist[idx], history_index=idx)
+            self._root_notebook.select(self._adjust_tab)
+        except Exception as ex:
+            messagebox.showerror("Historial", f"No se pudo visualizar la sesion en Ajuste.\n\n{ex}", parent=self)
 
     def _generate_quality_report(self, idx):
         if idx < 0 or idx >= len(self.hist):
@@ -432,7 +455,7 @@ class TabHistoricos(ttk.Frame):
         thermal_box.pack(fill="both", expand=True)
         tree_thermal = ttk.Treeview(
             thermal_box,
-            columns=("fecha", "modo", "base", "archivo", "tse", "tre", "rec", "tf", "pts"),
+            columns=("fecha", "modo", "base", "obs", "archivo", "tse", "tre", "rec", "tf", "pts"),
             show="headings",
             height=14,
         )
@@ -440,7 +463,8 @@ class TabHistoricos(ttk.Frame):
             ("fecha", "Adjuntado", 150),
             ("modo", "Modo", 120),
             ("base", "Material base", 110),
-            ("archivo", "Archivo", 180),
+            ("obs", "Observacion", 180),
+            ("archivo", "Archivo", 160),
             ("tse", "TSE", 70),
             ("tre", "TRE", 70),
             ("rec", "REC", 70),
@@ -673,6 +697,7 @@ class TabHistoricos(ttk.Frame):
                     item.get("attached_at", ""),
                     info.get("Modo", ""),
                     item.get("material_base", ""),
+                    item.get("observacion", ""),
                     item.get("source_name", ""),
                     info.get("TSE", ""),
                     info.get("TRE", ""),

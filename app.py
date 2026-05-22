@@ -289,6 +289,7 @@ class App(tk.Frame):
         self._tunnel_restart_count = 0
         self._tunnel_status = {}
         self._tunnel_paused = False
+        self._orphan_tunnel_cleanup_running = False
 
         self.alloys = load_alloys()
 
@@ -305,7 +306,7 @@ class App(tk.Frame):
         self.tab_hist     = TabHistoricos(nb, self.alloys)
         self.tab_info     = TabInformes(nb, self.alloys)
         self.tab_calidad  = TabCalidad(nb, self.alloys)
-        self.tab_inoculaciones = TabInoculaciones(nb)
+        self.tab_inoculaciones = TabInoculaciones(nb, self.alloys)
         self.tab_analisis_termico = TabAnalisisTermico(nb)
         self.tab_analisis_termico.set_adjust_target(self.tab_ajuste)
         self.tab_ajuste.set_thermal_source(self.tab_analisis_termico)
@@ -314,6 +315,7 @@ class App(tk.Frame):
         self.tab_options  = ttk.Frame(nb, padding=12)
         self.tab_hist.set_quality_target(nb, self.tab_calidad)
         self.tab_hist.set_thermal_target(nb, self.tab_analisis_termico)
+        self.tab_hist.set_adjust_view_target(nb, self.tab_ajuste)
         self.tab_catalogo.refresh()
         self.tab_ajuste.refresh_objectives()
         self.tab_hist.refresh_catalog()
@@ -334,7 +336,7 @@ class App(tk.Frame):
 
         self.tab_ajuste.bind("<<HistoryUpdated>>", lambda e: (self.tab_hist.refresh(), self.tab_info.refresh()))
         self.tab_analisis_termico.bind("<<HistoryUpdated>>", lambda e: self.tab_hist.refresh())
-        self.tab_catalogo.bind("<<CatalogUpdated>>", lambda e: (self.tab_ajuste.refresh_objectives(), self.tab_hist.refresh_catalog(), self.tab_info.refresh(), self.tab_calidad.refresh_catalog()))
+        self.tab_catalogo.bind("<<CatalogUpdated>>", lambda e: (self.tab_ajuste.refresh_objectives(), self.tab_hist.refresh_catalog(), self.tab_info.refresh(), self.tab_calidad.refresh_catalog(), self.tab_inoculaciones.refresh_catalog()))
 
         self._save_job = None
         self.master.bind("<<AppBgChanged>>", lambda e: self._on_app_bg_changed(), add="+")
@@ -349,8 +351,13 @@ class App(tk.Frame):
         self._restore_state()
         self._start_host_api()
         if not self._tunnel_paused:
-            self._start_public_tunnel()
-            self._schedule_tunnel_watchdog(TUNNEL_WATCHDOG_START_DELAY_MS)
+            self._set_tunnel_status("starting", f"Preparando tunnel publico: {PUBLIC_TUNNEL_URL}")
+            self._stop_orphan_public_tunnels(
+                on_done=lambda: (
+                    self._start_public_tunnel(),
+                    self._schedule_tunnel_watchdog(TUNNEL_WATCHDOG_START_DELAY_MS),
+                )
+            )
         self._schedule_dev_reload_watch()
 
     def _current_input_bg(self):
@@ -1011,33 +1018,55 @@ class App(tk.Frame):
         self._tunnel_proc = None
         if proc is None:
             return
-        try:
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-        except Exception:
-            pass
 
-    def _stop_orphan_public_tunnels(self):
-        try:
-            port = self._host_api_public.port if self._host_api_public is not None else HOST_API_PUBLIC_PORT
-            script = (
-                "Get-CimInstance Win32_Process -Filter \"name='node.exe'\" | "
-                f"Where-Object {{ $_.CommandLine -like '*localtunnel*--port {port}*' }} | "
-                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
-            )
-            subprocess.run(
-                ["powershell", "-NoProfile", "-Command", script],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=8,
-                check=False,
-            )
-        except Exception:
-            pass
+        def worker():
+            try:
+                if proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+            except Exception:
+                pass
+
+        threading.Thread(target=worker, name="localtunnel-stop", daemon=True).start()
+
+    def _stop_orphan_public_tunnels(self, on_done=None):
+        if self._orphan_tunnel_cleanup_running:
+            if callable(on_done):
+                self.after(500, lambda: self._stop_orphan_public_tunnels(on_done=on_done))
+            return
+        self._orphan_tunnel_cleanup_running = True
+
+        def worker():
+            try:
+                port = self._host_api_public.port if self._host_api_public is not None else HOST_API_PUBLIC_PORT
+                script = (
+                    "Get-CimInstance Win32_Process -Filter \"name='node.exe'\" | "
+                    f"Where-Object {{ $_.CommandLine -like '*localtunnel*--port {port}*' }} | "
+                    "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
+                )
+                subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", script],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=8,
+                    check=False,
+                )
+            except Exception:
+                pass
+            finally:
+                def finish():
+                    self._orphan_tunnel_cleanup_running = False
+                    if callable(on_done) and not self._closing:
+                        on_done()
+                try:
+                    self.after(0, finish)
+                except Exception:
+                    self._orphan_tunnel_cleanup_running = False
+
+        threading.Thread(target=worker, name="localtunnel-orphan-cleanup", daemon=True).start()
 
     def _public_tunnel_health_url(self):
         return PUBLIC_TUNNEL_URL.rstrip("/") + "/api/health"
@@ -1111,8 +1140,7 @@ class App(tk.Frame):
             print(f"[LOCAL TUNNEL] Reiniciando por fallo de salud: {error}")
             self._set_tunnel_status("restarting", f"Reiniciando tunnel publico. Fallo: {error}")
             self._stop_public_tunnel()
-            self._stop_orphan_public_tunnels()
-            self._start_public_tunnel()
+            self._stop_orphan_public_tunnels(on_done=self._start_public_tunnel)
             self._tunnel_failure_count = 0
             if self._tunnel_restart_count >= TUNNEL_ALERT_AFTER_RESTARTS:
                 self._set_tunnel_status(

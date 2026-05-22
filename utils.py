@@ -14,6 +14,8 @@ def to_float_or_none(s):
     except: return None
 
 def fmt(x, nd=6):
+    if nd <= 0:
+        return f"{x:.0f}"
     s = f"{x:.{nd}f}".rstrip("0").rstrip(".")
     return s or "0"
 

@@ -18,6 +18,7 @@ from tkinter import ttk, messagebox
 
 from config import BG_ENTRY, FG, ACCENT
 from storage import attach_thermal_analysis, load_history, load_thermal_device_records, save_thermal_device_records
+from widgets import ScrollFrame
 
 THERMAL_ANALYSIS_DIR = Path(r"C:\Users\LABOR01\Desktop\microestructura anialisis carbo2\exels")
 THERMAL_EXTENSIONS = {".xlsx", ".xls", ".csv"}
@@ -25,6 +26,8 @@ DEFAULT_THERMAL_DEVICE_IP = "192.168.0.180"
 THERMAL_MODE_OPTIONS = ("Microestructura", "Carbono", "Todos")
 THERMAL_DEVICE_TIMEOUT = 45
 THERMAL_DEVICE_RETRIES = 3
+THERMAL_AUTO_POLL_TIMEOUT = 8
+THERMAL_AUTO_POLL_RETRIES = 1
 THERMAL_INFO_ROWS = (
     ("ID", ("ID",)),
     ("IP", ("IP",)),
@@ -96,6 +99,7 @@ THERMAL_INFO_CARBON_V2 = THERMAL_INFO_COMMON_V2 + (
 THERMAL_COLORS = ("#4ea1ff", "#ff9f43", "#7bd389", "#d17dd7", "#f45b69", "#8d99ae")
 THERMAL_CHART_WIDTH = 820
 THERMAL_CHART_HEIGHT = 520
+THERMAL_CHART_MAX_POINTS_PER_CURVE = 1400
 
 
 def _darken_hex(color, factor=0.68):
@@ -134,6 +138,7 @@ class TabAnalisisTermico(ttk.Frame):
         self._left_pane_visible = True
         self._ajuste_target = None
         self._device_poll_running = False
+        self._selection_after_job = None
 
         self.folder_var = tk.StringVar(value=str(self.folder))
         self.device_ip_var = tk.StringVar(value=DEFAULT_THERMAL_DEVICE_IP)
@@ -444,10 +449,10 @@ class TabAnalisisTermico(ttk.Frame):
 
     def poll_latest_carbon_async(self, session_started_at, consumed_paths, callback):
         if self._device_poll_running:
-            return
+            return False
         ip = str(self.device_ip_var.get() or "").strip()
         if not ip:
-            return
+            return False
         self._device_poll_running = True
         worker = threading.Thread(
             target=self._poll_latest_carbon_worker,
@@ -455,6 +460,7 @@ class TabAnalisisTermico(ttk.Frame):
             daemon=True,
         )
         worker.start()
+        return True
 
     def _poll_latest_carbon_worker(self, ip, session_started_at, consumed_paths, callback):
         try:
@@ -534,7 +540,12 @@ class TabAnalisisTermico(ttk.Frame):
         elif consumed_paths:
             consumed = {str(consumed_paths).strip()}
 
-        index_json = self._http_get_json(ip, "/getallidx.cgi")
+        index_json = self._http_get_json(
+            ip,
+            "/getallidx.cgi",
+            timeout=THERMAL_AUTO_POLL_TIMEOUT,
+            retries=THERMAL_AUTO_POLL_RETRIES,
+        )
         index_rows = sorted(self._extract_json_rows(index_json), key=self._index_row_sort_datetime, reverse=True)
         carbon_rows = [
             row for row in index_rows
@@ -583,15 +594,16 @@ class TabAnalisisTermico(ttk.Frame):
             checked += 1
             existing = self._find_cached_device_record(ip, row_id, row, existing_by_path, existing_by_index_hint, existing_by_device_id)
             if existing and not self._device_record_needs_refresh(existing, row):
-                records = list(records_by_identity.values()) + records_without_identity
-                latest = self._pick_latest_carbon_record(records, session_started_at, consumed)
-                if latest:
-                    return self._normalize_device_records(records)
                 if checked >= 8:
                     break
                 continue
 
-            detail_json = self._http_get_json(ip, f"/getdata.cgi?btrqh={urllib.parse.quote(row_id)}")
+            detail_json = self._http_get_json(
+                ip,
+                f"/getdata.cgi?btrqh={urllib.parse.quote(row_id)}",
+                timeout=THERMAL_AUTO_POLL_TIMEOUT,
+                retries=THERMAL_AUTO_POLL_RETRIES,
+            )
             detail_rows = self._extract_json_rows(detail_json)
             if not detail_rows:
                 continue
@@ -897,13 +909,23 @@ class TabAnalisisTermico(ttk.Frame):
             consumed = {str(path).strip() for path in consumed_paths if str(path).strip()}
         elif consumed_paths:
             consumed = {str(consumed_paths).strip()}
-        latest = None
-        latest_dt = None
+        candidates = []
         for record in records or []:
             if str(record.get("mode_group", "") or "") != "Carbono":
                 continue
-            path = str(record.get("path", "") or "").strip()
             payload = record.get("payload", {}) if isinstance(record.get("payload"), dict) else {}
+            info = payload.get("info", {}) if isinstance(payload, dict) else {}
+            dt = self._parse_device_info_datetime(info.get("Dt Termino")) or self._parse_device_info_datetime(info.get("Dt Inicio"))
+            if started_dt and not dt:
+                continue
+            if started_dt and dt and dt < started_dt:
+                continue
+            if not (
+                str(info.get("C %", "") or info.get("Carbono %", "") or "").strip()
+                and str(info.get("Si %", "") or info.get("Silicio %", "") or "").strip()
+            ):
+                continue
+            path = str(record.get("path", "") or "").strip()
             legacy_path = str(record.get("legacy_path", "") or payload.get("legacy_path", "") or "").strip()
             identity = self._device_record_identity(record)
             local_id = str(record.get("local_id", "") or payload.get("local_id", "") or "").strip()
@@ -916,25 +938,23 @@ class TabAnalisisTermico(ttk.Frame):
                 or (local_key and local_key in consumed)
             ):
                 continue
-            info = payload.get("info", {}) if isinstance(payload, dict) else {}
-            dt = self._parse_device_info_datetime(info.get("Dt Termino")) or self._parse_device_info_datetime(info.get("Dt Inicio"))
-            if started_dt and not dt:
-                continue
-            if started_dt and dt and dt < started_dt:
-                continue
-            if latest is None or ((dt or datetime.min) > (latest_dt or datetime.min)):
-                latest = record
-                latest_dt = dt
-        return latest
+            candidates.append((dt or datetime.min, record))
+        candidates.sort(key=lambda item: item[0], reverse=True)
+        if not candidates:
+            return None
+        _, record = candidates[0]
+        return record
 
-    def _http_get_json(self, ip, endpoint):
+    def _http_get_json(self, ip, endpoint, timeout=None, retries=None):
         url = f"http://{ip}{endpoint}"
         last_error = None
-        for attempt in range(1, THERMAL_DEVICE_RETRIES + 1):
+        timeout = THERMAL_DEVICE_TIMEOUT if timeout is None else timeout
+        retries = THERMAL_DEVICE_RETRIES if retries is None else retries
+        for attempt in range(1, retries + 1):
             try:
-                self._log_backend(f"HTTP GET intento {attempt}/{THERMAL_DEVICE_RETRIES}: {url}")
+                self._log_backend(f"HTTP GET intento {attempt}/{retries}: {url}")
                 req = urllib.request.Request(url, headers={"User-Agent": "AjusteComp/1.0"})
-                with urllib.request.urlopen(req, timeout=THERMAL_DEVICE_TIMEOUT) as resp:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
                     raw = resp.read()
                 self._log_backend(f"HTTP OK {url} bytes={len(raw)}")
                 return self._parse_device_json_bytes(raw, url)
@@ -942,32 +962,33 @@ class TabAnalisisTermico(ttk.Frame):
                 last_error = ex
                 self._log_backend(f"HTTP no estandar {url}: {ex}")
                 try:
-                    return self._http_get_json_raw_socket(ip, endpoint)
+                    return self._http_get_json_raw_socket(ip, endpoint, timeout=timeout)
                 except Exception as raw_ex:
                     last_error = raw_ex
                     self._log_backend(f"Fallback socket fallo {url}: {raw_ex}")
             except (urllib.error.URLError, TimeoutError, socket.timeout, json.JSONDecodeError) as ex:
                 last_error = ex
                 self._log_backend(f"HTTP fallo {url}: {ex}")
-                if attempt < THERMAL_DEVICE_RETRIES:
+                if attempt < retries:
                     time.sleep(1.2)
                 continue
         if isinstance(last_error, json.JSONDecodeError):
             raise RuntimeError(f"Respuesta JSON invalida en {url}: {last_error}") from last_error
         raise RuntimeError(
-            f"No hubo respuesta util de {url} despues de {THERMAL_DEVICE_RETRIES} intento(s) "
-            f"de {THERMAL_DEVICE_TIMEOUT}s."
+            f"No hubo respuesta util de {url} despues de {retries} intento(s) "
+            f"de {timeout}s."
         ) from last_error
 
-    def _http_get_json_raw_socket(self, ip, endpoint):
+    def _http_get_json_raw_socket(self, ip, endpoint, timeout=None):
+        timeout = THERMAL_DEVICE_TIMEOUT if timeout is None else timeout
         request = (
             f"GET {endpoint} HTTP/1.0\r\n"
             f"Host: {ip}\r\n"
             "User-Agent: AjusteComp/1.0\r\n"
             "Connection: close\r\n\r\n"
         ).encode("ascii", errors="ignore")
-        with socket.create_connection((ip, 80), timeout=THERMAL_DEVICE_TIMEOUT) as sock:
-            sock.settimeout(THERMAL_DEVICE_TIMEOUT)
+        with socket.create_connection((ip, 80), timeout=timeout) as sock:
+            sock.settimeout(timeout)
             sock.sendall(request)
             chunks = []
             while True:
@@ -1215,6 +1236,16 @@ class TabAnalisisTermico(ttk.Frame):
             self.toggle_list_var.set("Ocultar lista")
 
     def _on_select_files(self):
+        if self._selection_after_job is not None:
+            try:
+                self.after_cancel(self._selection_after_job)
+            except Exception:
+                pass
+            self._selection_after_job = None
+        self._selection_after_job = self.after(180, self._apply_files_selection)
+
+    def _apply_files_selection(self):
+        self._selection_after_job = None
         paths = list(self.files_tree.selection())
         if not paths:
             self._selected_paths = []
@@ -1637,6 +1668,28 @@ class TabAnalisisTermico(ttk.Frame):
         if self._current_payloads:
             self._draw_chart(self._current_payloads)
 
+    def _chart_series_arrays(self, series):
+        total = len(series or [])
+        if total <= THERMAL_CHART_MAX_POINTS_PER_CURVE:
+            sampled = series or []
+        else:
+            step = max(1, total // THERMAL_CHART_MAX_POINTS_PER_CURVE)
+            sampled = list(series[::step])
+            last = series[-1]
+            if sampled and sampled[-1] is not last:
+                sampled.append(last)
+        periodos = []
+        temperaturas = []
+        derivadas = []
+        for row in sampled:
+            try:
+                periodos.append(row["periodo"])
+                temperaturas.append(row["temperatura"])
+                derivadas.append(row["derivada"])
+            except Exception:
+                continue
+        return periodos, temperaturas, derivadas
+
     def _draw_chart(self, payloads):
         self._clear_chart()
         if not payloads:
@@ -1673,10 +1726,10 @@ class TabAnalisisTermico(ttk.Frame):
             series = payload.get("series", []) or []
             if not series:
                 continue
+            periodos, temperaturas, derivadas = self._chart_series_arrays(series)
+            if not periodos:
+                continue
             plotted += 1
-            periodos = [row["periodo"] for row in series]
-            temperaturas = [row["temperatura"] for row in series]
-            derivadas = [row["derivada"] for row in series]
             color = THERMAL_COLORS[index % len(THERMAL_COLORS)]
             deriv_color = _darken_hex(color)
             short = Path(str(payload.get("name", ""))).stem
@@ -1888,14 +1941,16 @@ class TabAnalisisTermico(ttk.Frame):
             return
         colada = str(picked.get("colada") or "").strip()
         material_base = str(picked.get("material_base") or "").strip()
+        observations = picked.get("observations", {}) if isinstance(picked.get("observations", {}), dict) else {}
         if not colada:
             return
 
         attached = 0
         try:
             for payload in payloads:
-                attach_thermal_analysis(colada, self._build_history_analysis(payload, colada, material_base))
                 path = str(payload.get("path", "") or "").strip()
+                observation = str(observations.get(path, "") or "").strip()
+                attach_thermal_analysis(colada, self._build_history_analysis(payload, colada, material_base, observation))
                 if path:
                     self._linked_history_by_path[path] = {"colada": colada, "material_base": material_base}
                 attached += 1
@@ -1950,122 +2005,80 @@ class TabAnalisisTermico(ttk.Frame):
 
         first_info = (payloads[0].get("info", {}) if payloads and isinstance(payloads[0], dict) else {}) or {}
         suggested_base = str(first_info.get("Material", "") or "").strip()
-        picked = {"colada": None, "material_base": None}
+        picked = None
 
         win = tk.Toplevel(self)
         win.title("Adjuntar a Historicos")
         win.transient(self.winfo_toplevel())
         win.grab_set()
-        win.resizable(False, False)
+        win.resizable(True, True)
+        win.minsize(680, 420)
 
-        box = ttk.Frame(win, padding=12)
-        box.pack(fill="both", expand=True)
-        ttk.Label(box, text=f"Adjuntar {len(payloads)} curva(s) termica(s)").grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Label(box, text="Colada").grid(row=1, column=0, sticky="w", pady=(10, 0))
+        footer = ttk.Frame(win, padding=(12, 8, 12, 12))
+        footer.pack(side="bottom", fill="x")
+        ttk.Separator(win, orient="horizontal").pack(side="bottom", fill="x")
+
+        content = ttk.Frame(win, padding=(12, 12, 12, 8))
+        content.pack(side="top", fill="both", expand=True)
+        content.columnconfigure(1, weight=1)
+        content.rowconfigure(3, weight=1)
+
+        ttk.Label(content, text=f"Adjuntar {len(payloads)} curva(s) termica(s)").grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(content, text="Colada").grid(row=1, column=0, sticky="w", pady=(10, 0))
         var_colada = tk.StringVar(value=suggested_colada)
-        cb_colada = ttk.Combobox(box, textvariable=var_colada, values=coladas, width=28)
+        cb_colada = ttk.Combobox(content, textvariable=var_colada, values=coladas, width=32)
         cb_colada.grid(row=1, column=1, sticky="ew", padx=(8, 0), pady=(10, 0))
-        ttk.Label(box, text="Material base").grid(row=2, column=0, sticky="w", pady=(8, 0))
+        ttk.Label(content, text="Material base").grid(row=2, column=0, sticky="w", pady=(8, 0))
         var_base = tk.StringVar(value=suggested_base)
-        ttk.Entry(box, textvariable=var_base, width=30).grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
+        ttk.Entry(content, textvariable=var_base, width=32).grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
 
-        preview = ", ".join(str(payload.get("name", "") or Path(str(payload.get("path", ""))).name) for payload in payloads[:3])
-        if len(payloads) > 3:
-            preview += f", +{len(payloads) - 3} mas"
-        ttk.Label(box, text=preview, wraplength=420).grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 0))
-
-        btns = ttk.Frame(box)
-        btns.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        obs_box = ttk.LabelFrame(content, text="Observacion por curva", padding=6)
+        obs_box.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
+        obs_frame = ScrollFrame(obs_box)
+        obs_frame.pack(fill="both", expand=True)
+        obs_frame.canvas.configure(height=220)
+        obs_vars = {}
+        for row_idx, payload in enumerate(payloads):
+            path = str(payload.get("path", "") or "").strip()
+            name = str(payload.get("name", "") or Path(path).name or f"Curva {row_idx + 1}")
+            ttk.Label(obs_frame.inner, text=name, wraplength=260).grid(row=row_idx, column=0, sticky="w", padx=(0, 8), pady=2)
+            var_obs = tk.StringVar()
+            ttk.Entry(obs_frame.inner, textvariable=var_obs, width=48).grid(row=row_idx, column=1, sticky="ew", pady=2)
+            obs_vars[path] = var_obs
+        obs_frame.inner.columnconfigure(1, weight=1)
 
         def accept():
-            picked["colada"] = var_colada.get().strip()
-            picked["material_base"] = var_base.get().strip()
+            nonlocal picked
+            picked = {
+                "colada": var_colada.get().strip(),
+                "material_base": var_base.get().strip(),
+                "observations": {path: var.get().strip() for path, var in obs_vars.items()},
+            }
             win.destroy()
 
-        ttk.Button(btns, text="Cancelar", command=win.destroy).pack(side="right")
-        ttk.Button(btns, text="Adjuntar", command=accept).pack(side="right", padx=(0, 6))
+        ttk.Button(footer, text="Cancelar", command=win.destroy).pack(side="right")
+        ttk.Button(footer, text="Guardar / Adjuntar", command=accept).pack(side="right", padx=(0, 6))
 
-        box.columnconfigure(1, weight=1)
         win.update_idletasks()
         root = self.winfo_toplevel()
         x = root.winfo_rootx() + max(0, (root.winfo_width() - win.winfo_width()) // 2)
         y = root.winfo_rooty() + max(0, (root.winfo_height() - win.winfo_height()) // 2)
-        win.geometry(f"+{x}+{y}")
+        win.geometry(f"680x460+{x}+{y}")
+        win.bind("<Return>", lambda _event: accept())
+        win.bind("<Escape>", lambda _event: win.destroy())
         win.wait_window()
-        if not picked.get("colada"):
+        if not picked or not picked.get("colada"):
             return None
         return picked
 
-    def _prompt_attach_to_history(self, payload):
-        path = str(payload.get("path", "") or "").strip()
-        if not path or path in self._linked_history_by_path:
-            return
-        info = payload.get("info", {}) if isinstance(payload.get("info"), dict) else {}
-        suggested_colada = str(info.get("ID", "") or Path(path).stem).strip()
-        suggested_base = str(info.get("Material", "") or "").strip()
-
-        picked = {"colada": None, "material_base": None}
-        win = tk.Toplevel(self)
-        win.title("Adjuntar a Historicos")
-        win.transient(self.winfo_toplevel())
-        win.grab_set()
-        win.resizable(False, False)
-
-        box = ttk.Frame(win, padding=12)
-        box.pack(fill="both", expand=True)
-        ttk.Label(box, text="Cargar este analisis termico en Historicos").grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Label(box, text=Path(path).name).grid(row=1, column=0, columnspan=2, sticky="w", pady=(0, 10))
-        ttk.Label(box, text="Colada").grid(row=2, column=0, sticky="w")
-        var_colada = tk.StringVar(value=suggested_colada)
-        ttk.Entry(box, textvariable=var_colada, width=24).grid(row=2, column=1, sticky="ew", padx=(8, 0))
-        ttk.Label(box, text="Material base").grid(row=3, column=0, sticky="w", pady=(8, 0))
-        var_base = tk.StringVar(value=suggested_base)
-        ttk.Entry(box, textvariable=var_base, width=24).grid(row=3, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
-
-        btns = ttk.Frame(box)
-        btns.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(12, 0))
-
-        def accept():
-            picked["colada"] = var_colada.get().strip()
-            picked["material_base"] = var_base.get().strip()
-            win.destroy()
-
-        ttk.Button(btns, text="Cancelar", command=win.destroy).pack(side="right")
-        ttk.Button(btns, text="Adjuntar", command=accept).pack(side="right", padx=(0, 6))
-
-        box.columnconfigure(1, weight=1)
-        win.update_idletasks()
-        root = self.winfo_toplevel()
-        x = root.winfo_rootx() + max(0, (root.winfo_width() - win.winfo_width()) // 2)
-        y = root.winfo_rooty() + max(0, (root.winfo_height() - win.winfo_height()) // 2)
-        win.geometry(f"+{x}+{y}")
-        win.wait_window()
-
-        colada = str(picked.get("colada") or "").strip()
-        material_base = str(picked.get("material_base") or "").strip()
-        if not colada:
-            return
-
-        try:
-            attach_thermal_analysis(colada, self._build_history_analysis(payload, colada, material_base))
-        except Exception as ex:
-            messagebox.showerror("Analisis termico", f"No se pudo adjuntar en Historicos.\n\n{ex}", parent=self)
-            return
-
-        self._linked_history_by_path[path] = {"colada": colada, "material_base": material_base}
-        self.status_var.set(f"Analisis adjuntado a Historicos: colada {colada} / base {material_base or '-'}")
-        try:
-            self.event_generate("<<HistoryUpdated>>", when="tail")
-        except Exception:
-            pass
-
-    def _build_history_analysis(self, payload, colada, material_base):
+    def _build_history_analysis(self, payload, colada, material_base, observacion=""):
         info = dict(payload.get("info", {}) or {})
         series = list(payload.get("series", []) or [])
         return {
             "attached_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "colada": str(colada or "").strip(),
             "material_base": str(material_base or "").strip(),
+            "observacion": str(observacion or "").strip(),
             "source_file": str(payload.get("path", "") or "").strip(),
             "source_name": str(payload.get("name", "") or "").strip(),
             "info": info,
@@ -2096,8 +2109,8 @@ class TabAnalisisTermico(ttk.Frame):
             "Indicadores calculados",
             f"Intervalo de solidificacion (TL - TSE): {self._fmt_or_nd(metrics['solid_interval'], ' C')}",
             f"Puntos de curva: {len(series)}",
-            f"Expansion gris ((TF-TSE)/(TF-TL)): {self._fmt_pct_or_nd(metrics['gray_expansion'])}",
-            f"Expansion nodular ((TF-TRE)/(TF-TL)): {self._fmt_pct_or_nd(metrics['nodular_expansion'])}",
+            f"Expansion gris por tiempo ((tag4-tag2)/(tag4-tag1)): {self._fmt_pct_or_nd(metrics['gray_expansion'])}",
+            f"Expansion nodular por tiempo ((tag4-tag3)/(tag4-tag1)): {self._fmt_pct_or_nd(metrics['nodular_expansion'])}",
             "",
             THERMAL_RESULTS_NOTE,
             "",

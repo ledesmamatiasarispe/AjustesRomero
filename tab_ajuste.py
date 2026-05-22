@@ -5,11 +5,14 @@ from datetime import datetime
 import time
 import re
 import uuid
+import threading
+import queue
+import math
 
 from config import ELEMENTS, COLOR_OK, COLOR_FAIL, COLOR_WARN, TOL_NO_LIMITS, BG_ENTRY, FG, ACCENT
 from utils import to_float, fmt, _norm, simulate_with_plan
 from ce import ce_from_percent
-from storage import DuplicateColadaError, append_history, save_alloys, load_furnace_state, save_furnace_state, clear_furnace_state
+from storage import DuplicateColadaError, append_history, load_history, save_alloys, load_furnace_state, save_furnace_state, clear_furnace_state
 from widgets import ScrollFrame
 
 
@@ -17,6 +20,7 @@ class TabAjuste(ttk.Frame):
     DEFAULT_ADJUST = ["Carbón de grafito", "Silicio", "Acero 1010", "FeCr alto C"]
     CARBOMAX_AUTO_NAMES = ["Carbón de grafito", "Silicio", "Acero 1010"]
     CARBOMAX_POLL_SECONDS = 15.0
+    CARBOMAX_AUTO_MAX_MASS_FACTOR = 1.25
 
     def __init__(self, master, alloys_model):
         super().__init__(master, padding=10)
@@ -43,10 +47,24 @@ class TabAjuste(ttk.Frame):
         self._carbomax_consumed_paths = set()
         self._carbomax_pending_record = None
         self._carbomax_auto_armed_at = None
+        self._view_mode = False
+        self._view_restore_state = None
+        self._view_hidden_buttons = []
+        self._view_disabled_widgets = []
+        self._view_session_ended_at = None
+        self._view_hidden_panes = []
+        self._view_history_index = None
+        self._graph_zoom = 1.0
+        self._graph_pan_dx = 0.0
+        self._graph_pan_dy = 0.0
+        self._graph_last_data = None
+        self._graph_drag_start = None
+        self.show_blue_stat_points = tk.BooleanVar(value=False)
+        self.show_orange_stat_points = tk.BooleanVar(value=False)
 
         # ---------- CONFIG GRID PRINCIPAL ----------
         # Fila 0: barra superior
-        # Fila 1: pan_cols con 4 paneles (Actual, Estimado, Objetivo, Materiales)
+        # Fila 1: pan_cols con 5 paneles (Actual, Estimado, Objetivo, Materiales, Grafico)
         # Fila 2: Historial (tabla + botones)
         # Fila 3: Botonera inferior (calcular, aplicar, etc.)
         self.grid_rowconfigure(1, weight=4)
@@ -85,9 +103,13 @@ class TabAjuste(ttk.Frame):
         ttk.Label(top, textvariable=self.session_start_var, padding=(14, 0)).pack(side="left")
         ttk.Label(top, textvariable=self.session_elapsed_var, padding=(10, 0)).pack(side="left")
 
-        # ===================== fila 1: 4 columnas redimensionables =====================
+        # ===================== fila 1: 5 columnas redimensionables =====================
         pan_cols = ttk.Panedwindow(self, orient="horizontal")
         pan_cols.grid(row=1, column=0, sticky="nsew", pady=(0, 8))
+        self.pan_cols = pan_cols
+        self._pan_cols_sash_positions = []
+        self._pan_cols_restore_pending = []
+        pan_cols.bind("<ButtonRelease-1>", lambda _e: self._save_pan_cols_positions())
 
         # = Pane A (Actual)
         paneA = ttk.Frame(pan_cols)
@@ -114,7 +136,7 @@ class TabAjuste(ttk.Frame):
             ttk.Label(r, text=el, width=6).grid(row=0, column=0, padx=4)
             e = ttk.Entry(r, width=12)
             e.grid(row=0, column=1, padx=4)
-            e.bind("<KeyRelease>", lambda _e: (self._recalc_fe_actual(), self._schedule_auto(), self._fire_save()))
+            e.bind("<KeyRelease>", lambda _e: (self._recalc_fe_actual(), self._schedule_auto(), self._schedule_graph_update(), self._fire_save()))
             self.actual_rows.append((el, e))
 
         # = Pane E (Estimado)
@@ -196,13 +218,45 @@ class TabAjuste(ttk.Frame):
         self.adjust_scroller.pack(fill="both", expand=True)
         self.adjust_list_area = self.adjust_scroller.inner
 
-        # Sashes iniciales para 4 paneles
+        # = Pane G (Grafico)
+        paneG = ttk.Frame(pan_cols)
+        pan_cols.add(paneG)
+        try:
+            pan_cols.paneconfigure(paneG, weight=1, minsize=240)
+        except Exception:
+            pass
+
+        self.graph_panel = ttk.LabelFrame(paneG, text="Grafico", padding=8)
+        self.graph_panel.pack(fill="both", expand=True)
+        self.graph_canvas = tk.Canvas(self.graph_panel, background="#ffffff", highlightthickness=0)
+        self.graph_canvas.pack(fill="both", expand=True)
+        self.graph_canvas.bind("<Configure>", lambda _e: self._schedule_graph_update())
+        self.graph_canvas.bind("<MouseWheel>", self._on_graph_mousewheel)
+        self.graph_canvas.bind("<Button-4>", self._on_graph_mousewheel)
+        self.graph_canvas.bind("<Button-5>", self._on_graph_mousewheel)
+        self.graph_canvas.bind("<ButtonPress-1>", self._on_graph_drag_start)
+        self.graph_canvas.bind("<B1-Motion>", self._on_graph_drag_move)
+        self.graph_canvas.bind("<ButtonRelease-1>", self._on_graph_drag_end)
+        self.graph_canvas.bind("<Double-Button-1>", self._reset_graph_view)
+        self._pan_cols_panes = [paneA, paneE, paneT, paneM, paneG]
+        self._graph_req_seq = 0
+        self._graph_drawn_seq = 0
+        self._graph_jobs = queue.Queue()
+        self._graph_results = queue.Queue()
+        self._graph_thread = threading.Thread(target=self._graph_worker_loop, daemon=True)
+        self._graph_thread.start()
+        self.after(150, self._poll_graph_results)
+
+        # Sashes iniciales para 5 paneles
         def _place_sashes_cols():
             try:
+                if self._restore_pan_cols_positions():
+                    return
                 w = pan_cols.winfo_width()
-                pan_cols.sashpos(0, int(w * 0.25))
-                pan_cols.sashpos(1, int(w * 0.50))
-                pan_cols.sashpos(2, int(w * 0.75))
+                pan_cols.sashpos(0, int(w * 0.20))
+                pan_cols.sashpos(1, int(w * 0.40))
+                pan_cols.sashpos(2, int(w * 0.60))
+                pan_cols.sashpos(3, int(w * 0.80))
             except Exception:
                 pass
         self.after(350, _place_sashes_cols)
@@ -278,6 +332,8 @@ class TabAjuste(ttk.Frame):
             command=lambda: self.estimate_to_target(show_message=False, reset_kgs=True, log_it=False, log_calc=True),
         )
         self.btn_calcular.pack(side="left")
+        ttk.Button(btns, text="Calculadora de composicion por dilucion",
+                   command=self.open_dilution_calculator).pack(side="left", padx=(6, 0))
         self.btn_calcular_pct = ttk.Button(btns, text="Calcular %", command=self.calculate_partial)
         self.btn_calcular_pct.pack(side="left", padx=6)
         self.btn_aplicar = ttk.Button(btns, text="Aplicar", command=self.apply_adjustment)
@@ -290,6 +346,33 @@ class TabAjuste(ttk.Frame):
 
         self.lbl_status = ttk.Label(self, text="", foreground="#444")
         self.lbl_status.grid(row=4, column=0, sticky="ew", pady=(3, 0))
+        self.view_bar = ttk.Frame(self)
+        self.view_label = ttk.Label(self.view_bar, text="", font=("Segoe UI", 10, "bold"))
+        self.view_label.pack(side="left")
+        self.view_points_frame = ttk.Frame(self.view_bar)
+        self.view_points_frame.pack(side="left", padx=(16, 0))
+        self.view_blue_points_chk = ttk.Checkbutton(
+            self.view_points_frame,
+            text="Puntos azul",
+            variable=self.show_blue_stat_points,
+            command=self._redraw_graph_view,
+        )
+        self.view_blue_points_chk.pack(side="left")
+        self.view_orange_points_chk = ttk.Checkbutton(
+            self.view_points_frame,
+            text="Puntos naranja",
+            variable=self.show_orange_stat_points,
+            command=self._redraw_graph_view,
+        )
+        self.view_orange_points_chk.pack(side="left", padx=(8, 0))
+        self.view_close_btn = ttk.Button(self.view_bar, text="Cerrar visualizacion", command=self.close_view_session)
+        self.view_close_btn.pack(side="right")
+        self.view_nav_frame = ttk.Frame(self.view_bar)
+        self.view_nav_frame.pack(side="right", padx=(0, 6))
+        self.view_prev_btn = ttk.Button(self.view_nav_frame, text="Sesion anterior", command=self.view_previous_session)
+        self.view_prev_btn.pack(side="left")
+        self.view_next_btn = ttk.Button(self.view_nav_frame, text="Siguiente sesion", command=self.view_next_session)
+        self.view_next_btn.pack(side="left", padx=(6, 0))
 
         # --------- Datos iniciales de materiales / hist ----------
         self.kg_vars = {}
@@ -301,6 +384,7 @@ class TabAjuste(ttk.Frame):
 
         self._update_objective_selector_state()
         self.calc_prediction()
+        self._schedule_graph_update()
         self.after(300, self.ensure_colada)
 
     # ------------------------- estado / guardado -------------------------
@@ -321,6 +405,7 @@ class TabAjuste(ttk.Frame):
         self.adjust_list = [n for n in self.adjust_list if self._adjuster_alloy(n)]
         self._rebuild_adjust_ui()
         self._schedule_auto()
+        self._schedule_graph_update()
 
     def set_save_callback(self, cb):
         self._save_cb = cb
@@ -329,10 +414,59 @@ class TabAjuste(ttk.Frame):
         self._thermal_source = source
 
     def _fire_save(self):
+        if getattr(self, "_view_mode", False):
+            return
         if self._save_cb and not self._restoring:
             self._save_cb()
 
+    def _current_pan_cols_positions(self):
+        if not hasattr(self, "pan_cols"):
+            return []
+        positions = []
+        for idx in range(4):
+            try:
+                positions.append(int(self.pan_cols.sashpos(idx)))
+            except Exception:
+                break
+        return positions
+
+    def _save_pan_cols_positions(self):
+        positions = self._current_pan_cols_positions()
+        if len(positions) == 4 and positions != getattr(self, "_pan_cols_sash_positions", []):
+            self._pan_cols_sash_positions = positions
+            self._fire_save()
+
+    def _restore_pan_cols_positions(self):
+        positions = list(getattr(self, "_pan_cols_restore_pending", []) or [])
+        if len(positions) != 4 or not hasattr(self, "pan_cols"):
+            return False
+        try:
+            width = self.pan_cols.winfo_width()
+            if width <= 1:
+                self.after(100, self._restore_pan_cols_positions)
+                return True
+            min_gap = 80
+            if width < min_gap * 5:
+                return False
+            cleaned = []
+            prev = 0
+            for idx, pos in enumerate(positions):
+                min_allowed = prev + min_gap
+                max_allowed = width - (min_gap * (4 - idx))
+                pos = max(min_allowed, min(int(pos), max_allowed))
+                cleaned.append(pos)
+                prev = pos
+            for idx, pos in enumerate(cleaned):
+                self.pan_cols.sashpos(idx, pos)
+            self._pan_cols_sash_positions = cleaned
+            self._pan_cols_restore_pending = []
+            return True
+        except Exception:
+            return False
+
     def get_state(self):
+        if getattr(self, "_view_mode", False) and self._view_restore_state:
+            return dict(self._view_restore_state)
         return {
             "mass": to_float(self.mass.get()),
             "actual": self._current_comp(),
@@ -352,6 +486,7 @@ class TabAjuste(ttk.Frame):
             "carbomax_consumed_paths": sorted(self._carbomax_consumed_paths),
             "carbomax_pending_record": self._carbomax_pending_record,
             "carbomax_auto_armed_at": self._carbomax_auto_armed_at,
+            "pan_cols_sash_positions": self._current_pan_cols_positions() or getattr(self, "_pan_cols_sash_positions", []),
         }
 
     def set_state(self, st):
@@ -388,6 +523,10 @@ class TabAjuste(ttk.Frame):
             self.partial_pct.set(int(st.get("partial_pct", 30)))
 
             self.colada.set(st.get("colada", ""))
+            saved_sashes = st.get("pan_cols_sash_positions", [])
+            if isinstance(saved_sashes, (list, tuple)):
+                self._pan_cols_restore_pending = [int(to_float(pos)) for pos in saved_sashes if to_float(pos) > 0][:4]
+                self._pan_cols_sash_positions = list(self._pan_cols_restore_pending)
             self.session_started_at = st.get("session_started_at", None)
             self.ajustes_log = st.get("ajustes_log", [])
             self._refresh_hist()
@@ -406,13 +545,933 @@ class TabAjuste(ttk.Frame):
             self._carbomax_pending_record = pending if isinstance(pending, dict) else None
             self._carbomax_auto_armed_at = st.get("carbomax_auto_armed_at", None)
             if self.carbomax_auto.get() and not self._carbomax_auto_armed_at:
-                self._carbomax_auto_armed_at = datetime.now().strftime("%Y-%m-%d 00:00:00")
+                self._carbomax_auto_armed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self._refresh_session_timer_labels()
             self._update_objective_selector_state()
         finally:
             self._restoring = False
             self._schedule_auto()
-            self.after(100, self._ensure_furnace_context_published)
+            self._schedule_graph_update()
+            self.after(150, self._restore_pan_cols_positions)
+            if not getattr(self, "_view_mode", False):
+                self.after(100, self._ensure_furnace_context_published)
+
+    def _session_to_view_state(self, session):
+        session = session if isinstance(session, dict) else {}
+        ajustes = session.get("ajustes", []) if isinstance(session.get("ajustes", []), list) else []
+        calculos = session.get("calculos", []) if isinstance(session.get("calculos", []), list) else []
+        carbono = session.get("carbono", []) if isinstance(session.get("carbono", []), list) else []
+        first = ajustes[0] if ajustes and isinstance(ajustes[0], dict) else {}
+        last = ajustes[-1] if ajustes and isinstance(ajustes[-1], dict) else {}
+        initial = first.get("inicial", {}) if isinstance(first.get("inicial", {}), dict) else {}
+        final = last.get("estimado", {}) if isinstance(last.get("estimado", {}), dict) else {}
+        actual_comp = initial.get("comp", {}) if isinstance(initial.get("comp", {}), dict) else {}
+        mass = initial.get("masa", 0.0)
+        kg_names = {}
+        for adj in ajustes:
+            mats = adj.get("materiales", {}) if isinstance(adj, dict) else {}
+            if isinstance(mats, dict):
+                for name in mats:
+                    kg_names[str(name)] = 0.0
+        return {
+            "mass": to_float(mass),
+            "actual": dict(actual_comp),
+            "objective": str(session.get("objetivo") or first.get("objetivo") or "").strip(),
+            "adjust_list": list(kg_names.keys()) or list(getattr(self, "adjust_list", [])),
+            "kg": kg_names,
+            "auto": False,
+            "carbomax_auto": False,
+            "method": self.method.get() if hasattr(self, "method") else "Greedy",
+            "partial_pct": int(self.partial_pct.get()) if hasattr(self, "partial_pct") else 30,
+            "colada": session.get("colada", ""),
+            "session_started_at": session.get("started_at", None),
+            "ajustes_log": list(ajustes),
+            "calc_log": list(calculos),
+            "carbon_log": list(carbono),
+            "carbomax_last_consumed": "",
+            "carbomax_consumed_paths": [],
+            "carbomax_pending_record": None,
+            "carbomax_auto_armed_at": None,
+            "pan_cols_sash_positions": self._current_pan_cols_positions() or getattr(self, "_pan_cols_sash_positions", []),
+        }
+
+    def enter_view_session(self, session, history_index=None):
+        if getattr(self, "_view_mode", False):
+            self.close_view_session()
+        self._view_restore_state = self.get_state()
+        self._view_mode = True
+        self._view_history_index = history_index
+        self._view_session_ended_at = (session or {}).get("ended_at", None)
+        self.set_state(self._session_to_view_state(session))
+        title = f"Visualizando sesion: {session.get('colada', '')} | Objetivo: {session.get('objetivo', '')}"
+        self._apply_view_mode_ui(title)
+        self._update_view_nav_buttons()
+        self._refresh_session_timer_labels()
+        self._status("Modo visualizacion: la sesion historica no se puede modificar.")
+
+    def close_view_session(self):
+        restore_state = self._view_restore_state
+        self._restore_view_mode_ui()
+        self._view_mode = False
+        self._view_restore_state = None
+        self._view_session_ended_at = None
+        self._view_history_index = None
+        if restore_state:
+            self.set_state(restore_state)
+        self._status("Visualizacion cerrada.")
+
+    def _load_view_history_index(self, index):
+        try:
+            sessions = load_history()
+        except Exception:
+            sessions = []
+        if index is None or index < 0 or index >= len(sessions):
+            return False
+        restore_state = self._view_restore_state
+        self._view_session_ended_at = sessions[index].get("ended_at", None)
+        self._view_history_index = index
+        self.set_state(self._session_to_view_state(sessions[index]))
+        self._view_restore_state = restore_state
+        title = f"Visualizando sesion: {sessions[index].get('colada', '')} | Objetivo: {sessions[index].get('objetivo', '')}"
+        self._apply_view_mode_ui(title)
+        self._update_view_nav_buttons()
+        self._refresh_session_timer_labels()
+        return True
+
+    def view_previous_session(self):
+        if not getattr(self, "_view_mode", False):
+            return
+        idx = self._view_history_index
+        if idx is not None and self._load_view_history_index(idx - 1):
+            return
+        self._status("No hay sesion anterior para visualizar.")
+
+    def view_next_session(self):
+        if not getattr(self, "_view_mode", False):
+            return
+        idx = self._view_history_index
+        if idx is not None and self._load_view_history_index(idx + 1):
+            return
+        self._status("No hay siguiente sesion para visualizar.")
+
+    def _walk_widgets(self, widget):
+        for child in widget.winfo_children():
+            yield child
+            yield from self._walk_widgets(child)
+
+    def _apply_view_mode_ui(self, title):
+        self.view_label.config(text=title)
+        self._update_view_nav_buttons()
+        self.view_bar.grid(row=4, column=0, sticky="ew", pady=(3, 4))
+        self.lbl_status.grid(row=5, column=0, sticky="ew", pady=(3, 0))
+        first_apply = not self._view_hidden_buttons and not self._view_disabled_widgets and not self._view_hidden_panes
+        if first_apply:
+            try:
+                panes = list(getattr(self, "_pan_cols_panes", []) or [])
+                graph_pane = panes[-1] if panes else None
+                for idx, pane in enumerate(panes[:-1]):
+                    try:
+                        self._view_hidden_panes.append((idx, pane))
+                        self.pan_cols.forget(pane)
+                    except Exception:
+                        pass
+                if graph_pane is not None:
+                    try:
+                        self.pan_cols.paneconfigure(graph_pane, weight=1, minsize=320)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            self._apply_view_readonly_widgets()
+
+    def _update_view_nav_buttons(self):
+        try:
+            sessions = load_history()
+        except Exception:
+            sessions = []
+        idx = self._view_history_index
+        prev_state = "normal" if isinstance(idx, int) and idx > 0 else "disabled"
+        next_state = "normal" if isinstance(idx, int) and idx < len(sessions) - 1 else "disabled"
+        try:
+            self.view_prev_btn.configure(state=prev_state)
+            self.view_next_btn.configure(state=next_state)
+        except Exception:
+            pass
+
+    def _apply_view_readonly_widgets(self):
+        for widget in self._walk_widgets(self):
+            if widget in (
+                self.view_close_btn,
+                self.view_prev_btn,
+                self.view_next_btn,
+                self.view_bar,
+                self.view_label,
+                self.view_points_frame,
+                self.view_blue_points_chk,
+                self.view_orange_points_chk,
+            ):
+                continue
+            if isinstance(widget, ttk.Button):
+                manager = widget.winfo_manager()
+                if not manager:
+                    continue
+                info = widget.pack_info() if manager == "pack" else widget.grid_info() if manager == "grid" else widget.place_info()
+                self._view_hidden_buttons.append((widget, manager, info))
+                if manager == "pack":
+                    widget.pack_forget()
+                elif manager == "grid":
+                    widget.grid_remove()
+                elif manager == "place":
+                    widget.place_forget()
+            elif isinstance(widget, (ttk.Entry, ttk.Combobox, ttk.Checkbutton, ttk.Scale, tk.Entry)):
+                try:
+                    self._view_disabled_widgets.append((widget, widget.cget("state")))
+                    widget.configure(state="disabled")
+                except Exception:
+                    pass
+
+    def _restore_view_mode_ui(self):
+        try:
+            hidden = sorted(getattr(self, "_view_hidden_panes", []), key=lambda item: item[0])
+            for idx, pane in hidden:
+                try:
+                    self.pan_cols.insert(idx, pane)
+                    self.pan_cols.paneconfigure(pane, weight=1, minsize=240 if idx < 3 else 260)
+                except Exception:
+                    try:
+                        self.pan_cols.add(pane)
+                    except Exception:
+                        pass
+            self._view_hidden_panes = []
+            self.after(100, self._restore_pan_cols_positions)
+        except Exception:
+            pass
+        for widget, state in getattr(self, "_view_disabled_widgets", []):
+            try:
+                widget.configure(state=state)
+            except Exception:
+                pass
+        for widget, manager, info in getattr(self, "_view_hidden_buttons", []):
+            try:
+                if manager == "pack":
+                    widget.pack(**info)
+                elif manager == "grid":
+                    widget.grid(**info)
+                elif manager == "place":
+                    widget.place(**info)
+            except Exception:
+                pass
+        self._view_disabled_widgets = []
+        self._view_hidden_buttons = []
+        try:
+            self.view_bar.grid_remove()
+            self.lbl_status.grid(row=4, column=0, sticky="ew", pady=(3, 0))
+        except Exception:
+            pass
+
+    # ------------------------------- grafico C/Si --------------------------
+    def _graph_worker_loop(self):
+        while True:
+            snapshot = self._graph_jobs.get()
+            try:
+                while True:
+                    snapshot = self._graph_jobs.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                target = snapshot.get("target", {}) or {}
+                current = snapshot.get("current", {}) or {}
+                adjustments = snapshot.get("adjustments", []) or []
+                transitions = []
+                plot_points = []
+                for idx, item in enumerate(adjustments, start=1):
+                    if not isinstance(item, dict):
+                        continue
+                    initial = item.get("initial", {}) or {}
+                    final = item.get("final", {}) or {}
+                    if not isinstance(initial, dict) or not isinstance(final, dict):
+                        continue
+                    start = {
+                        "kind": "initial",
+                        "label": str(idx),
+                        "c": to_float(initial.get("C", 0.0)),
+                        "si": to_float(initial.get("Si", 0.0)),
+                    }
+                    end = {
+                        "kind": "final",
+                        "label": str(idx),
+                        "c": to_float(final.get("C", 0.0)),
+                        "si": to_float(final.get("Si", 0.0)),
+                    }
+                    transitions.append({"label": str(idx), "start": start, "end": end})
+                    plot_points.extend([start, end])
+                current_point = {
+                    "kind": "current",
+                    "label": "Actual",
+                    "c": to_float(current.get("C", 0.0)),
+                    "si": to_float(current.get("Si", 0.0)),
+                }
+                if not snapshot.get("view_mode"):
+                    plot_points.append(current_point)
+                estimated_point = None
+                predicted = snapshot.get("predicted", {}) or {}
+                if not snapshot.get("view_mode") and snapshot.get("has_live_prediction") and isinstance(predicted, dict):
+                    estimated_point = {
+                        "kind": "estimated",
+                        "label": "Estimado",
+                        "c": to_float(predicted.get("C", 0.0)),
+                        "si": to_float(predicted.get("Si", 0.0)),
+                    }
+                    plot_points.append(estimated_point)
+
+                target_c = to_float(target.get("C", 0.0))
+                target_si = to_float(target.get("Si", 0.0))
+                for pt in plot_points:
+                    pt["dx"] = pt["c"] - target_c
+                    pt["dy"] = pt["si"] - target_si
+
+                stat_circles = self._graph_history_stat_circles(str(snapshot.get("objective_name", "") or "").strip())
+                for st in stat_circles:
+                    st["dx"] = to_float(st.get("c", 0.0)) - target_c
+                    st["dy"] = to_float(st.get("si", 0.0)) - target_si
+                    st["plot_points"] = [
+                        {"dx": to_float(p.get("c", 0.0)) - target_c, "dy": to_float(p.get("si", 0.0)) - target_si}
+                        for p in st.get("points", [])
+                    ]
+                    st["polygon"] = [
+                        {"dx": to_float(p.get("dx", 0.0)) - target_c, "dy": to_float(p.get("dy", 0.0)) - target_si}
+                        for p in st.get("polygon", [])
+                    ]
+                step_delta = self._graph_history_step_delta_circle(str(snapshot.get("objective_name", "") or "").strip())
+                step_circles = []
+                for tr in transitions:
+                    if step_delta:
+                        end = tr.get("end", {})
+                        step_circles.append({
+                            "label": tr.get("label", ""),
+                            "count": step_delta.get("count", 0),
+                            "raw_count": step_delta.get("raw_count", 0),
+                            "dx": (to_float(end.get("c", 0.0)) + to_float(step_delta.get("dc", 0.0))) - target_c,
+                            "dy": (to_float(end.get("si", 0.0)) + to_float(step_delta.get("dsi", 0.0))) - target_si,
+                            "major": step_delta.get("major", 0.03),
+                            "minor": step_delta.get("minor", 0.03),
+                            "angle": step_delta.get("angle", 0.0),
+                            "plot_points": [
+                                {
+                                    "dx": (to_float(end.get("c", 0.0)) + to_float(p.get("dc", 0.0))) - target_c,
+                                    "dy": (to_float(end.get("si", 0.0)) + to_float(p.get("dsi", 0.0))) - target_si,
+                                }
+                                for p in step_delta.get("points", [])
+                            ],
+                        })
+                target_limit_area = snapshot.get("target_limit_area") or None
+                max_abs = max(
+                    [abs(pt["dx"]) for pt in plot_points]
+                    + [abs(pt["dy"]) for pt in plot_points]
+                    + [abs(st["dx"]) + self._graph_ellipse_extent(st)[0] for st in stat_circles]
+                    + [abs(st["dy"]) + self._graph_ellipse_extent(st)[1] for st in stat_circles]
+                    + [abs(st["dx"]) + self._graph_ellipse_extent(st)[0] for st in step_circles]
+                    + [abs(st["dy"]) + self._graph_ellipse_extent(st)[1] for st in step_circles]
+                    + ([to_float(target_limit_area.get("major", 0.0)), to_float(target_limit_area.get("minor", 0.0))] if isinstance(target_limit_area, dict) else [])
+                    + [0.05]
+                )
+                span = max_abs * 1.20
+                self._graph_results.put({
+                    "seq": snapshot.get("seq", 0),
+                    "has_objective": bool(snapshot.get("has_objective")),
+                    "target_c": target_c,
+                    "target_si": target_si,
+                    "transitions": transitions,
+                    "current": None if snapshot.get("view_mode") else current_point,
+                    "estimated": estimated_point,
+                    "target_limit_area": target_limit_area,
+                    "stat_circles": stat_circles,
+                    "step_circles": step_circles,
+                    "span": span,
+                })
+            except Exception as ex:
+                self._graph_results.put({
+                    "seq": snapshot.get("seq", 0) if isinstance(snapshot, dict) else 0,
+                    "error": str(ex),
+                })
+
+    def _graph_material_key(self, value):
+        key = _norm(value)
+        if key.startswith("mat") and key[3:].isdigit():
+            return key[3:]
+        return key
+
+    def _graph_robust_points(self, points):
+        if len(points) < 4:
+            return points
+        xs = sorted(p[0] for p in points)
+        ys = sorted(p[1] for p in points)
+
+        def median(vals):
+            n = len(vals)
+            mid = n // 2
+            if n % 2:
+                return vals[mid]
+            return (vals[mid - 1] + vals[mid]) / 2
+
+        mx = median(xs)
+        my = median(ys)
+        distances = sorted(((p[0] - mx) ** 2 + (p[1] - my) ** 2) ** 0.5 for p in points)
+        md = median(distances)
+        deviations = sorted(abs(d - md) for d in distances)
+        mad = median(deviations)
+        if mad <= 1e-12:
+            limit = md + 0.05
+        else:
+            limit = md + (3.0 * 1.4826 * mad)
+        filtered = [
+            p for p in points
+            if ((p[0] - mx) ** 2 + (p[1] - my) ** 2) ** 0.5 <= limit
+        ]
+        return filtered if filtered else points
+
+    def _graph_circle_stats(self, points):
+        if not points:
+            return None
+        raw_count = len(points)
+        points = self._graph_robust_points(points)
+        n = len(points)
+        mx = sum(p[0] for p in points) / n
+        my = sum(p[1] for p in points) / n
+        if n == 1:
+            major = minor = 0.03
+            angle = 0.0
+        else:
+            var_x = sum((p[0] - mx) ** 2 for p in points) / n
+            var_y = sum((p[1] - my) ** 2 for p in points) / n
+            cov_xy = sum((p[0] - mx) * (p[1] - my) for p in points) / n
+            trace = var_x + var_y
+            diff = var_x - var_y
+            root = ((diff * diff) + (4.0 * cov_xy * cov_xy)) ** 0.5
+            lambda_major = max(0.0, (trace + root) / 2.0)
+            lambda_minor = max(0.0, (trace - root) / 2.0)
+            major = max(0.03, lambda_major ** 0.5)
+            minor = max(0.03, lambda_minor ** 0.5)
+            angle = 0.5 * math.atan2(2.0 * cov_xy, diff) if abs(cov_xy) > 1e-12 or abs(diff) > 1e-12 else 0.0
+        return mx, my, major, minor, angle, n, raw_count, points
+
+    def _graph_axis_deviation_stats(self, points):
+        if not points:
+            return None
+        raw_count = len(points)
+        points = self._graph_robust_points(points)
+        n = len(points)
+        mx = sum(p[0] for p in points) / n
+        my = sum(p[1] for p in points) / n
+        if n == 1:
+            dev_x = dev_y = 0.03
+        else:
+            dev_x = sum(abs(p[0] - mx) for p in points) / n
+            dev_y = sum(abs(p[1] - my) for p in points) / n
+        major = max(0.03, dev_x)
+        minor = max(0.03, dev_y)
+        return mx, my, major, minor, 0.0, n, raw_count, points
+
+    def _graph_hull_shape_stats(self, points):
+        if not points:
+            return None
+        raw_count = len(points)
+        points = self._graph_robust_points(points)
+        n = len(points)
+        mx = sum(p[0] for p in points) / n
+        my = sum(p[1] for p in points) / n
+
+        def cross(o, a, b):
+            return ((a[0] - o[0]) * (b[1] - o[1])) - ((a[1] - o[1]) * (b[0] - o[0]))
+
+        unique = sorted(set(points))
+        if len(unique) <= 2:
+            polygon = [{"dx": p[0], "dy": p[1]} for p in unique]
+        else:
+            lower = []
+            for p in unique:
+                while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+                    lower.pop()
+                lower.append(p)
+            upper = []
+            for p in reversed(unique):
+                while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+                    upper.pop()
+                upper.append(p)
+            hull = lower[:-1] + upper[:-1]
+            margin = 0.02
+            polygon = []
+            for x, y in hull:
+                vx = x - mx
+                vy = y - my
+                dist = (vx * vx + vy * vy) ** 0.5
+                if dist > 1e-12:
+                    x += (vx / dist) * margin
+                    y += (vy / dist) * margin
+                polygon.append({"dx": x, "dy": y})
+        if len(polygon) < 3:
+            major = minor = 0.03
+            angle = 0.0
+        else:
+            xs = [to_float(p.get("dx", 0.0)) for p in polygon]
+            ys = [to_float(p.get("dy", 0.0)) for p in polygon]
+            major = max(0.03, max(abs(x - mx) for x in xs))
+            minor = max(0.03, max(abs(y - my) for y in ys))
+            angle = 0.0
+        return mx, my, major, minor, angle, n, raw_count, points, polygon
+
+    def _graph_ellipse_extent(self, item):
+        major = to_float(item.get("major", item.get("radius", 0.03)))
+        minor = to_float(item.get("minor", item.get("radius", 0.03)))
+        angle = to_float(item.get("angle", 0.0))
+        ca = math.cos(angle)
+        sa = math.sin(angle)
+        x_extent = ((major * ca) ** 2 + (minor * sa) ** 2) ** 0.5
+        y_extent = ((major * sa) ** 2 + (minor * ca) ** 2) ** 0.5
+        return max(0.03, x_extent), max(0.03, y_extent)
+
+    def _graph_history_stat_circles(self, objective_name=""):
+        grouped = {}
+        objective_key = self._graph_material_key(objective_name)
+        try:
+            sessions = load_history()
+        except Exception:
+            sessions = []
+        for session in sessions or []:
+            if not isinstance(session, dict):
+                continue
+            adjustments = session.get("ajustes", [])
+            if not isinstance(adjustments, list) or not adjustments:
+                continue
+            first = adjustments[0] if isinstance(adjustments[0], dict) else {}
+            material = str(session.get("objetivo") or first.get("objetivo") or "").strip()
+            if not material:
+                continue
+            if objective_key and self._graph_material_key(material) != objective_key:
+                continue
+            initial = ((first.get("inicial") or {}).get("comp") or {})
+            if not isinstance(initial, dict):
+                continue
+            grouped.setdefault(material, []).append((
+                to_float(initial.get("C", 0.0)),
+                to_float(initial.get("Si", 0.0)),
+            ))
+
+        circles = []
+        for material, points in grouped.items():
+            stats = self._graph_hull_shape_stats(points)
+            if not stats:
+                continue
+            mx, my, major, minor, angle, n, raw_count, used_points, polygon = stats
+            circles.append({
+                "material": material,
+                "count": n,
+                "raw_count": raw_count,
+                "c": mx,
+                "si": my,
+                "major": major,
+                "minor": minor,
+                "angle": angle,
+                "points": [{"c": p[0], "si": p[1]} for p in used_points],
+                "polygon": polygon,
+            })
+        circles.sort(key=lambda item: (-item["count"], item["material"].lower()))
+        return circles
+
+    def _graph_history_step_delta_circle(self, objective_name=""):
+        objective_key = self._graph_material_key(objective_name)
+        points = []
+        try:
+            sessions = load_history()
+        except Exception:
+            sessions = []
+        for session in sessions or []:
+            if not isinstance(session, dict):
+                continue
+            adjustments = session.get("ajustes", [])
+            if not isinstance(adjustments, list) or len(adjustments) < 2:
+                continue
+            first = adjustments[0] if isinstance(adjustments[0], dict) else {}
+            material = str(session.get("objetivo") or first.get("objetivo") or "").strip()
+            if not material:
+                continue
+            if objective_key and self._graph_material_key(material) != objective_key:
+                continue
+            for prev, nxt in zip(adjustments, adjustments[1:]):
+                if not isinstance(prev, dict) or not isinstance(nxt, dict):
+                    continue
+                prev_final = ((prev.get("estimado") or {}).get("comp") or {})
+                next_initial = ((nxt.get("inicial") or {}).get("comp") or {})
+                if not isinstance(prev_final, dict) or not isinstance(next_initial, dict):
+                    continue
+                points.append((
+                    to_float(next_initial.get("C", 0.0)) - to_float(prev_final.get("C", 0.0)),
+                    to_float(next_initial.get("Si", 0.0)) - to_float(prev_final.get("Si", 0.0)),
+                ))
+        stats = self._graph_axis_deviation_stats(points)
+        if not stats:
+            return None
+        dc, dsi, major, minor, angle, n, raw_count, used_points = stats
+        return {
+            "dc": dc,
+            "dsi": dsi,
+            "major": major,
+            "minor": minor,
+            "angle": angle,
+            "count": n,
+            "raw_count": raw_count,
+            "points": [{"dc": p[0], "dsi": p[1]} for p in used_points],
+        }
+
+    def _schedule_graph_update(self):
+        if not hasattr(self, "_graph_jobs"):
+            return
+        try:
+            self._graph_req_seq += 1
+            adjustments = []
+            for it in sorted(getattr(self, "ajustes_log", []), key=lambda x: x.get("fecha", "")):
+                initial = ((it.get("inicial") or {}).get("comp") or {})
+                final = ((it.get("estimado") or {}).get("comp") or {})
+                if initial and final:
+                    adjustments.append({"initial": dict(initial), "final": dict(final)})
+            predicted = {}
+            if hasattr(self, "_predicted") and isinstance(getattr(self, "_predicted", None), tuple):
+                predicted = dict((getattr(self, "_predicted", (None, {}))[1] or {}))
+            has_live_prediction = any(to_float(var.get()) > 0 for var in getattr(self, "kg_vars", {}).values())
+            self._graph_jobs.put_nowait({
+                "seq": self._graph_req_seq,
+                "has_objective": bool(self.cb_obj.get().strip()),
+                "view_mode": bool(getattr(self, "_view_mode", False)),
+                "objective_name": self.cb_obj.get().strip(),
+                "target": self._target_comp(),
+                "target_limit_area": self._graph_target_limit_area(),
+                "current": self._current_comp(),
+                "predicted": predicted,
+                "has_live_prediction": has_live_prediction,
+                "adjustments": adjustments,
+            })
+        except Exception:
+            pass
+
+    def _graph_target_limit_area(self):
+        try:
+            target = self._target_comp()
+            if not target:
+                return None
+            c_bounds = self._graph_limit_bounds("C", target.get("C", 0.0))
+            si_bounds = self._graph_limit_bounds("Si", target.get("Si", 0.0))
+            if c_bounds is None and si_bounds is None:
+                return None
+            c_bounds = c_bounds or (-0.03, 0.03)
+            si_bounds = si_bounds or (-0.03, 0.03)
+            polygon = [
+                {"dx": c_bounds[0], "dy": si_bounds[0]},
+                {"dx": c_bounds[1], "dy": si_bounds[0]},
+                {"dx": c_bounds[1], "dy": si_bounds[1]},
+                {"dx": c_bounds[0], "dy": si_bounds[1]},
+            ]
+
+            ce_min, ce_max, ce_formula, ce_custom = self._objective_ce_data()
+            ce_target = ce_from_percent(target, ce_formula, ce_custom)
+            coeffs = self._ce_coeffs(ce_formula, ce_custom)
+            c_coef = to_float(coeffs.get("C", 0.0))
+            si_coef = to_float(coeffs.get("Si", 0.0))
+
+            def clip_halfplane(poly, a, b, limit):
+                if not poly:
+                    return []
+
+                def value(pt):
+                    return (a * to_float(pt.get("dx", 0.0))) + (b * to_float(pt.get("dy", 0.0)))
+
+                def intersect(p1, p2):
+                    v1 = value(p1)
+                    v2 = value(p2)
+                    denom = v2 - v1
+                    if abs(denom) <= 1e-12:
+                        return dict(p2)
+                    t = (limit - v1) / denom
+                    return {
+                        "dx": to_float(p1.get("dx", 0.0)) + t * (to_float(p2.get("dx", 0.0)) - to_float(p1.get("dx", 0.0))),
+                        "dy": to_float(p1.get("dy", 0.0)) + t * (to_float(p2.get("dy", 0.0)) - to_float(p1.get("dy", 0.0))),
+                    }
+
+                out = []
+                prev = poly[-1]
+                prev_inside = value(prev) <= limit + 1e-12
+                for curr in poly:
+                    curr_inside = value(curr) <= limit + 1e-12
+                    if curr_inside:
+                        if not prev_inside:
+                            out.append(intersect(prev, curr))
+                        out.append(dict(curr))
+                    elif prev_inside:
+                        out.append(intersect(prev, curr))
+                    prev = curr
+                    prev_inside = curr_inside
+                return out
+
+            if abs(c_coef) > 1e-12 or abs(si_coef) > 1e-12:
+                if ce_max is not None:
+                    polygon = clip_halfplane(polygon, c_coef, si_coef, to_float(ce_max) - ce_target)
+                if ce_min is not None:
+                    polygon = clip_halfplane(polygon, -c_coef, -si_coef, -(to_float(ce_min) - ce_target))
+            if len(polygon) < 3:
+                return None
+            x_extent = max(abs(to_float(pt.get("dx", 0.0))) for pt in polygon)
+            y_extent = max(abs(to_float(pt.get("dy", 0.0))) for pt in polygon)
+            return {
+                "dx": 0.0,
+                "dy": 0.0,
+                "major": max(0.001, x_extent),
+                "minor": max(0.001, y_extent),
+                "angle": 0.0,
+                "polygon": polygon,
+            }
+        except Exception:
+            return None
+
+    def _graph_limit_bounds(self, element, target_value):
+        mn, mx = self._objective_limits(element)
+        has_min = mn is not None
+        has_max = mx is not None
+        if not has_min and not has_max:
+            return None
+        target_value = to_float(target_value)
+        lower = to_float(mn) - target_value if has_min else -0.03
+        upper = to_float(mx) - target_value if has_max else 0.03
+        if lower > upper:
+            lower, upper = upper, lower
+        return (lower, upper)
+
+    def _graph_limit_radius(self, element, target_value):
+        mn, mx = self._objective_limits(element)
+        distances = []
+        if mn is not None:
+            distances.append(abs(to_float(mn) - to_float(target_value)))
+        if mx is not None:
+            distances.append(abs(to_float(mx) - to_float(target_value)))
+        return max(distances) if distances else None
+
+    def _poll_graph_results(self):
+        latest = None
+        try:
+            while True:
+                latest = self._graph_results.get_nowait()
+        except queue.Empty:
+            pass
+        if latest and latest.get("seq", 0) >= self._graph_drawn_seq:
+            self._graph_drawn_seq = latest.get("seq", 0)
+            self._draw_graph(latest)
+        try:
+            self.after(150, self._poll_graph_results)
+        except Exception:
+            pass
+
+    def _draw_graph(self, data):
+        self._graph_last_data = data
+        if not hasattr(self, "graph_canvas"):
+            return
+        c = self.graph_canvas
+        c.delete("all")
+        w = max(c.winfo_width(), 220)
+        h = max(c.winfo_height(), 180)
+        if data.get("error"):
+            c.create_text(w / 2, h / 2, text=f"Error grafico: {data.get('error')}", fill="#8a1f1f")
+            return
+        if not data.get("has_objective"):
+            c.create_text(w / 2, h / 2, text="Seleccione aleacion objetivo", fill="#666666")
+            return
+
+        left, right, top, bottom = 42, 18, 22, 36
+        x0, x1 = left, w - right
+        y0, y1 = top, h - bottom
+        cx = (x0 + x1) / 2
+        cy = (y0 + y1) / 2
+        plot_w = max(1, x1 - x0)
+        plot_h = max(1, y1 - y0)
+        span = max(to_float(data.get("span")), 0.05) / max(0.1, to_float(getattr(self, "_graph_zoom", 1.0)))
+        pan_dx = to_float(getattr(self, "_graph_pan_dx", 0.0))
+        pan_dy = to_float(getattr(self, "_graph_pan_dy", 0.0))
+
+        c.create_rectangle(x0, y0, x1, y1, outline="#d5d5d5", fill="#ffffff")
+        for step in (-1.0, -0.5, 0.5, 1.0):
+            gx = cx + step * (plot_w / 2)
+            gy = cy - step * (plot_h / 2)
+            c.create_line(gx, y0, gx, y1, fill="#eeeeee")
+            c.create_line(x0, gy, x1, gy, fill="#eeeeee")
+        zero_x = cx - (pan_dx / span) * (plot_w / 2)
+        zero_y = cy + (pan_dy / span) * (plot_h / 2)
+        c.create_line(x0, zero_y, x1, zero_y, fill="#333333", width=2)
+        c.create_line(zero_x, y0, zero_x, y1, fill="#333333", width=2)
+
+        tick = span / 2
+        target_c = to_float(data.get("target_c"))
+        target_si = to_float(data.get("target_si"))
+        c.create_text(x0 + 2, zero_y + 12, text=f"{target_c + pan_dx - span:.3f}", anchor="w", fill="#666666", font=("Segoe UI", 8))
+        c.create_text(cx + (plot_w / 4), zero_y + 12, text=f"{target_c + pan_dx + tick:.3f}", fill="#666666", font=("Segoe UI", 8))
+        c.create_text(cx - (plot_w / 4), zero_y + 12, text=f"{target_c + pan_dx - tick:.3f}", fill="#666666", font=("Segoe UI", 8))
+        c.create_text(x1 - 2, zero_y + 12, text=f"{target_c + pan_dx + span:.3f}", anchor="e", fill="#666666", font=("Segoe UI", 8))
+        c.create_text(zero_x + 6, y0 + 8, text=f"{target_si + pan_dy + span:.3f}", anchor="w", fill="#666666", font=("Segoe UI", 8))
+        c.create_text(zero_x + 6, y1 - 8, text=f"{target_si + pan_dy - span:.3f}", anchor="w", fill="#666666", font=("Segoe UI", 8))
+
+        c.create_text((x0 + x1) / 2, h - 12, text="C (%)", fill="#222222", font=("Segoe UI", 9))
+        c.create_text(12, (y0 + y1) / 2, text="Si (%)", fill="#222222", font=("Segoe UI", 9), angle=90)
+        c.create_text(x0 + 4, y0 + 4,
+                      text=f"centro = obj C {fmt(target_c, 4)} / Si {fmt(target_si, 4)}",
+                      anchor="nw", fill="#555555", font=("Segoe UI", 8))
+
+        def xy(pt):
+            px = cx + ((to_float(pt.get("dx")) - pan_dx) / span) * (plot_w / 2)
+            py = cy - ((to_float(pt.get("dy")) - pan_dy) / span) * (plot_h / 2)
+            return px, py
+
+        def draw_ellipse(center_dx, center_dy, major, minor, angle, outline, dash):
+            px = cx + ((to_float(center_dx) - pan_dx) / span) * (plot_w / 2)
+            py = cy - ((to_float(center_dy) - pan_dy) / span) * (plot_h / 2)
+            scale_x = plot_w / (2 * span)
+            scale_y = plot_h / (2 * span)
+            ca = math.cos(to_float(angle))
+            sa = math.sin(to_float(angle))
+            coords = []
+            for i in range(64):
+                t = (2.0 * math.pi * i) / 64
+                ex = (to_float(major) * math.cos(t) * ca) - (to_float(minor) * math.sin(t) * sa)
+                ey = (to_float(major) * math.cos(t) * sa) + (to_float(minor) * math.sin(t) * ca)
+                coords.extend([px + ex * scale_x, py - ey * scale_y])
+            c.create_polygon(coords, outline=outline, fill="", width=2, dash=dash, smooth=True)
+            x_extent, y_extent = self._graph_ellipse_extent({"major": major, "minor": minor, "angle": angle})
+            rx = max(6, x_extent * scale_x)
+            ry = max(6, y_extent * scale_y)
+            return px, py, rx, ry
+
+        target_area = data.get("target_limit_area") or {}
+        if target_area:
+            polygon = target_area.get("polygon", [])
+            coords = []
+            for pt in polygon:
+                px_pt, py_pt = xy(pt)
+                coords.extend([px_pt, py_pt])
+            if len(coords) >= 6:
+                c.create_polygon(coords, outline="#2e7d32", fill="#e8f5e9", width=2, dash=(6, 3))
+            px, py = xy({"dx": 0.0, "dy": 0.0})
+            rx = max(6, self._graph_ellipse_extent(target_area)[0] * (plot_w / (2 * span)))
+            c.create_text(px + rx + 4, py, text="limites objetivo", anchor="w", fill="#2e7d32", font=("Segoe UI", 8))
+
+        for st in data.get("stat_circles", []):
+            polygon = st.get("polygon", [])
+            coords = []
+            for pt in polygon:
+                px_pt, py_pt = xy(pt)
+                coords.extend([px_pt, py_pt])
+            if len(coords) >= 6:
+                c.create_polygon(coords, outline="#7e57c2", fill="", width=2, dash=(4, 3), smooth=True)
+                px, py = xy(st)
+                rx = max(6, self._graph_ellipse_extent(st)[0] * (plot_w / (2 * span)))
+            else:
+                px, py, rx, _ry = draw_ellipse(
+                    st.get("dx", 0.0), st.get("dy", 0.0),
+                    st.get("major", 0.03), st.get("minor", 0.03), st.get("angle", 0.0),
+                    "#7e57c2", (4, 3)
+                )
+            if self.show_blue_stat_points.get():
+                for pt in st.get("plot_points", []):
+                    ptx, pty = xy(pt)
+                    c.create_oval(ptx - 2, pty - 2, ptx + 2, pty + 2, fill="#1e88e5", outline="")
+            count = int(st.get("count", 0) or 0)
+            raw_count = int(st.get("raw_count", count) or count)
+            count_label = str(count) if raw_count == count else f"{count}/{raw_count}"
+            label = f"{st.get('material', '')} ({count_label})"
+            c.create_text(px + rx + 4, py, text=label, anchor="w", fill="#5e35b1", font=("Segoe UI", 8))
+
+        for st in data.get("step_circles", []):
+            px, py, rx, _ry = draw_ellipse(
+                st.get("dx", 0.0), st.get("dy", 0.0),
+                st.get("major", 0.03), st.get("minor", 0.03), st.get("angle", 0.0),
+                "#fb8c00", (2, 3)
+            )
+            if self.show_orange_stat_points.get():
+                for pt in st.get("plot_points", []):
+                    ptx, pty = xy(pt)
+                    c.create_oval(ptx - 2, pty - 2, ptx + 2, pty + 2, fill="#fb8c00", outline="")
+            count = int(st.get("count", 0) or 0)
+            raw_count = int(st.get("raw_count", count) or count)
+            count_label = str(count) if raw_count == count else f"{count}/{raw_count}"
+            c.create_text(px + rx + 4, py, text=f"sig {st.get('label', '')} ({count_label})",
+                          anchor="w", fill="#e65100", font=("Segoe UI", 8))
+
+        for tr in data.get("transitions", []):
+            start = tr.get("start", {})
+            end = tr.get("end", {})
+            sx, sy = xy(start)
+            ex, ey = xy(end)
+            label = str(tr.get("label", ""))
+            c.create_line(sx, sy, ex, ey, fill="#555555", width=2, arrow=tk.LAST, arrowshape=(10, 12, 4))
+            c.create_oval(sx - 5, sy - 5, sx + 5, sy + 5, fill="#e53935", outline="#7f1715", width=2)
+            c.create_oval(ex - 5, ey - 5, ex + 5, ey + 5, fill="#1e88e5", outline="#0d47a1", width=2)
+            lx = ex + 8 if ex >= sx else ex - 8
+            anchor = "w" if ex >= sx else "e"
+            c.create_text(lx, ey, text=label, anchor=anchor, fill="#111111", font=("Segoe UI", 9, "bold"))
+
+        current = data.get("current") or {}
+        estimated = data.get("estimated") or {}
+        if current and estimated:
+            sx, sy = xy(current)
+            ex, ey = xy(estimated)
+            c.create_line(sx, sy, ex, ey, fill="#2e7d32", width=2, arrow=tk.LAST, arrowshape=(10, 12, 4))
+            c.create_oval(ex - 6, ey - 6, ex + 6, ey + 6,
+                          fill="#43a047", outline="#1b5e20", width=2)
+            c.create_text(ex + 8, ey + 8, text="Estimado", anchor="nw", fill="#1b5e20", font=("Segoe UI", 8, "bold"))
+        if current:
+            px, py = xy(current)
+            radius = 6
+            c.create_oval(px - radius, py - radius, px + radius, py + radius,
+                          fill="#ffd200", outline="#6f5c00", width=2)
+            c.create_text(px + 8, py - 8, text="Actual", anchor="sw", fill="#333333", font=("Segoe UI", 8, "bold"))
+
+    def _redraw_graph_view(self):
+        if getattr(self, "_graph_last_data", None):
+            self._draw_graph(self._graph_last_data)
+
+    def _on_graph_mousewheel(self, event):
+        old_zoom = max(0.1, to_float(getattr(self, "_graph_zoom", 1.0)))
+        if getattr(event, "num", None) == 5 or getattr(event, "delta", 0) < 0:
+            factor = 1 / 1.15
+        else:
+            factor = 1.15
+        new_zoom = max(0.2, min(12.0, old_zoom * factor))
+        if abs(new_zoom - old_zoom) <= 1e-12:
+            return "break"
+        self._graph_zoom = new_zoom
+        self._redraw_graph_view()
+        return "break"
+
+    def _on_graph_drag_start(self, event):
+        self._graph_drag_start = (event.x, event.y, to_float(self._graph_pan_dx), to_float(self._graph_pan_dy))
+
+    def _on_graph_drag_move(self, event):
+        if not self._graph_drag_start or not getattr(self, "_graph_last_data", None):
+            return
+        start_x, start_y, base_dx, base_dy = self._graph_drag_start
+        c = self.graph_canvas
+        w = max(c.winfo_width(), 220)
+        h = max(c.winfo_height(), 180)
+        plot_w = max(1, w - 42 - 18)
+        plot_h = max(1, h - 22 - 36)
+        span = max(to_float(self._graph_last_data.get("span")), 0.05) / max(0.1, to_float(self._graph_zoom))
+        self._graph_pan_dx = base_dx - ((event.x - start_x) / plot_w) * (2 * span)
+        self._graph_pan_dy = base_dy + ((event.y - start_y) / plot_h) * (2 * span)
+        self._redraw_graph_view()
+
+    def _on_graph_drag_end(self, _event):
+        self._graph_drag_start = None
+
+    def _reset_graph_view(self, _event=None):
+        self._graph_zoom = 1.0
+        self._graph_pan_dx = 0.0
+        self._graph_pan_dy = 0.0
+        self._redraw_graph_view()
+        return "break"
 
     # ------------------------------- helpers generales ----------------------
     def _status(self, msg):
@@ -422,6 +1481,14 @@ class TabAjuste(ttk.Frame):
             pass
 
     def _schedule_auto(self):
+        if getattr(self, "_view_mode", False):
+            if self._auto_job is not None:
+                try:
+                    self.after_cancel(self._auto_job)
+                except Exception:
+                    pass
+                self._auto_job = None
+            return
         try:
             delay_ms = int(getattr(self.winfo_toplevel(), "_auto_refresh_ms", 250))
         except Exception:
@@ -448,7 +1515,13 @@ class TabAjuste(ttk.Frame):
             self.session_elapsed_var.set("Transcurrido: -")
             return
         self.session_start_var.set(f"Inicio: {started.strftime('%d/%m %H:%M')}")
-        delta = datetime.now() - started
+        end_dt = None
+        if getattr(self, "_view_mode", False) and self._view_session_ended_at:
+            try:
+                end_dt = datetime.fromisoformat(str(self._view_session_ended_at))
+            except Exception:
+                end_dt = None
+        delta = (end_dt or datetime.now()) - started
         total_min = max(0, int(delta.total_seconds() // 60))
         hours = total_min // 60
         minutes = total_min % 60
@@ -505,6 +1578,7 @@ class TabAjuste(ttk.Frame):
         self._clear_objective_selection()
         self._clear_furnace_snapshot()
         self._refresh_session_timer_labels()
+        self._schedule_graph_update()
         self._fire_save()
         self._status("Inicio de sesión cancelado.")
 
@@ -539,6 +1613,7 @@ class TabAjuste(ttk.Frame):
         self._schedule_auto()
         if self.cb_obj.get().strip() and self.session_started_at:
             self._publish_furnace_context()
+        self._schedule_graph_update()
         self._fire_save()
 
     def _auto_run(self):
@@ -599,11 +1674,14 @@ class TabAjuste(ttk.Frame):
             consumed_paths = set(self._carbomax_consumed_paths)
             if self._carbomax_last_consumed:
                 consumed_paths.add(self._carbomax_last_consumed)
-            self._thermal_source.poll_latest_carbon_async(
+            started = self._thermal_source.poll_latest_carbon_async(
                 self.session_started_at or self._carbomax_auto_armed_at,
                 sorted(consumed_paths),
                 self._on_carbomax_poll_result,
             )
+            if not started:
+                self._carbomax_poll_running = False
+                self._carbomax_last_poll_monotonic = 0.0
         except Exception as ex:
             self._carbomax_poll_running = False
             self._status(f"Carbomax automático: {ex}")
@@ -695,6 +1773,21 @@ class TabAjuste(ttk.Frame):
         )
         if not plan:
             raise ValueError("no se pudo calcular el ajuste automático de C/Si")
+        base_mass = self._bath_mass()
+        predicted_mass = self._predicted_mass_for_plan(base_mass, plan)
+        max_auto_mass = base_mass * self.CARBOMAX_AUTO_MAX_MASS_FACTOR
+        if base_mass > 0 and predicted_mass > max_auto_mass:
+            self._mark_carbomax_consumed(record_keys or record_key)
+            self._carbomax_pending_record = None
+            self.clear_adjust_kgs()
+            self.calc_prediction()
+            self._status(
+                "Carbomax automatico bloqueado: el plan llevaria la masa "
+                f"de {fmt(base_mass, 1)} kg a {fmt(predicted_mass, 1)} kg. "
+                "Revisar C/Si o ajustar manualmente."
+            )
+            self._fire_save()
+            return
         try:
             self._busy = True
             for v in self.kg_vars.values():
@@ -712,6 +1805,15 @@ class TabAjuste(ttk.Frame):
         self._carbomax_pending_record = None
         self._status(f"Carbomax automático aplicado desde {source_name}.")
         self._fire_save()
+
+    def _predicted_mass_for_plan(self, base_mass, plan):
+        mass = to_float(base_mass)
+        for name, kg in (plan or {}).items():
+            alloy = self._get_adjuster(name)
+            if not alloy:
+                continue
+            mass += to_float(kg) * self._effective_total_perkg(alloy)
+        return mass
 
     def _carbomax_record_key(self, record):
         keys = self._carbomax_record_keys(record)
@@ -850,6 +1952,7 @@ class TabAjuste(ttk.Frame):
             self.carbon_log = []
             self._predicted = None
             self._clear_furnace_snapshot()
+            self._schedule_graph_update()
             self._status("Ajuste reiniciado.")
             self._fire_save()
         finally:
@@ -887,6 +1990,7 @@ class TabAjuste(ttk.Frame):
         self._set_ce_widget_color(self.ceA, BG_ENTRY)
         self._set_ce_widget_color(self.ceE, BG_ENTRY)
         self._set_ce_widget_color(self.ceT, BG_ENTRY)
+        self._schedule_graph_update()
 
     def _own_alloy_names(self):
         return [a["nombre"] for a in self.alloys if (a.get("tipo", "") == "Aleación propia")]
@@ -1068,6 +2172,125 @@ class TabAjuste(ttk.Frame):
             messagebox.showerror("Catálogo", f"No se encontró un material de ajuste válido para {name}.")
         return a
 
+    # ----------------------- calculadora por dilucion -----------------------
+    def open_dilution_calculator(self):
+        win = tk.Toplevel(self)
+        win.title("Calculadora de composicion por dilucion")
+        win.transient(self)
+        win.geometry("920x680")
+        win.minsize(780, 560)
+
+        root = ttk.Frame(win, padding=10)
+        root.pack(fill="both", expand=True)
+
+        top = ttk.LabelFrame(root, text="Masas", padding=8)
+        top.pack(fill="x", pady=(0, 8))
+        known_mass = tk.StringVar(value="")
+        mass_total = tk.StringVar(value="")
+        mode = tk.StringVar(value="A")
+
+        known_mass_label = ttk.Label(top, text="Peso A (kg):")
+        known_mass_label.pack(side="left")
+        ttk.Entry(top, textvariable=known_mass, width=12).pack(side="left", padx=6)
+        ttk.Label(top, text="Peso A+B (kg):").pack(side="left", padx=(16, 0))
+        ttk.Entry(top, textvariable=mass_total, width=12).pack(side="left", padx=6)
+        ttk.Radiobutton(top, text="Calcular composicion de A", variable=mode, value="A").pack(side="left", padx=(18, 0))
+        ttk.Radiobutton(top, text="Calcular composicion de B", variable=mode, value="B").pack(side="left", padx=8)
+
+        table = ttk.Frame(root)
+        table.pack(fill="both", expand=True)
+        mix_box = ttk.LabelFrame(table, text="Composicion medida de A+B (%)", padding=6)
+        known_box = ttk.LabelFrame(table, text="Composicion conocida de B (%)", padding=6)
+        result_box = ttk.LabelFrame(table, text="Resultado calculado (%)", padding=6)
+        mix_box.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        known_box.grid(row=0, column=1, sticky="nsew", padx=6)
+        result_box.grid(row=0, column=2, sticky="nsew", padx=(6, 0))
+        for col in range(3):
+            table.columnconfigure(col, weight=1)
+        table.rowconfigure(0, weight=1)
+
+        def build_column(parent, editable=True):
+            sf = ScrollFrame(parent)
+            sf.pack(fill="both", expand=True)
+            rows = {}
+            for i, el in enumerate(ELEMENTS):
+                row = ttk.Frame(sf.inner)
+                row.grid(row=i, column=0, sticky="ew", pady=1)
+                ttk.Label(row, text=el, width=5).pack(side="left")
+                var = tk.StringVar(value="")
+                ent = ttk.Entry(row, textvariable=var, width=12)
+                ent.pack(side="left", padx=4)
+                if not editable:
+                    ent.config(state="readonly")
+                rows[el] = (var, ent)
+            return rows
+
+        mix_rows = build_column(mix_box, editable=True)
+        known_rows = build_column(known_box, editable=True)
+        result_rows = build_column(result_box, editable=False)
+        status = tk.StringVar(value="")
+        ttk.Label(root, textvariable=status, foreground="#555555").pack(fill="x", pady=(8, 0))
+
+        def refresh_mode_labels(*_):
+            if mode.get() == "A":
+                known_mass_label.config(text="Peso A (kg):")
+                known_box.config(text="Composicion conocida de B (%)")
+                result_box.config(text="Composicion calculada de A (%)")
+            else:
+                known_mass_label.config(text="Peso B (kg):")
+                known_box.config(text="Composicion conocida de A (%)")
+                result_box.config(text="Composicion calculada de B (%)")
+
+        mode.trace_add("write", refresh_mode_labels)
+        refresh_mode_labels()
+
+        def set_result(el, value):
+            var, ent = result_rows[el]
+            ent.config(state="normal")
+            var.set("" if value == "" else fmt(value, 6))
+            ent.config(state="readonly")
+
+        def calculate():
+            try:
+                known = to_float(known_mass.get())
+                mt = to_float(mass_total.get())
+                if known <= 0:
+                    raise ValueError("El peso conocido debe ser > 0.")
+                if mt <= known:
+                    raise ValueError("Peso A+B debe ser mayor que el peso conocido.")
+                for el in ELEMENTS:
+                    mix = to_float(mix_rows[el][0].get())
+                    known_comp = to_float(known_rows[el][0].get())
+                    if mode.get() == "A":
+                        ma = known
+                        mb = mt - ma
+                        value = ((mix * mt) - (known_comp * mb)) / ma
+                    else:
+                        mb = known
+                        ma = mt - mb
+                        value = ((mix * mt) - (known_comp * ma)) / mb
+                    set_result(el, value)
+                if mode.get() == "A":
+                    status.set(f"Calculado. Peso B = {fmt(mt - known, 3)} kg.")
+                else:
+                    status.set(f"Calculado. Peso A = {fmt(mt - known, 3)} kg.")
+            except Exception as ex:
+                messagebox.showerror("Dilucion", str(ex), parent=win)
+
+        def clear():
+            for rows in (mix_rows, known_rows):
+                for var, _ent in rows.values():
+                    var.set("")
+            for el in ELEMENTS:
+                set_result(el, "")
+            status.set("")
+
+        actions = ttk.Frame(root)
+        actions.pack(fill="x", pady=(8, 0))
+        ttk.Button(actions, text="Calcular", command=calculate).pack(side="right")
+        ttk.Button(actions, text="Limpiar", command=clear).pack(side="right", padx=6)
+        ttk.Button(actions, text="Cerrar", command=win.destroy).pack(side="right")
+
     # ------------------------------- UI auxiliares --------------------------
     def _rebuild_adjust_ui(self):
         for w in self.adjust_list_area.winfo_children():
@@ -1089,7 +2312,7 @@ class TabAjuste(ttk.Frame):
                 v = tk.StringVar(value=old_vals.get(name, "0"))
                 ent = ttk.Entry(fr, textvariable=v, width=10)
                 ent.pack(side="left", padx=4)
-                ent.bind("<KeyRelease>", lambda _e: (self._schedule_auto(), self._fire_save()))
+                ent.bind("<KeyRelease>", lambda _e: (self.calc_prediction(), self._schedule_auto(), self._fire_save()))
                 self.kg_vars[name] = v
         self._schedule_auto()
 
@@ -1336,6 +2559,7 @@ class TabAjuste(ttk.Frame):
             t.config(state="readonly")
         self._recalc_fe_actual()
         self._schedule_auto()
+        self._schedule_graph_update()
         if self.cb_obj.get().strip() and self.session_started_at:
             self._publish_furnace_context()
         self._fire_save()
@@ -1350,6 +2574,7 @@ class TabAjuste(ttk.Frame):
             e.insert(0, fmt(values[el]))
         self._recalc_fe_actual()
         self._schedule_auto()
+        self._schedule_graph_update()
         if self.cb_obj.get().strip() and self.session_started_at:
             self._publish_furnace_context()
         self._fire_save()
@@ -1369,6 +2594,7 @@ class TabAjuste(ttk.Frame):
             self._set_ce_widget_color(self.ceT, BG_ENTRY)
             self._set_ce_widget_color(self.ceA, BG_ENTRY)
             self._set_ce_widget_color(self.ceE, BG_ENTRY)
+            self._schedule_graph_update()
             return
         for el, t_obj, t_min, t_max in self.target_rows:
             t_obj.config(state="normal")
@@ -1395,6 +2621,7 @@ class TabAjuste(ttk.Frame):
         ce_now = ce_from_percent(self._current_comp(), ce_formula, ce_custom)
         ce_est = ce_from_percent(getattr(self, "_predicted", (0.0, self._current_comp()))[1], ce_formula, ce_custom)
         self._apply_ce_colors(ce_now, ce_est, ce_tgt, ce_min, ce_max)
+        self._schedule_graph_update()
         self._fire_save()
 
     # --------------------------- baño y colores -----------------------------
@@ -1507,6 +2734,7 @@ class TabAjuste(ttk.Frame):
             self._apply_ce_colors(ce_now, ce_est, ce_tgt, ce_min, ce_max)
             self._apply_estimated_colors(pred_pct)
             self._predicted = (Mnew, pred_pct)
+            self._schedule_graph_update()
         except Exception as ex:
             self._status(f"Error de cálculo: {ex}")
 
@@ -1934,6 +3162,7 @@ class TabAjuste(ttk.Frame):
             self.mass.set(fmt(Mnew))
             for v in self.kg_vars.values():
                 v.set("0")
+            self._schedule_graph_update()
             self._status("Aplicado.")
             self._fire_save()
         except Exception as ex:
@@ -2114,6 +3343,7 @@ class TabAjuste(ttk.Frame):
         if changed:
             self._fire_save()
         self._refresh_changes_window()
+        self._schedule_graph_update()
 
     def _log_ajuste(self, plan, porcentaje, comp0, M0, pred_pct, Mnew, objetivo_name,
                      ce_formula, ce_now, ce_pred, objetivo_comp):

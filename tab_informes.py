@@ -3,11 +3,12 @@ from tkinter import ttk
 from datetime import datetime
 import re
 
-from storage import load_history, load_ladles_state, load_quality_reports, normalize_colada_key, prune_ladles_history_for_sessions
+from storage import load_history, load_ladles_state, load_quality_reports, prune_ladles_history_for_sessions
 from utils import to_float, fmt
 from widgets import ScrollFrame
 
 LADLE_KG_PER_COUNT = 50.0
+FURNACE_KG_PER_SESSION = 1000.0
 
 
 class TabInformes(ttk.Frame):
@@ -22,6 +23,9 @@ class TabInformes(ttk.Frame):
         self.monthly_furnace_canvas = None
         self.monthly_furnace_summary_var = tk.StringVar(value="")
         self._monthly_furnace_data = []
+        self.monthly_hornos_canvas = None
+        self.monthly_hornos_summary_var = tk.StringVar(value="")
+        self._monthly_hornos_data = []
 
         top = ttk.Frame(self)
         top.pack(fill="x", pady=(0, 8))
@@ -61,6 +65,7 @@ class TabInformes(ttk.Frame):
         self._add_sidebar_toggle("summary", "Resumen general")
         self._add_sidebar_toggle("materials", "Materiales mas usados")
         self._add_sidebar_toggle("monthly_furnace", "Hierro fundido mensual")
+        self._add_sidebar_toggle("monthly_hornos", "Hierro mensual por hornos")
         self._add_sidebar_toggle("targets", "Objetivos mas usados")
         self._add_sidebar_toggle("elements", "Elementos mas ajustados")
         self._add_sidebar_toggle("ce", "CE y formulas")
@@ -92,6 +97,17 @@ class TabInformes(ttk.Frame):
         self.monthly_furnace_canvas.pack(fill="both", expand=True)
         self.monthly_furnace_canvas.bind("<Configure>", lambda _event: self._draw_monthly_furnace_chart())
         self.section_frames["monthly_furnace"] = box
+
+        box = ttk.LabelFrame(self.content, text="Hierro fundido mensual por hornos", padding=8)
+        ttk.Label(
+            box,
+            textvariable=self.monthly_hornos_summary_var,
+            justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+        self.monthly_hornos_canvas = tk.Canvas(box, height=360, bg="white", highlightthickness=1, highlightbackground="#c8c8c8")
+        self.monthly_hornos_canvas.pack(fill="both", expand=True)
+        self.monthly_hornos_canvas.bind("<Configure>", lambda _event: self._draw_monthly_hornos_chart())
+        self.section_frames["monthly_hornos"] = box
 
         box = ttk.LabelFrame(self.content, text="Objetivos mas usados", padding=6)
         self.tree_targets = self._make_tree(
@@ -281,6 +297,7 @@ class TabInformes(ttk.Frame):
             "summary",
             "materials",
             "monthly_furnace",
+            "monthly_hornos",
             "targets",
             "elements",
             "ce",
@@ -303,6 +320,7 @@ class TabInformes(ttk.Frame):
         self._fill_summary()
         self._fill_materials()
         self._fill_monthly_furnace()
+        self._fill_monthly_hornos()
         self._fill_targets()
         self._fill_elements()
         self._fill_ce()
@@ -349,6 +367,16 @@ class TabInformes(ttk.Frame):
         for name, kg in sorted(totals.items(), key=lambda x: x[1], reverse=True)[:25]:
             self.tree_materials.insert("", "end", values=(name, fmt(kg, 3)))
 
+    def _ladle_record_month(self, record):
+        text = str(record.get("updated_at", "") or "").strip()
+        if len(text) >= 7 and text[:4].isdigit() and text[4] == "-":
+            return text[:7]
+        events = record.get("events", []) if isinstance(record.get("events", []), list) else []
+        event_dates = [event.get("dt") for event in events if isinstance(event.get("dt"), datetime)]
+        if event_dates:
+            return max(event_dates).strftime("%Y-%m")
+        return "Sin fecha"
+
     def _session_month(self, session):
         for key in ("ended_at", "started_at", "fecha"):
             text = str(session.get(key, "") or "").strip()
@@ -364,18 +392,6 @@ class TabInformes(ttk.Frame):
             if match:
                 text = match.group(1)
         return text or "Sin material"
-
-    def _session_furnace_kg(self, session):
-        for ajuste in session.get("ajustes", []) or []:
-            initial = ajuste.get("inicial", {}) if isinstance(ajuste, dict) else {}
-            kg = to_float(initial.get("masa", 0.0)) if isinstance(initial, dict) else 0.0
-            if kg > 0:
-                return kg
-        for key in ("masa", "mass", "masa_bano", "masa_baño"):
-            kg = to_float(session.get(key, 0.0))
-            if kg > 0:
-                return kg
-        return 0.0
 
     def _monthly_material_color(self, material, index=0):
         palette = (
@@ -401,15 +417,14 @@ class TabInformes(ttk.Frame):
     def _fill_monthly_furnace(self):
         months = {}
         material_totals = {}
-        ladle_by_colada = {}
-        skipped = 0
-        sessions_from_ladles = 0
-        sessions_from_bath = 0
+        ladle_coladas = 0
+        total_cucharas = 0
 
         for record in self._ladle_records():
-            key = normalize_colada_key(record.get("colada", ""))
             counts = record.get("counts", {}) if isinstance(record.get("counts", {}), dict) else {}
-            material_kg = {}
+            month = self._ladle_record_month(record)
+            bucket = months.setdefault(month, {})
+            record_used = False
             for material, qty in counts.items():
                 try:
                     count = max(0, int(qty or 0))
@@ -417,34 +432,16 @@ class TabInformes(ttk.Frame):
                     count = 0
                 if count <= 0:
                     continue
-                material_kg[str(material)] = count * LADLE_KG_PER_COUNT
-            if key and material_kg:
-                ladle_by_colada[key] = material_kg
-
-        for session in self.hist:
-            month = self._session_month(session)
-            bucket = months.setdefault(month, {})
-
-            colada_key = normalize_colada_key(session.get("colada", ""))
-            material_kg = ladle_by_colada.get(colada_key, {})
-            if material_kg:
-                sessions_from_ladles += 1
-                for material, kg in material_kg.items():
-                    bucket[material] = bucket.get(material, 0.0) + kg
-                    material_totals[material] = material_totals.get(material, 0.0) + kg
-                continue
-
-            kg = self._session_furnace_kg(session)
-            if kg > 0:
-                sessions_from_bath += 1
-                material = self._session_target_material(session)
+                material = str(material)
+                kg = count * LADLE_KG_PER_COUNT
                 bucket[material] = bucket.get(material, 0.0) + kg
                 material_totals[material] = material_totals.get(material, 0.0) + kg
-            else:
-                skipped += 1
-
+                total_cucharas += count
+                record_used = True
             if not bucket:
                 months.pop(month, None)
+            if record_used:
+                ladle_coladas += 1
 
         ordered_months = sorted(months)
         ordered_materials = [
@@ -458,30 +455,85 @@ class TabInformes(ttk.Frame):
             }
             for month in ordered_months
         ]
-        total_kg = sum(item["total"] for item in self._monthly_furnace_data)
         top_material = ""
         if material_totals:
             mat, kg = max(material_totals.items(), key=lambda item: item[1])
-            top_material = f"{mat}: {fmt(kg, 0)} kg"
+            top_material = f"{mat}: {fmt(kg / LADLE_KG_PER_COUNT, 0)} cucharas"
         self.monthly_furnace_summary_var.set(
-            f"Total fundido: {fmt(total_kg, 0)} kg | Meses: {len(ordered_months)} | "
+            f"Cucharas registradas: {total_cucharas} | Equivalencia usada: {fmt(LADLE_KG_PER_COUNT, 0)} kg aprox/cuchara | "
+            f"Meses: {len(ordered_months)} | "
             f"Materiales: {len(ordered_materials)} | Material principal: {top_material or 'N/D'}"
-            f" | Cucharas: {sessions_from_ladles} coladas x {fmt(LADLE_KG_PER_COUNT, 0)} kg"
-            f" | Respaldo masa bano: {sessions_from_bath}"
-            + (f" | Sesiones sin masa: {skipped}" if skipped else "")
+            f" | Coladas con cucharas: {ladle_coladas}"
         )
         self._draw_monthly_furnace_chart()
 
+    def _fill_monthly_hornos(self):
+        months = {}
+        hornos_by_month = {}
+        material_totals = {}
+        hornos = 0
+
+        for session in self.hist:
+            kg = FURNACE_KG_PER_SESSION
+            month = self._session_month(session)
+            material = self._session_target_material(session)
+            bucket = months.setdefault(month, {})
+            bucket[material] = bucket.get(material, 0.0) + kg
+            hornos_by_month[month] = hornos_by_month.get(month, 0) + 1
+            material_totals[material] = material_totals.get(material, 0.0) + kg
+            hornos += 1
+
+        ordered_months = sorted(months)
+        ordered_materials = [
+            material for material, _kg in sorted(material_totals.items(), key=lambda item: item[1], reverse=True)
+        ]
+        self._monthly_hornos_data = [
+            {
+                "month": month,
+                "materials": {material: months[month].get(material, 0.0) for material in ordered_materials},
+                "total": sum(months[month].values()),
+                "hornos": hornos_by_month.get(month, 0),
+            }
+            for month in ordered_months
+        ]
+        total_kg = sum(item["total"] for item in self._monthly_hornos_data)
+        top_material = ""
+        if material_totals:
+            mat, kg = max(material_totals.items(), key=lambda item: item[1])
+            top_material = f"{mat}: {fmt(kg / FURNACE_KG_PER_SESSION, 0)} hornos"
+        self.monthly_hornos_summary_var.set(
+            f"Hornos registrados: {hornos} | Equivalencia usada: {fmt(FURNACE_KG_PER_SESSION, 0)} kg/horno | "
+            f"Total por hornos: {fmt(total_kg, 0)} kg | "
+            f"Meses: {len(ordered_months)} | Materiales: {len(ordered_materials)} | "
+            f"Material principal: {top_material or 'N/D'}"
+        )
+        self._draw_monthly_hornos_chart()
+
     def _draw_monthly_furnace_chart(self):
-        canvas = self.monthly_furnace_canvas
+        self._draw_monthly_stacked_chart(
+            self.monthly_furnace_canvas,
+            self._monthly_furnace_data,
+            "No hay datos de cucharas para graficar.",
+            lambda item: f"{fmt(item['total'] / LADLE_KG_PER_COUNT if LADLE_KG_PER_COUNT else 0, 0)} cuch. = {fmt(item['total'], 0)} kg",
+        )
+
+    def _draw_monthly_hornos_chart(self):
+        self._draw_monthly_stacked_chart(
+            self.monthly_hornos_canvas,
+            self._monthly_hornos_data,
+            "No hay hornos registrados para graficar.",
+            lambda item: f"{int(item.get('hornos', 0) or 0)} hornos = {fmt(item['total'], 0)} kg",
+        )
+
+    def _draw_monthly_stacked_chart(self, canvas, data, empty_text, total_label):
         if canvas is None:
             return
         canvas.delete("all")
         width = max(canvas.winfo_width(), 760)
         height = max(canvas.winfo_height(), 320)
-        data = list(self._monthly_furnace_data or [])
+        data = list(data or [])
         if not data:
-            canvas.create_text(width / 2, height / 2, text="No hay datos de masa de baño para graficar.", fill="#555555")
+            canvas.create_text(width / 2, height / 2, text=empty_text, fill="#555555")
             return
 
         left = 62
@@ -527,7 +579,7 @@ class TabInformes(ttk.Frame):
                 if seg_h >= 18:
                     canvas.create_text((x0 + x1) / 2, (y0 + y_base) / 2, text=fmt(kg, 0), fill="white", font=("TkDefaultFont", 8, "bold"))
                 y_base = y0
-            canvas.create_text((x0 + x1) / 2, max(top + 8, y_base - 12), text=fmt(item["total"], 0), fill="#111111", font=("TkDefaultFont", 9, "bold"))
+            canvas.create_text((x0 + x1) / 2, max(top + 8, y_base - 12), text=total_label(item), fill="#111111", font=("TkDefaultFont", 9, "bold"))
             canvas.create_text((x0 + x1) / 2, top + chart_h + 18, text=item["month"][5:] + "/" + item["month"][:4], anchor="n", fill="#333333", font=("TkDefaultFont", 8))
 
         legend_x = left + chart_w + 22

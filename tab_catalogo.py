@@ -88,7 +88,7 @@ def _basic_alloys():
 class TabCatalogo(ttk.Frame):
     BASE_COLS = ("Nombre","Tipo","Rendimiento %","Costo","Límites")
     COLS = BASE_COLS + tuple(ELEMENTS)
-    TYPES = ["Ferroaleación", "Metal puro", "Recorte", "Retorno", "Aditivo", "Aleación propia", "Aleación final", "Otro"]
+    TYPES = ["Ferroaleación", "Metal puro", "Recorte", "Retorno", "Aditivo", "Aleación propia", "Aleación especial", "Aleación final", "Otro"]
 
     def __init__(self, master, model):
         super().__init__(master, padding=8)
@@ -155,9 +155,14 @@ class TabCatalogo(ttk.Frame):
         for i in self.tree.get_children(): self.tree.delete(i)
         for idx in self.filtered_idx:
             a = self.model[idx]
+            display_tipo = a.get("tipo","")
+            if a.get("tipo", "") == "Inoculante":
+                display_tipo = "Inoculante"
+            elif bool(a.get("inoculante", False)) or a.get("subtipo", "") == "Inoculante":
+                display_tipo = "Ferroaleación / Inoculante"
             row = [
                 a.get("nombre",""),
-                a.get("tipo",""),
+                display_tipo,
                 fmt(to_float(a.get("rendimiento",0)), 6),
                 fmt(to_float(a.get("costo",0)), 6),
                 "Sí" if self._has_any_limits(a) else "",
@@ -327,6 +332,11 @@ class TabCatalogo(ttk.Frame):
 
         nombre = tk.StringVar(value=(item or {}).get("nombre",""))
         tipo   = tk.StringVar(value=(item or {}).get("tipo","Ferroaleación"))
+        v_inoculante = tk.BooleanVar(
+            value=bool((item or {}).get("inoculante", False))
+            or (item or {}).get("subtipo", "") == "Inoculante"
+            or (item or {}).get("tipo", "") == "Inoculante"
+        )
         rend   = tk.StringVar(value=fmt(to_float((item or {}).get("rendimiento",90)),6))
         costo  = tk.StringVar(value=fmt(to_float((item or {}).get("costo",0)),6))
         v_ajuste = tk.BooleanVar(value=bool((item or {}).get("ajuste", False)))
@@ -355,12 +365,112 @@ class TabCatalogo(ttk.Frame):
         cb_tipo = ttk.Combobox(row1, textvariable=tipo, values=self.TYPES, state="readonly", width=37)
         cb_tipo.pack(side="left", padx=6)
         ttk.Checkbutton(row1, text="Material de ajuste", variable=v_ajuste).pack(side="left", padx=(12, 0))
+        chk_inoc = ttk.Checkbutton(row1, text="Inoculante", variable=v_inoculante)
 
         row2 = ttk.Frame(form); row2.pack(fill="x", pady=4)
         ttk.Label(row2, text="Rendimiento (%)", width=16).pack(side="left")
         ttk.Entry(row2, textvariable=rend, width=12).pack(side="left", padx=6)
         ttk.Label(row2, text="Costo (opcional)", width=16).pack(side="left", padx=(20,0))
         ttk.Entry(row2, textvariable=costo, width=12).pack(side="left", padx=6)
+
+        inoc_meta = (item or {}).get("inoculante_meta", {}) if isinstance((item or {}).get("inoculante_meta", {}), dict) else {}
+        material_names = []
+        current_name = str((item or {}).get("nombre", "")).strip()
+        for a in self.model:
+            name = str(a.get("nombre", "")).strip()
+            if name and name != current_name:
+                material_names.append(name)
+        material_names = sorted(set(material_names), key=lambda v: (0, int(v)) if str(v).isdigit() else (1, str(v).lower()))
+        inoc_base = tk.StringVar(value=str(inoc_meta.get("base_material", "")))
+        inoc_medidas = []
+        for i, med in enumerate(inoc_meta.get("medidas", []) if isinstance(inoc_meta.get("medidas", []), list) else [], start=1):
+            if not isinstance(med, dict):
+                continue
+            inoc_medidas.append({
+                "nombre": str(med.get("nombre", "") or f"Medida {i}"),
+                "gramos": to_float(med.get("gramos", 0.0)),
+            })
+
+        inoc_frame = ttk.LabelFrame(form, text="Inoculante", padding=8)
+        rowi0 = ttk.Frame(inoc_frame); rowi0.pack(fill="x", pady=2)
+        ttk.Label(rowi0, text="Basado en", width=16).pack(side="left")
+        cb_inoc_base = ttk.Combobox(rowi0, textvariable=inoc_base, values=material_names, state="readonly", width=38)
+        cb_inoc_base.pack(side="left", padx=6)
+        ttk.Label(rowi0, text="Copia solo la composición del material base.").pack(side="left", padx=(12, 0))
+
+        medidas_box = ttk.LabelFrame(inoc_frame, text="Medidas", padding=6)
+        medidas_box.pack(fill="both", expand=True, pady=(8, 0))
+        medidas_list = tk.Listbox(medidas_box, height=6)
+        medidas_list.pack(fill="both", expand=True)
+
+        def refresh_medidas_list():
+            medidas_list.delete(0, tk.END)
+            for med in inoc_medidas:
+                medidas_list.insert(tk.END, f"{med.get('nombre', '')}: {fmt(to_float(med.get('gramos', 0.0)), 3)} g")
+
+        def edit_medida(existing=None):
+            result = {"saved": False}
+            w = tk.Toplevel(win)
+            w.title("Medida")
+            w.transient(win)
+            w.grab_set()
+            w.resizable(False, False)
+            frm = ttk.Frame(w, padding=10)
+            frm.pack(fill="both", expand=True)
+            v_name = tk.StringVar(value=(existing or {}).get("nombre", f"Medida {len(inoc_medidas) + 1}"))
+            v_g = tk.StringVar(value=fmt(to_float((existing or {}).get("gramos", 150.0)), 3))
+            ttk.Label(frm, text="Nombre", width=12).grid(row=0, column=0, sticky="w", pady=3)
+            ttk.Entry(frm, textvariable=v_name, width=24).grid(row=0, column=1, sticky="w", pady=3)
+            ttk.Label(frm, text="Gramos", width=12).grid(row=1, column=0, sticky="w", pady=3)
+            ttk.Entry(frm, textvariable=v_g, width=12).grid(row=1, column=1, sticky="w", pady=3)
+            btn_row = ttk.Frame(frm)
+            btn_row.grid(row=2, column=0, columnspan=2, sticky="e", pady=(8, 0))
+
+            def ok():
+                try:
+                    grams = to_float(v_g.get())
+                    if grams <= 0:
+                        raise ValueError("Los gramos deben ser > 0.")
+                    result["value"] = {"nombre": v_name.get().strip() or f"Medida {len(inoc_medidas) + 1}", "gramos": grams}
+                    result["saved"] = True
+                    w.destroy()
+                except Exception as ex:
+                    messagebox.showerror("Medida", str(ex), parent=w)
+
+            ttk.Button(btn_row, text="Aceptar", command=ok).pack(side="right")
+            ttk.Button(btn_row, text="Cancelar", command=w.destroy).pack(side="right", padx=6)
+            w.wait_window()
+            return result.get("value") if result.get("saved") else None
+
+        def add_medida():
+            med = edit_medida()
+            if med:
+                inoc_medidas.append(med)
+                refresh_medidas_list()
+
+        def update_medida():
+            sel = medidas_list.curselection()
+            if not sel:
+                return
+            idx_med = sel[0]
+            med = edit_medida(inoc_medidas[idx_med])
+            if med:
+                inoc_medidas[idx_med] = med
+                refresh_medidas_list()
+
+        def del_medida():
+            sel = medidas_list.curselection()
+            if not sel:
+                return
+            del inoc_medidas[sel[0]]
+            refresh_medidas_list()
+
+        med_btns = ttk.Frame(medidas_box)
+        med_btns.pack(fill="x", pady=(6, 0))
+        ttk.Button(med_btns, text="Agregar medida", command=add_medida).pack(side="left")
+        ttk.Button(med_btns, text="Editar medida", command=update_medida).pack(side="left", padx=6)
+        ttk.Button(med_btns, text="Eliminar medida", command=del_medida).pack(side="left")
+        refresh_medidas_list()
 
         final_frame = ttk.LabelFrame(form, text="Ficha de calidad (Aleación final)", padding=8)
         saved_bases = [str(b).strip() for b in (calidad_meta.get("bases") or []) if str(b).strip()]
@@ -609,16 +719,32 @@ class TabCatalogo(ttk.Frame):
 
         def _toggle_dialog_mode(*_):
             is_final = (tipo.get().strip() == "Aleación final")
+            is_inoc = (tipo.get().strip() == "Inoculante")
+            is_ferro = (tipo.get().strip() == "Ferroaleación")
+            if not is_ferro:
+                v_inoculante.set(False)
+            chk_inoc.configure(state="normal" if is_ferro else "disabled")
             if is_final:
                 comp_title.pack_forget()
                 grid.pack_forget()
                 btns.pack_forget()
                 limits_frame.pack_forget()
                 esp_frame.pack_forget()
+                inoc_frame.pack_forget()
                 final_frame.pack(fill="x", pady=(12, 0))
+                v_ajuste.set(False)
+            elif is_inoc:
+                final_frame.pack_forget()
+                comp_title.pack_forget()
+                grid.pack_forget()
+                btns.pack_forget()
+                limits_frame.pack_forget()
+                esp_frame.pack_forget()
+                inoc_frame.pack(fill="both", expand=True, pady=(12, 0))
                 v_ajuste.set(False)
             else:
                 final_frame.pack_forget()
+                inoc_frame.pack_forget()
                 if not comp_title.winfo_manager():
                     comp_title.pack(anchor="w", pady=(8,2))
                 if not grid.winfo_manager():
@@ -639,7 +765,7 @@ class TabCatalogo(ttk.Frame):
             try:
                 a = {
                     "nombre": nombre.get().strip(),
-                    "tipo": (tipo.get().strip() or "Ferroaleación"),
+                    "tipo": "Ferroaleación" if v_inoculante.get() else (tipo.get().strip() or "Ferroaleación"),
                     "rendimiento": to_float(rend.get()),
                     "costo": to_float(costo.get()),
                     "composicion": {el: to_float(comp_vars[el].get()) for el in ELEMENTS},
@@ -651,10 +777,58 @@ class TabCatalogo(ttk.Frame):
                 for extra_key, extra_val in src_item.items():
                     if extra_key not in a:
                         a[extra_key] = extra_val
+                if v_inoculante.get():
+                    a["subtipo"] = "Inoculante"
+                    a["inoculante"] = True
+                else:
+                    a.pop("subtipo", None)
+                    a.pop("inoculante", None)
                 if not a["nombre"]:
                     raise ValueError("El nombre es obligatorio.")
                 if not (0 < a["rendimiento"] <= 100):
                     raise ValueError("Rendimiento debe estar entre 0 y 100.")
+
+                if a["tipo"] == "Inoculante":
+                    base_name = inoc_base.get().strip()
+                    if not base_name:
+                        raise ValueError("Seleccioná el material base del inoculante.")
+                    base_item = None
+                    for candidate in self.model:
+                        if candidate is item:
+                            continue
+                        if str(candidate.get("nombre", "")).strip() == base_name:
+                            base_item = candidate
+                            break
+                    if not base_item:
+                        raise ValueError("No se encontró el material base del inoculante.")
+                    medidas = []
+                    for med in inoc_medidas:
+                        grams = to_float(med.get("gramos", 0.0))
+                        if grams <= 0:
+                            continue
+                        medidas.append({
+                            "nombre": str(med.get("nombre", "") or f"Medida {len(medidas) + 1}").strip(),
+                            "gramos": grams,
+                        })
+                    if not medidas:
+                        raise ValueError("Agregá al menos una medida del inoculante.")
+                    a["composicion"] = dict(base_item.get("composicion", {}) or {})
+                    a["limites"] = _normalize_limites(None)
+                    a["especiales"] = _normalize_especiales(None)
+                    a["ajuste"] = False
+                    a["inoculante"] = True
+                    a["subtipo"] = "Inoculante"
+                    a["inoculante_meta"] = {
+                        "base_material": base_name,
+                        "medidas": medidas,
+                    }
+                    if idx is None:
+                        self.model.append(a)
+                    else:
+                        self.model[idx] = a
+                    self._save_and_refresh()
+                    win.destroy()
+                    return
 
                 if a["tipo"] == "Aleación final":
                     bases = [base for base, var in base_vars.items() if var.get()]

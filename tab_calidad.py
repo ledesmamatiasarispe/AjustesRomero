@@ -352,15 +352,19 @@ class TabCalidad(ttk.Frame):
         images_box = ttk.LabelFrame(form, text="Imagenes del informe", padding=6)
         images_box.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(0, 10), padx=(0, 4))
         images_box.columnconfigure(0, weight=1)
-        self.images_tree = ttk.Treeview(images_box, columns=("archivo",), show="headings", height=4, selectmode="extended")
+        self.images_tree = ttk.Treeview(images_box, columns=("archivo", "comentario"), show="headings", height=4, selectmode="extended")
         self.images_tree.heading("archivo", text="Archivo")
-        self.images_tree.column("archivo", width=240, anchor="w")
+        self.images_tree.heading("comentario", text="Comentario")
+        self.images_tree.column("archivo", width=170, anchor="w")
+        self.images_tree.column("comentario", width=190, anchor="w")
         self.images_tree.grid(row=0, column=0, sticky="ew")
         self.images_tree.bind("<<TreeviewSelect>>", lambda e: self._update_image_preview())
+        self.images_tree.bind("<Double-Button-1>", lambda e: self._edit_selected_image_comment())
         image_btns = ttk.Frame(images_box)
         image_btns.grid(row=0, column=1, sticky="ns", padx=(8, 0))
         ttk.Button(image_btns, text="Importar ImageJ", command=self._import_imagej_analysis).pack(fill="x")
         ttk.Button(image_btns, text="Agregar imagen", command=self._add_images).pack(fill="x")
+        ttk.Button(image_btns, text="Comentario", command=self._edit_selected_image_comment).pack(fill="x", pady=(4, 0))
         ttk.Button(image_btns, text="Abrir", command=self._open_selected_image).pack(fill="x", pady=(4, 0))
         ttk.Button(image_btns, text="Quitar", command=self._remove_selected_images).pack(fill="x", pady=(4, 0))
         self.lbl_image_preview = tk.Label(
@@ -564,6 +568,7 @@ class TabCalidad(ttk.Frame):
                 "id": image_id,
                 "nombre": nombre,
                 "path": path,
+                "comentario": str(item.get("comentario") or item.get("comment") or "").strip(),
                 "added_at": str(item.get("added_at") or ""),
             })
         return normalized
@@ -573,7 +578,7 @@ class TabCalidad(ttk.Frame):
             self.images_tree.delete(*self.images_tree.get_children())
             for image in self._report_images:
                 iid = str(image.get("id") or uuid.uuid4().hex)
-                self.images_tree.insert("", "end", iid=iid, values=(image.get("nombre", ""),))
+                self.images_tree.insert("", "end", iid=iid, values=(image.get("nombre", ""), image.get("comentario", "")))
             self._set_image_preview_message("Selecciona una imagen para verla aca." if self._report_images else "Sin imagen seleccionada")
         except Exception:
             pass
@@ -638,6 +643,7 @@ class TabCalidad(ttk.Frame):
             "id": uuid.uuid4().hex,
             "nombre": source.name,
             "path": str(dest),
+            "comentario": "",
             "added_at": datetime.now().isoformat(timespec="seconds"),
         }
 
@@ -670,6 +676,13 @@ class TabCalidad(ttk.Frame):
         for path in paths:
             try:
                 item = self._copy_image_attachment(path)
+                comment = simpledialog.askstring(
+                    "Comentario de imagen",
+                    f"Comentario para {Path(path).name}:",
+                    parent=self,
+                )
+                if comment is not None:
+                    item["comentario"] = comment.strip()
                 self._report_images.append(item)
                 last_added_id = item["id"]
                 added += 1
@@ -688,6 +701,30 @@ class TabCalidad(ttk.Frame):
             self._images_changed()
         if errors:
             messagebox.showwarning("Calidad", "Algunas imagenes no se pudieron agregar:\n\n" + "\n".join(errors), parent=self)
+
+    def _edit_selected_image_comment(self):
+        image = self._selected_report_image()
+        if not image:
+            messagebox.showinfo("Calidad", "Selecciona una imagen para editar su comentario.", parent=self)
+            return
+        current = str(image.get("comentario", "") or "")
+        value = simpledialog.askstring(
+            "Comentario de imagen",
+            f"Comentario para {image.get('nombre', 'imagen')}:",
+            initialvalue=current,
+            parent=self,
+        )
+        if value is None:
+            return
+        image["comentario"] = value.strip()
+        self._report_images = self._normalize_report_images(self._report_images)
+        self._refresh_images_ui()
+        try:
+            self.images_tree.selection_set(str(image.get("id")))
+            self.images_tree.focus(str(image.get("id")))
+        except Exception:
+            pass
+        self._images_changed()
 
     def _remove_selected_images(self):
         selected = set(self.images_tree.selection())
@@ -4116,7 +4153,8 @@ class TabCalidad(ttk.Frame):
                 caption_parts = []
                 if material:
                     caption_parts.append(f"Mat {material}")
-                caption_parts.append(str(image.get("nombre", "") or "Imagen"))
+                comment = str(image.get("comentario", "") or "").strip()
+                caption_parts.append(comment or str(image.get("nombre", "") or "Imagen"))
                 caption = " - ".join(caption_parts)
                 figures.append(
                     "<figure>"

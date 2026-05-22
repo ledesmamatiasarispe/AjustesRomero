@@ -61,12 +61,10 @@ class TabInoculaciones(ttk.Frame):
         )
 
     def _converter_names(self):
-        allowed = {"Ferroaleación", "Metal puro"}
         names = [
             str(a.get("nombre", "")).strip()
             for a in self.alloys
-            if str(a.get("tipo", "")).strip() in allowed
-            and str(a.get("nombre", "")).strip()
+            if str(a.get("nombre", "")).strip()
         ]
         return sorted(set(names), key=lambda v: (0, int(v)) if v.isdigit() else (1, v.lower()))
 

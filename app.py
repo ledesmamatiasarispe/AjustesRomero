@@ -1224,8 +1224,16 @@ class App(tk.Frame):
         if not updater.exists():
             messagebox.showerror("Error", f"No se encontró el updater en:\n{updater}")
             return
-        import subprocess
-        subprocess.Popen([sys.executable, str(updater), "--relaunch-app"])
+        try:
+            import subprocess
+            subprocess.Popen(
+                [sys.executable, str(updater), "--relaunch-app"],
+                start_new_session=True,
+                cwd=str(updater.parent),
+            )
+        except Exception as ex:
+            messagebox.showerror("Error al actualizar", f"No se pudo iniciar el updater:\n{ex}")
+            return
         self._on_close()
 
     # ------------------ Cierre ------------------

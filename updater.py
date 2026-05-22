@@ -200,12 +200,27 @@ def relaunch_app():
         return
     log.info(f"Relanzando app: {app_script}")
     try:
+        env = os.environ.copy()
+        # Garantizar variables de display en Linux
+        if platform.system() != "Windows":
+            for var in ("DISPLAY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR",
+                        "DBUS_SESSION_BUS_ADDRESS"):
+                if var not in env:
+                    log.warning(f"Variable de entorno ausente: {var}")
         if platform.system() == "Windows":
-            subprocess.Popen([sys.executable, str(app_script)],
-                             creationflags=subprocess.DETACHED_PROCESS)
+            subprocess.Popen(
+                [sys.executable, str(app_script)],
+                creationflags=subprocess.DETACHED_PROCESS,
+                env=env,
+            )
         else:
-            subprocess.Popen([sys.executable, str(app_script)],
-                             start_new_session=True)
+            subprocess.Popen(
+                [sys.executable, str(app_script)],
+                start_new_session=True,
+                env=env,
+                cwd=str(APP_DIR),
+            )
+        log.info("App relanzada correctamente.")
     except Exception as e:
         log.error(f"No se pudo relanzar la app: {e}")
 

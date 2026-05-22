@@ -359,6 +359,7 @@ class App(tk.Frame):
                 )
             )
         self._schedule_dev_reload_watch()
+        self.after(6000, self._start_update_check)
 
     def _current_input_bg(self):
         if self._input_color_name == CUSTOM_INPUT_COLOR and self._custom_input_color:
@@ -1181,6 +1182,51 @@ class App(tk.Frame):
             self._on_close()
             return
         self._schedule_dev_reload_watch()
+
+    # ------------------ Actualizaciones automáticas ------------------
+    def _start_update_check(self):
+        threading.Thread(target=self._run_update_check, daemon=True, name="update-check").start()
+
+    def _run_update_check(self):
+        import shutil, subprocess
+        from pathlib import Path
+        if not shutil.which("git"):
+            return
+        app_dir = Path(__file__).resolve().parent
+        try:
+            local = subprocess.run(
+                ["git", "-C", str(app_dir), "rev-parse", "HEAD"],
+                capture_output=True, text=True, timeout=10
+            ).stdout.strip()
+            r = subprocess.run(
+                ["git", "-C", str(app_dir), "ls-remote", "origin", "HEAD"],
+                capture_output=True, text=True, timeout=15
+            )
+            if r.returncode != 0 or not r.stdout.strip():
+                return
+            remote = r.stdout.split()[0]
+            if local and remote and local != remote:
+                self.after(0, self._prompt_and_update)
+        except Exception:
+            pass
+
+    def _prompt_and_update(self):
+        if self._closing:
+            return
+        if not messagebox.askyesno(
+            "Actualización disponible",
+            "Hay una nueva versión de la app disponible.\n\n"
+            "¿Actualizar ahora? La app se cerrará, se actualizará y se reabrirá automáticamente."
+        ):
+            return
+        from pathlib import Path
+        updater = Path(__file__).resolve().parent / "updater.py"
+        if not updater.exists():
+            messagebox.showerror("Error", f"No se encontró el updater en:\n{updater}")
+            return
+        import subprocess
+        subprocess.Popen([sys.executable, str(updater), "--relaunch-app"])
+        self._on_close()
 
     # ------------------ Cierre ------------------
     def _on_close(self):

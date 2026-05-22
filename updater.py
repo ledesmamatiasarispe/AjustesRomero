@@ -192,11 +192,33 @@ def app_is_running() -> bool:
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def relaunch_app():
+    """Reabre app.py después de actualizar."""
+    app_script = APP_DIR / "app.py"
+    if not app_script.exists():
+        log.error(f"No se encontró app.py en {APP_DIR}")
+        return
+    log.info(f"Relanzando app: {app_script}")
+    try:
+        if platform.system() == "Windows":
+            subprocess.Popen([sys.executable, str(app_script)],
+                             creationflags=subprocess.DETACHED_PROCESS)
+        else:
+            subprocess.Popen([sys.executable, str(app_script)],
+                             start_new_session=True)
+    except Exception as e:
+        log.error(f"No se pudo relanzar la app: {e}")
+
+
 def main():
-    log.info(f"=== Verificando actualizaciones para {APP_NAME} ===")
+    relaunch_mode = "--relaunch-app" in sys.argv
+
+    log.info(f"=== Actualizador {APP_NAME} {'(modo relaunch)' if relaunch_mode else '(modo autostart)'} ===")
 
     if not shutil.which("git") and not USE_RELEASES:
         log.warning("git no encontrado. No se puede verificar actualizaciones.")
+        if relaunch_mode:
+            relaunch_app()
         return
 
     try:
@@ -205,23 +227,35 @@ def main():
         else:
             updated = update_via_git()
 
-        if updated:
-            if app_is_running():
-                notify(
-                    f"{APP_NAME} actualizado",
-                    "Hay una actualización disponible. Reiniciá la app para aplicarla.",
-                    urgency="normal"
-                )
+        if relaunch_mode:
+            # Siempre relanzar la app en este modo (fue invocado por la propia app)
+            if updated:
+                log.info("Actualización aplicada. Relanzando app.")
+                notify(f"{APP_NAME} actualizado", "La app fue actualizada. Reabriendo...", urgency="normal")
             else:
-                notify(
-                    f"{APP_NAME} actualizado",
-                    "La app fue actualizada automáticamente.",
-                    urgency="normal"
-                )
-            log.info("Notificación enviada al usuario.")
+                log.info("Sin cambios. Relanzando app.")
+            relaunch_app()
+        else:
+            # Modo autostart normal: notificar si hay cambios, no relanzar
+            if updated:
+                if app_is_running():
+                    notify(
+                        f"{APP_NAME} actualizado",
+                        "Hay una actualización disponible. Reiniciá la app para aplicarla.",
+                        urgency="normal"
+                    )
+                else:
+                    notify(
+                        f"{APP_NAME} actualizado",
+                        "La app fue actualizada automáticamente.",
+                        urgency="normal"
+                    )
+                log.info("Notificación enviada al usuario.")
 
     except Exception as e:
         log.error(f"Error inesperado en el updater: {e}")
+        if relaunch_mode:
+            relaunch_app()
 
 
 if __name__ == "__main__":

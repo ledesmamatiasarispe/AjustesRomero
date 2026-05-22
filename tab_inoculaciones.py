@@ -163,6 +163,26 @@ class TabInoculaciones(ttk.Frame):
 
     # ── Diálogo de edición ────────────────────────────────────────────────────
 
+    def _make_listbox(self, parent):
+        top = self.winfo_toplevel()
+        bg  = getattr(top, "_input_bg",  "#2b2b2b")
+        fg  = getattr(top, "_input_fg",  "#e6e6e6")
+        sb  = tk.Scrollbar(parent, orient="vertical")
+        lb  = tk.Listbox(
+            parent,
+            selectmode=tk.MULTIPLE,
+            exportselection=False,
+            bg=bg, fg=fg,
+            selectbackground="#3a7bd5",
+            selectforeground="#ffffff",
+            activestyle="none",
+            yscrollcommand=sb.set,
+        )
+        sb.config(command=lb.yview)
+        sb.pack(side="right", fill="y")
+        lb.pack(side="left", fill="both", expand=True)
+        return lb
+
     def _edit_dialog(self, idx=None):
         item = self.alloys[idx] if idx is not None else {}
         meta = item.get("inoculacion_meta", {}) if isinstance(item.get("inoculacion_meta", {}), dict) else {}
@@ -172,6 +192,10 @@ class TabInoculaciones(ttk.Frame):
         win.grab_set()
         win.geometry("720x620")
         win.minsize(620, 520)
+
+        # Botones al fondo primero para que no queden ocultos
+        actions = ttk.Frame(win, padding=8)
+        actions.pack(side="bottom", fill="x")
 
         root = ttk.Frame(win, padding=10)
         root.pack(fill="both", expand=True)
@@ -189,10 +213,8 @@ class TabInoculaciones(ttk.Frame):
         bases_box.pack(side="left", fill="both", expand=True, padx=(0, 6))
         conv_box.pack(side="left",  fill="both", expand=True)
 
-        base_list = tk.Listbox(bases_box, selectmode=tk.MULTIPLE, exportselection=False)
-        base_list.pack(fill="both", expand=True)
-        conv_list = tk.Listbox(conv_box, selectmode=tk.MULTIPLE, exportselection=False)
-        conv_list.pack(fill="both", expand=True)
+        base_list = self._make_listbox(bases_box)
+        conv_list = self._make_listbox(conv_box)
 
         saved_bases      = {str(x).strip() for x in (meta.get("bases", []) or [])}
         saved_converters = set(self._meta_inoculacion(meta))
@@ -244,10 +266,8 @@ class TabInoculaciones(ttk.Frame):
             self._save_and_refresh()
             win.destroy()
 
-        actions = ttk.Frame(win, padding=8)
-        actions.pack(fill="x")
-        ttk.Button(actions, text="Guardar",   command=save).pack(side="right")
-        ttk.Button(actions, text="Cancelar",  command=win.destroy).pack(side="right", padx=6)
+        ttk.Button(actions, text="Guardar",  command=save).pack(side="right")
+        ttk.Button(actions, text="Cancelar", command=win.destroy).pack(side="right", padx=6)
 
     # ── Guardar ───────────────────────────────────────────────────────────────
 

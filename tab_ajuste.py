@@ -222,7 +222,7 @@ class TabAjuste(ttk.Frame):
         paneG = ttk.Frame(pan_cols)
         pan_cols.add(paneG)
         try:
-            pan_cols.paneconfigure(paneG, weight=1, minsize=240)
+            pan_cols.paneconfigure(paneG, weight=2, minsize=300)
         except Exception:
             pass
 
@@ -253,10 +253,11 @@ class TabAjuste(ttk.Frame):
                 if self._restore_pan_cols_positions():
                     return
                 w = pan_cols.winfo_width()
-                pan_cols.sashpos(0, int(w * 0.20))
-                pan_cols.sashpos(1, int(w * 0.40))
-                pan_cols.sashpos(2, int(w * 0.60))
-                pan_cols.sashpos(3, int(w * 0.80))
+                # El gráfico (paneG) recibe el 30% derecho; los 4 paneles de datos se reparten el 70%
+                pan_cols.sashpos(0, int(w * 0.175))
+                pan_cols.sashpos(1, int(w * 0.350))
+                pan_cols.sashpos(2, int(w * 0.525))
+                pan_cols.sashpos(3, int(w * 0.700))
             except Exception:
                 pass
         self.after(350, _place_sashes_cols)
@@ -1433,6 +1434,18 @@ class TabAjuste(ttk.Frame):
         if getattr(self, "_graph_last_data", None):
             self._draw_graph(self._graph_last_data)
 
+    def _graph_throttled_redraw(self):
+        if hasattr(self, "_graph_redraw_job") and self._graph_redraw_job:
+            try:
+                self.after_cancel(self._graph_redraw_job)
+            except Exception:
+                pass
+        self._graph_redraw_job = self.after(33, self._do_throttled_redraw)
+
+    def _do_throttled_redraw(self):
+        self._graph_redraw_job = None
+        self._redraw_graph_view()
+
     def _on_graph_mousewheel(self, event):
         old_zoom = max(0.1, to_float(getattr(self, "_graph_zoom", 1.0)))
         if getattr(event, "num", None) == 5 or getattr(event, "delta", 0) < 0:
@@ -1443,7 +1456,7 @@ class TabAjuste(ttk.Frame):
         if abs(new_zoom - old_zoom) <= 1e-12:
             return "break"
         self._graph_zoom = new_zoom
-        self._redraw_graph_view()
+        self._graph_throttled_redraw()
         return "break"
 
     def _on_graph_drag_start(self, event):
@@ -1461,7 +1474,7 @@ class TabAjuste(ttk.Frame):
         span = max(to_float(self._graph_last_data.get("span")), 0.05) / max(0.1, to_float(self._graph_zoom))
         self._graph_pan_dx = base_dx - ((event.x - start_x) / plot_w) * (2 * span)
         self._graph_pan_dy = base_dy + ((event.y - start_y) / plot_h) * (2 * span)
-        self._redraw_graph_view()
+        self._graph_throttled_redraw()
 
     def _on_graph_drag_end(self, _event):
         self._graph_drag_start = None

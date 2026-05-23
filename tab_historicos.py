@@ -59,14 +59,15 @@ class TabHistoricos(ttk.Frame):
         ttk.Button(act, text="Generar informe de calidad", command=self.generate_quality_report_for_selected).pack(side="left")
 
         # ---- Tabla de sesiones (coladas)
-        cols = ("id", "guardado", "inicio", "fin", "cant")
+        cols = ("id", "objetivo", "guardado", "inicio", "fin", "cant")
         self.tree = ttk.Treeview(left, columns=cols, show="headings", height=20)
         for cid, title, w in (
-            ("id", "ID", 260),
-            ("guardado", "Guardado", 90),
-            ("inicio", "Inicio", 170),
-            ("fin", "Fin", 170),
-            ("cant", "# ajustes", 90),
+            ("id",       "ID",        220),
+            ("objetivo", "Objetivo",   80),
+            ("guardado", "Guardado",   70),
+            ("inicio",   "Inicio",    150),
+            ("fin",      "Fin",       150),
+            ("cant",     "# ajustes",  70),
         ):
             self.tree.heading(cid, text=title)
             self.tree.column(cid, width=w, anchor="w")
@@ -171,6 +172,7 @@ class TabHistoricos(ttk.Frame):
                 "end",
                 values=(
                     id_show,
+                    s.get("objetivo", ""),
                     "Auto" if s.get("auto_saved") else "",
                     s.get("started_at", ""),
                     s.get("ended_at", ""),

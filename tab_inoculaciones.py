@@ -244,7 +244,7 @@ class TabInoculaciones(ttk.Frame):
             conv_box,
             columns=("material", "gramos", "cantidad"),
             show="headings",
-            selectmode="extended",
+            selectmode="browse",
         )
         conv_tv.heading("material", text="Material")
         conv_tv.heading("gramos",   text="g/cucharin1")
@@ -268,11 +268,9 @@ class TabInoculaciones(ttk.Frame):
 
         for name in self._converter_names():
             g    = self._gramos_cucharin1(name)
-            cant = saved_inoc_full.get(name, 1)
+            cant = saved_inoc_full.get(name, 0)
             conv_tv.insert("", "end", iid=name,
-                           values=(name, f"{g} g" if g else "—", cant))
-            if name in saved_inoc_full:
-                conv_tv.selection_add(name)
+                           values=(name, f"{g} g" if g else "—", cant if cant else 0))
 
         # Edición inline con doble clic (columna 2 = gramos, columna 3 = cantidad)
         _inline_entry = {}
@@ -346,11 +344,16 @@ class TabInoculaciones(ttk.Frame):
             return [base_list.get(i) for i in base_list.curselection()]
 
         def selected_converters():
-            return [
-                {"nombre": conv_tv.item(iid, "values")[0],
-                 "cantidad_dosis": int(conv_tv.item(iid, "values")[2])}
-                for iid in conv_tv.selection()
-            ]
+            result = []
+            for iid in conv_tv.get_children():
+                vals = conv_tv.item(iid, "values")
+                try:
+                    cant = int(float(vals[2])) if vals[2] else 0
+                except (ValueError, IndexError):
+                    cant = 0
+                if cant > 0:
+                    result.append({"nombre": vals[0], "cantidad_dosis": cant})
+            return result
 
         def save():
             name = name_var.get().strip()
@@ -363,7 +366,7 @@ class TabInoculaciones(ttk.Frame):
                 messagebox.showerror("Validación", "Seleccioná al menos una base.", parent=win)
                 return
             if not converters:
-                messagebox.showerror("Validación", "Seleccioná al menos un material de inoculación.", parent=win)
+                messagebox.showerror("Validación", "Asigná cantidad > 0 a al menos un material de inoculación.", parent=win)
                 return
             entry = dict(item or {})
             entry.update({

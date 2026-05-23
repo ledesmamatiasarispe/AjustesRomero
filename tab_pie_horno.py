@@ -12,8 +12,6 @@ from storage import load_devices_state, save_devices_state
 RASPBERRY_USER = "raspberry"
 RASPBERRY_HOST = "192.168.0.133"
 RASPBERRY_TARGET = f"{RASPBERRY_USER}@{RASPBERRY_HOST}"
-RASPBERRY_REFRESH_MS = 30000
-RASPBERRY_MAX_STATUS_FAILURES = 3
 RASPBERRY_CONNECT_TIMEOUT = 8
 RASPBERRY_CMD_TIMEOUT = 18
 RASPBERRY_SLEEP_CMD = "/home/raspberry/.local/bin/pie-sleep"
@@ -75,16 +73,12 @@ class TabPieHorno(ttk.Frame):
     def __init__(self, parent):
         super().__init__(parent, padding=12)
         self._refresh_job = None
-        self._raspberry_refresh_job = None
         self._raspberry_busy = False
-        self._raspberry_status_failures = 0
-        self._raspberry_auto_refresh_enabled = True
         self.local_url_var = tk.StringVar(value=self._local_url_text())
         self._build()
         self.refresh()
         self._schedule_refresh()
         self.refresh_raspberry_status(manual=False)
-        self._schedule_raspberry_refresh()
 
     def _build(self):
         top = ttk.LabelFrame(self, text="Acceso Pie de Horno", padding=12)
@@ -170,25 +164,6 @@ class TabPieHorno(ttk.Frame):
     def _local_url_text(self):
         return f"http://{_local_ip()}:{get_host_api_port()}/"
 
-    def _schedule_raspberry_refresh(self):
-        if not self._raspberry_auto_refresh_enabled:
-            return
-        try:
-            if self._raspberry_refresh_job is not None:
-                self.after_cancel(self._raspberry_refresh_job)
-        except Exception:
-            pass
-        self._raspberry_refresh_job = self.after(RASPBERRY_REFRESH_MS, self._raspberry_refresh_tick)
-
-    def _raspberry_refresh_tick(self):
-        self._raspberry_refresh_job = None
-        if not self._raspberry_auto_refresh_enabled:
-            return
-        if self._raspberry_busy:
-            self._schedule_raspberry_refresh()
-            return
-        self.refresh_raspberry_status(manual=False)
-
     def _ssh_command(self, command, timeout=RASPBERRY_CMD_TIMEOUT):
         return subprocess.run(
             [
@@ -223,9 +198,6 @@ printf 'SLEEPING=%s\n' "$(test -f /tmp/pie-horno-sleep.txt && echo yes || echo n
     def refresh_raspberry_status(self, manual=True):
         if self._raspberry_busy:
             return False
-        if manual:
-            self._raspberry_auto_refresh_enabled = True
-            self._raspberry_status_failures = 0
         self._raspberry_busy = True
         self.raspberry_action_var.set("Consultando...")
 
@@ -234,42 +206,26 @@ printf 'SLEEPING=%s\n' "$(test -f /tmp/pie-horno-sleep.txt && echo yes || echo n
                 result = self._ssh_command(self._raspberry_status_command(), timeout=RASPBERRY_CMD_TIMEOUT)
                 output = result.stdout or ""
                 error = (result.stderr or "").strip()
-                self.after(0, lambda: self._apply_raspberry_status(result.returncode, output, error, manual))
+                self.after(0, lambda: self._apply_raspberry_status(result.returncode, output, error))
             except Exception as ex:
-                self.after(0, lambda: self._apply_raspberry_status(1, "", str(ex), manual))
+                self.after(0, lambda: self._apply_raspberry_status(1, "", str(ex)))
 
         threading.Thread(target=worker, daemon=True).start()
         return True
 
-    def _apply_raspberry_status(self, returncode, output, error, manual=False):
+    def _apply_raspberry_status(self, returncode, output, error):
         self._raspberry_busy = False
         self.raspberry_action_var.set("")
         if returncode != 0 and not output:
-            self._raspberry_status_failures += 1
             self.raspberry_state_var.set("Sin conexion SSH")
             self.raspberry_url_var.set("-")
             self.raspberry_idle_var.set("-")
-            detail = error or "No responde"
-            if self._raspberry_status_failures >= RASPBERRY_MAX_STATUS_FAILURES:
-                self._raspberry_auto_refresh_enabled = False
-                self.raspberry_detail_var.set(
-                    f"{detail} | consultas automaticas detenidas tras {self._raspberry_status_failures} fallos"
-                )
-                self.raspberry_action_var.set("Automatico detenido. Usa Actualizar estado para reintentar.")
-            else:
-                self.raspberry_detail_var.set(
-                    f"{detail} | fallo {self._raspberry_status_failures}/{RASPBERRY_MAX_STATUS_FAILURES}"
-                )
+            self.raspberry_detail_var.set(error or "No responde")
             try:
                 self.raspberry_state_label.configure(foreground="#b00020")
             except Exception:
                 pass
-            if self._raspberry_auto_refresh_enabled:
-                self._schedule_raspberry_refresh()
             return
-
-        self._raspberry_status_failures = 0
-        self._raspberry_auto_refresh_enabled = True
 
         idle = {}
         details = {}
@@ -325,8 +281,6 @@ printf 'SLEEPING=%s\n' "$(test -f /tmp/pie-horno-sleep.txt && echo yes || echo n
             self.raspberry_state_label.configure(foreground=color)
         except Exception:
             pass
-        if self._raspberry_auto_refresh_enabled:
-            self._schedule_raspberry_refresh()
 
     def _run_raspberry_action(self, action):
         if self._raspberry_busy:

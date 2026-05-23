@@ -50,17 +50,17 @@ class TabInoculaciones(ttk.Frame):
 
         self._detail_tv = ttk.Treeview(
             inoc_frame,
-            columns=("cantidad", "material", "gramos", "total"),
+            columns=("material", "cantidad", "gramos", "total"),
             show="headings",
             height=10,
             selectmode="none",
         )
-        self._detail_tv.heading("cantidad", text="Cant.")
         self._detail_tv.heading("material", text="Material")
+        self._detail_tv.heading("cantidad", text="Cant.")
         self._detail_tv.heading("gramos",   text="g/cucharin1")
         self._detail_tv.heading("total",    text="Total g")
-        self._detail_tv.column("cantidad", width=55,  anchor="center")
         self._detail_tv.column("material", width=130, anchor="w")
+        self._detail_tv.column("cantidad", width=55,  anchor="center")
         self._detail_tv.column("gramos",   width=75,  anchor="center")
         self._detail_tv.column("total",    width=65,  anchor="center")
         detail_sb = ttk.Scrollbar(inoc_frame, orient="vertical", command=self._detail_tv.yview)
@@ -171,8 +171,8 @@ class TabInoculaciones(ttk.Frame):
             cant  = e["cantidad_dosis"]
             total = round(g * cant, 2) if g and cant else "—"
             self._detail_tv.insert("", "end", values=(
-                cant,
                 e["nombre"],
+                cant,
                 f"{g} g" if g else "—",
                 f"{total} g" if total != "—" else "—",
             ))

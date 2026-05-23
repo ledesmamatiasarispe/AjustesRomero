@@ -230,13 +230,20 @@ def _migrate_from_json(conn):
     # Informes de calidad
     reports = _load_json_safe(_QUALITY_FILE)
     if isinstance(reports, list) and reports:
+        import uuid as _uuid
+        seen_rids = set()
         for r in reports:
             if not isinstance(r, dict):
                 continue
+            rid = r.get("id", "") or ""
+            if not rid or rid in seen_rids:
+                rid = _uuid.uuid4().hex
+                r["id"] = rid
+            seen_rids.add(rid)
             conn.execute("""
                 INSERT OR IGNORE INTO quality_reports (id, colada, data) VALUES (?,?,?)
             """, (
-                r.get("id", ""),
+                rid,
                 r.get("colada", ""),
                 json.dumps(r, ensure_ascii=False),
             ))

@@ -206,11 +206,16 @@ class TabCatalogo(ttk.Frame):
         self._update_ver_inoc_btn()
 
     def _update_ver_inoc_btn(self):
-        idx = self._selected_index()
-        if idx is not None and self.model[idx].get("tipo", "") == "Aleación final":
-            self._btn_ver_inoc.config(state="normal")
-        else:
-            self._btn_ver_inoc.config(state="disabled")
+        sel = self.tree.selection()
+        if sel:
+            try:
+                idx = int(sel[0])
+                if 0 <= idx < len(self.model) and self.model[idx].get("tipo", "") == "Aleación final":
+                    self._btn_ver_inoc.config(state="normal")
+                    return
+            except (ValueError, IndexError):
+                pass
+        self._btn_ver_inoc.config(state="disabled")
 
     def apply_filter(self):
         q = self.q.get().strip().lower()

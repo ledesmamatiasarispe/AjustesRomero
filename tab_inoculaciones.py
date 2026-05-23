@@ -1,8 +1,10 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 
-from storage import save_alloys
-from config import BG_ENTRY, FG, ACCENT
+from storage import save_alloys, load_history
+from config import BG_ENTRY, FG, ACCENT, ELEMENTS
+from utils import simulate_with_plan, to_float, fmt
+from ce import ce_from_percent
 
 
 SPECIAL_TYPE = "Aleación especial"
@@ -20,6 +22,10 @@ class TabInoculaciones(ttk.Frame):
         ttk.Button(top, text="Editar",   command=self.edit_special).pack(side="left", padx=2)
         ttk.Button(top, text="Eliminar", command=self.delete_special).pack(side="left", padx=2)
         ttk.Button(top, text="Refrescar", command=self.refresh_catalog).pack(side="right")
+        self._btn_real = ttk.Button(top, text="Ver comp. real",     command=self._ver_comp_real,     state="disabled")
+        self._btn_real.pack(side="right", padx=(0, 6))
+        self._btn_est  = ttk.Button(top, text="Ver comp. estimada", command=self._ver_comp_estimada, state="disabled")
+        self._btn_est.pack(side="right", padx=(0, 6))
 
         split = ttk.PanedWindow(self, orient="horizontal")
         split.pack(fill="both", expand=True)
@@ -156,7 +162,12 @@ class TabInoculaciones(ttk.Frame):
 
         if idx is None or idx < 0 or idx >= len(self.alloys):
             self._detail_nombre.config(text="Seleccioná una aleación especial.")
+            self._btn_est.config(state="disabled")
+            self._btn_real.config(state="disabled")
             return
+
+        self._btn_est.config(state="normal")
+        self._btn_real.config(state="normal")
 
         alloy = self.alloys[idx]
         meta  = alloy.get("inoculacion_meta", {}) if isinstance(alloy.get("inoculacion_meta", {}), dict) else {}
@@ -443,6 +454,214 @@ class TabInoculaciones(ttk.Frame):
 
         ttk.Button(actions, text="Guardar",  command=save).pack(side="right")
         ttk.Button(actions, text="Cancelar", command=win.destroy).pack(side="right", padx=6)
+
+    # ── Helpers de composición ────────────────────────────────────────────────
+
+    def _get_alloy_by_name(self, nombre):
+        for a in self.alloys:
+            if str(a.get("nombre", "")).strip() == nombre:
+                return a
+        return None
+
+    @staticmethod
+    def _effective_add(alloy, kg):
+        rend = to_float(alloy.get("rendimiento", 100)) / 100
+        return {e: kg * (to_float(alloy.get("composicion", {}).get(e, 0)) / 100) * rend
+                for e in ELEMENTS}
+
+    def _show_comp_dialog(self, titulo, comp, extras=None):
+        win = tk.Toplevel(self)
+        win.title(titulo)
+        win.transient(self)
+        win.grab_set()
+        win.resizable(False, False)
+
+        frm = ttk.Frame(win, padding=12)
+        frm.pack(fill="both", expand=True)
+
+        tv = ttk.Treeview(frm, columns=("el", "pct"), show="headings", height=14, selectmode="none")
+        tv.heading("el",  text="Elemento")
+        tv.heading("pct", text="%")
+        tv.column("el",  width=100, anchor="w")
+        tv.column("pct", width=110, anchor="center")
+        tv.pack(fill="both", expand=True)
+
+        for el in ELEMENTS:
+            v = to_float(comp.get(el, 0))
+            if v > 0.001:
+                tv.insert("", "end", values=(el, fmt(v, 4)))
+
+        if extras:
+            for label, value in extras.items():
+                ttk.Label(frm, text=f"{label}: {value}", foreground="#888888").pack(anchor="w", pady=(6, 0))
+
+        ttk.Button(frm, text="Cerrar", command=win.destroy).pack(pady=(10, 0))
+
+    # ── Ver composición estimada ──────────────────────────────────────────────
+
+    def _ver_comp_estimada(self):
+        idx = self._selected_index()
+        if idx is None:
+            return
+        alloy = self.alloys[idx]
+        meta  = alloy.get("inoculacion_meta", {}) if isinstance(alloy.get("inoculacion_meta", {}), dict) else {}
+        bases       = meta.get("bases", []) if isinstance(meta.get("bases", []), list) else []
+        inoculacion = self._meta_inoculacion_full(meta)
+
+        if not bases:
+            messagebox.showinfo("Estimada", "Esta aleación no tiene bases permitidas configuradas.")
+            return
+
+        win = tk.Toplevel(self)
+        win.title("Composición estimada")
+        win.transient(self)
+        win.grab_set()
+        win.resizable(False, False)
+
+        frm = ttk.Frame(win, padding=12)
+        frm.pack(fill="both", expand=True)
+
+        row0 = ttk.Frame(frm); row0.pack(fill="x", pady=(0, 6))
+        ttk.Label(row0, text="Base:", width=12).pack(side="left")
+        base_var = tk.StringVar(value=bases[0])
+        ttk.Combobox(row0, textvariable=base_var, values=bases, state="readonly", width=18).pack(side="left", padx=4)
+
+        row1 = ttk.Frame(frm); row1.pack(fill="x", pady=(0, 10))
+        ttk.Label(row1, text="Masa baño (kg):", width=16).pack(side="left")
+        masa_var = tk.StringVar(value="50")
+        ttk.Entry(row1, textvariable=masa_var, width=10).pack(side="left", padx=4)
+
+        tv = ttk.Treeview(frm, columns=("el", "pct"), show="headings", height=14, selectmode="none")
+        tv.heading("el",  text="Elemento")
+        tv.heading("pct", text="%")
+        tv.column("el",  width=100, anchor="w")
+        tv.column("pct", width=110, anchor="center")
+        tv.pack(fill="both", expand=True)
+
+        ce_var = tk.StringVar(value="")
+        ttk.Label(frm, textvariable=ce_var, foreground="#888888").pack(anchor="w", pady=(6, 0))
+
+        def calcular():
+            for row in tv.get_children():
+                tv.delete(row)
+            base_alloy = self._get_alloy_by_name(base_var.get())
+            if not base_alloy:
+                messagebox.showerror("Error", f"Base '{base_var.get()}' no encontrada en catálogo.", parent=win)
+                return
+            try:
+                M0 = to_float(masa_var.get().replace(",", "."))
+                if M0 <= 0:
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror("Error", "Masa inválida.", parent=win)
+                return
+
+            plan = {}
+            for e in inoculacion:
+                if e["cantidad_dosis"] > 0:
+                    g = self._gramos_cucharin1(e["nombre"])
+                    if g:
+                        plan[e["nombre"]] = (g * e["cantidad_dosis"]) / 1000
+
+            try:
+                _, comp_est = simulate_with_plan(
+                    M0,
+                    base_alloy.get("composicion", {}),
+                    plan,
+                    ELEMENTS,
+                    get_alloy=self._get_alloy_by_name,
+                    effective_add=self._effective_add,
+                    effective_total_perkg=lambda a: to_float(a.get("rendimiento", 100)) / 100,
+                )
+            except Exception as ex:
+                messagebox.showerror("Error de cálculo", str(ex), parent=win)
+                return
+
+            for el in ELEMENTS:
+                v = to_float(comp_est.get(el, 0))
+                if v > 0.001:
+                    tv.insert("", "end", values=(el, fmt(v, 4)))
+
+            ce = ce_from_percent(comp_est)
+            ce_var.set(f"CE (Fundición): {fmt(ce, 4)}")
+
+        base_var.trace_add("write", lambda *_: calcular())
+        ttk.Button(frm, text="Calcular", command=calcular).pack(pady=(8, 0))
+        ttk.Button(frm, text="Cerrar",   command=win.destroy).pack(pady=(4, 0))
+        calcular()
+
+    # ── Ver composición real ──────────────────────────────────────────────────
+
+    def _ver_comp_real(self):
+        idx = self._selected_index()
+        if idx is None:
+            return
+        alloy = self.alloys[idx]
+        meta  = alloy.get("inoculacion_meta", {}) if isinstance(alloy.get("inoculacion_meta", {}), dict) else {}
+        bases_perm = {str(b).strip() for b in (meta.get("bases", []) or [])}
+
+        history = load_history()
+        sesiones = [
+            s for s in history
+            if str(s.get("objetivo", "")).strip() in bases_perm
+            and s.get("ajustes")
+        ]
+
+        if not sesiones:
+            messagebox.showinfo("Comp. real", "No hay coladas registradas para las bases de esta aleación.")
+            return
+
+        opciones = [f"{s['colada']}  ({s.get('objetivo','')})" for s in sesiones]
+
+        win = tk.Toplevel(self)
+        win.title("Composición real")
+        win.transient(self)
+        win.grab_set()
+        win.resizable(False, False)
+
+        frm = ttk.Frame(win, padding=12)
+        frm.pack(fill="both", expand=True)
+
+        row0 = ttk.Frame(frm); row0.pack(fill="x", pady=(0, 10))
+        ttk.Label(row0, text="Colada:", width=10).pack(side="left")
+        sel_var = tk.StringVar(value=opciones[-1])
+        ttk.Combobox(row0, textvariable=sel_var, values=opciones, state="readonly", width=32).pack(side="left", padx=4)
+
+        tv = ttk.Treeview(frm, columns=("el", "pct"), show="headings", height=14, selectmode="none")
+        tv.heading("el",  text="Elemento")
+        tv.heading("pct", text="%")
+        tv.column("el",  width=100, anchor="w")
+        tv.column("pct", width=110, anchor="center")
+        tv.pack(fill="both", expand=True)
+
+        ce_var = tk.StringVar(value="")
+        ttk.Label(frm, textvariable=ce_var, foreground="#888888").pack(anchor="w", pady=(6, 0))
+
+        def mostrar(*_):
+            for row in tv.get_children():
+                tv.delete(row)
+            sel_idx = opciones.index(sel_var.get()) if sel_var.get() in opciones else -1
+            if sel_idx < 0:
+                return
+            session = sesiones[sel_idx]
+            ajustes = session.get("ajustes", [])
+            if not ajustes:
+                return
+            ultimo = ajustes[-1]
+            comp = (ultimo.get("estimado") or {}).get("comp") or \
+                   (ultimo.get("inicial") or {}).get("comp") or {}
+
+            for el in ELEMENTS:
+                v = to_float(comp.get(el, 0))
+                if v > 0.001:
+                    tv.insert("", "end", values=(el, fmt(v, 4)))
+
+            ce = ce_from_percent(comp)
+            ce_var.set(f"CE (Fundición): {fmt(ce, 4)}")
+
+        sel_var.trace_add("write", mostrar)
+        ttk.Button(frm, text="Cerrar", command=win.destroy).pack(pady=(8, 0))
+        mostrar()
 
     # ── Guardar ───────────────────────────────────────────────────────────────
 

@@ -206,16 +206,11 @@ class TabCatalogo(ttk.Frame):
         self._update_ver_inoc_btn()
 
     def _update_ver_inoc_btn(self):
-        sel = self.tree.selection()
-        if sel:
-            try:
-                idx = int(sel[0])
-                if 0 <= idx < len(self.model) and self.model[idx].get("tipo", "") == "Aleación final":
-                    self._btn_ver_inoc.config(state="normal")
-                    return
-            except (ValueError, IndexError):
-                pass
-        self._btn_ver_inoc.config(state="disabled")
+        idx = self._selected_index()
+        if idx is not None and self.model[idx].get("tipo", "") == "Aleación final":
+            self._btn_ver_inoc.config(state="normal")
+        else:
+            self._btn_ver_inoc.config(state="disabled")
 
     def apply_filter(self):
         q = self.q.get().strip().lower()
@@ -231,23 +226,34 @@ class TabCatalogo(ttk.Frame):
         self.refresh()
 
     def _selected_index(self):
+        """Devuelve el índice seleccionado o None. Sin efectos secundarios."""
         sel = self.tree.selection()
         if not sel:
-            messagebox.showinfo("Catálogo", "Seleccioná una aleación primero."); return None
-        return int(sel[0])
+            return None
+        try:
+            return int(sel[0])
+        except (ValueError, IndexError):
+            return None
+
+    def _require_selection(self):
+        """Devuelve el índice seleccionado o muestra un aviso y retorna None."""
+        idx = self._selected_index()
+        if idx is None:
+            messagebox.showinfo("Catálogo", "Seleccioná una aleación primero.")
+        return idx
 
     def add_item(self): self._edit_dialog()
     def edit_item(self):
-        idx = self._selected_index()
+        idx = self._require_selection()
         if idx is not None: self._edit_dialog(self.model[idx], idx)
     def dup_item(self):
-        idx = self._selected_index()
+        idx = self._require_selection()
         if idx is not None:
             new_item = json.loads(json.dumps(self.model[idx]))
             new_item["nombre"] = (new_item.get("nombre","") + " (copia)").strip()
             self.model.append(new_item); self._save_and_refresh()
     def del_item(self):
-        idx = self._selected_index()
+        idx = self._require_selection()
         if idx is not None and messagebox.askyesno("Eliminar", "¿Eliminar la aleación seleccionada?"):
             self.model.pop(idx); self._save_and_refresh()
 

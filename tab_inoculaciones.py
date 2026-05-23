@@ -76,13 +76,28 @@ class TabInoculaciones(ttk.Frame):
         return 0
 
     def _meta_inoculacion(self, meta):
-        values = meta.get("inoculacion", [])
-        if not isinstance(values, list):
-            values = []
-        if not values:
-            legacy = meta.get("convertidores", [])
-            values = legacy if isinstance(legacy, list) else []
-        return [str(v).strip() for v in values if str(v).strip()]
+        """Devuelve lista de nombres (compatibilidad con código existente)."""
+        return [e["nombre"] for e in self._meta_inoculacion_full(meta)]
+
+    def _meta_inoculacion_full(self, meta):
+        """Devuelve lista de dicts {nombre, cantidad_dosis}. Normaliza formatos viejos."""
+        raw = meta.get("inoculacion", [])
+        if not isinstance(raw, list):
+            raw = []
+        if not raw:
+            raw = meta.get("convertidores", [])
+            if not isinstance(raw, list):
+                raw = []
+        result = []
+        for v in raw:
+            if isinstance(v, str) and v.strip():
+                result.append({"nombre": v.strip(), "cantidad_dosis": 1})
+            elif isinstance(v, dict) and str(v.get("nombre", "")).strip():
+                result.append({
+                    "nombre":         str(v["nombre"]).strip(),
+                    "cantidad_dosis": int(v.get("cantidad_dosis", 1) or 1),
+                })
+        return result
 
     # ── Selección ─────────────────────────────────────────────────────────────
 
@@ -113,11 +128,12 @@ class TabInoculaciones(ttk.Frame):
             return
         alloy = self.alloys[idx]
         meta  = alloy.get("inoculacion_meta", {}) if isinstance(alloy.get("inoculacion_meta", {}), dict) else {}
-        bases      = meta.get("bases", []) if isinstance(meta.get("bases", []), list) else []
-        inoculacion = self._meta_inoculacion(meta)
-        def _fmt_gramos(nombre):
-            g = self._gramos_cucharin1(nombre)
-            return f"{g} g/cucharin1" if g else "—"
+        bases        = meta.get("bases", []) if isinstance(meta.get("bases", []), list) else []
+        inoculacion  = self._meta_inoculacion_full(meta)
+        def _fmt_entry(e):
+            g   = self._gramos_cucharin1(e["nombre"])
+            g_s = f"{g} g/dos" if g else "—"
+            return f"  - {e['nombre']}  ×{e['cantidad_dosis']}  ({g_s})"
         lines = [
             f"Nombre: {alloy.get('nombre', '')}",
             "",
@@ -125,7 +141,7 @@ class TabInoculaciones(ttk.Frame):
             *(f"  - {n}" for n in bases),
             "",
             "Inoculación:",
-            *(f"  - {n}  {_fmt_gramos(n)}" for n in inoculacion),
+            *(_fmt_entry(e) for e in inoculacion),
         ]
         self.detail_text.insert("1.0", "\n".join(lines))
         self.detail_text.config(state="disabled")
@@ -223,26 +239,27 @@ class TabInoculaciones(ttk.Frame):
 
         base_list = self._make_listbox(bases_box)
 
-        # Treeview para inoculación con columna g/cucharin1
-        top = self.winfo_toplevel()
-        lb_bg = getattr(top, "_input_bg", BG_ENTRY)
+        # Treeview para inoculación con columnas g/cucharin1 y cant. dosis
         conv_tv = ttk.Treeview(
             conv_box,
-            columns=("material", "gramos"),
+            columns=("material", "gramos", "cantidad"),
             show="headings",
             selectmode="extended",
         )
         conv_tv.heading("material", text="Material")
         conv_tv.heading("gramos",   text="g/cucharin1")
-        conv_tv.column("material", width=200, anchor="w")
-        conv_tv.column("gramos",   width=90,  anchor="center")
+        conv_tv.heading("cantidad", text="Cant. dosis")
+        conv_tv.column("material", width=170, anchor="w")
+        conv_tv.column("gramos",   width=85,  anchor="center")
+        conv_tv.column("cantidad", width=85,  anchor="center")
         conv_sb = ttk.Scrollbar(conv_box, orient="vertical", command=conv_tv.yview)
         conv_tv.configure(yscrollcommand=conv_sb.set)
         conv_sb.pack(side="right", fill="y")
         conv_tv.pack(fill="both", expand=True)
 
-        saved_bases      = {str(x).strip() for x in (meta.get("bases", []) or [])}
-        saved_converters = set(self._meta_inoculacion(meta))
+        saved_bases     = {str(x).strip() for x in (meta.get("bases", []) or [])}
+        saved_inoc_full = {e["nombre"]: e["cantidad_dosis"]
+                           for e in self._meta_inoculacion_full(meta)}
 
         for i, name in enumerate(self._base_names()):
             base_list.insert(tk.END, name)
@@ -250,12 +267,14 @@ class TabInoculaciones(ttk.Frame):
                 base_list.selection_set(i)
 
         for name in self._converter_names():
-            g = self._gramos_cucharin1(name)
-            conv_tv.insert("", "end", iid=name, values=(name, f"{g} g" if g else "—"))
-            if name in saved_converters:
+            g    = self._gramos_cucharin1(name)
+            cant = saved_inoc_full.get(name, 1)
+            conv_tv.insert("", "end", iid=name,
+                           values=(name, f"{g} g" if g else "—", cant))
+            if name in saved_inoc_full:
                 conv_tv.selection_add(name)
 
-        # Edición inline de g/cucharin1 con doble clic
+        # Edición inline con doble clic (columna 2 = gramos, columna 3 = cantidad)
         _inline_entry = {}
 
         def _close_inline():
@@ -269,12 +288,19 @@ class TabInoculaciones(ttk.Frame):
             region = conv_tv.identify_region(event.x, event.y)
             col    = conv_tv.identify_column(event.x)
             iid    = conv_tv.identify_row(event.y)
-            if region != "cell" or col != "#2" or not iid:
+            if region != "cell" or col not in ("#2", "#3") or not iid:
                 return
             x, y, w, h = conv_tv.bbox(iid, col)
             nombre = iid
-            g_actual = self._gramos_cucharin1(nombre)
-            var = tk.StringVar(value=str(g_actual) if g_actual else "")
+            vals   = conv_tv.item(iid, "values")  # (material, gramos, cantidad)
+
+            if col == "#2":
+                g_actual = self._gramos_cucharin1(nombre)
+                init_val = str(g_actual) if g_actual else ""
+            else:
+                init_val = str(vals[2]) if len(vals) > 2 else "1"
+
+            var   = tk.StringVar(value=init_val)
             entry = tk.Entry(conv_tv, textvariable=var, justify="center",
                              bg=BG_ENTRY, fg=FG, insertbackground=FG,
                              relief="flat", highlightthickness=1,
@@ -286,29 +312,32 @@ class TabInoculaciones(ttk.Frame):
 
             def _commit(event=None):
                 txt = var.get().strip().replace(",", ".")
-                try:
-                    g = float(txt) if txt else 0.0
-                    if g < 0:
-                        raise ValueError
-                except ValueError:
-                    _close_inline()
-                    return
-                # Actualizar el material en el catálogo
-                for alloy in self.alloys:
-                    if str(alloy.get("nombre", "")).strip() == nombre:
-                        alloy["gramos_cucharin1"] = g
-                        break
-                save_alloys(self.alloys)
-                # Refrescar celda en el treeview
-                conv_tv.item(iid, values=(nombre, f"{g} g" if g else "—"))
+                if col == "#2":
+                    try:
+                        g = float(txt) if txt else 0.0
+                        if g < 0: raise ValueError
+                    except ValueError:
+                        _close_inline(); return
+                    for alloy in self.alloys:
+                        if str(alloy.get("nombre", "")).strip() == nombre:
+                            alloy["gramos_cucharin1"] = g
+                            break
+                    save_alloys(self.alloys)
+                    conv_tv.item(iid, values=(nombre, f"{g} g" if g else "—", vals[2]))
+                else:
+                    try:
+                        cant = max(1, int(float(txt))) if txt else 1
+                    except ValueError:
+                        _close_inline(); return
+                    conv_tv.item(iid, values=(nombre, vals[1], cant))
                 _close_inline()
 
             def _cancel(event=None):
                 _close_inline()
 
-            entry.bind("<Return>",  _commit)
+            entry.bind("<Return>",   _commit)
             entry.bind("<KP_Enter>", _commit)
-            entry.bind("<Escape>",  _cancel)
+            entry.bind("<Escape>",   _cancel)
             entry.bind("<FocusOut>", _commit)
 
         conv_tv.bind("<Double-Button-1>", _on_tv_double_click)
@@ -317,7 +346,11 @@ class TabInoculaciones(ttk.Frame):
             return [base_list.get(i) for i in base_list.curselection()]
 
         def selected_converters():
-            return [conv_tv.item(iid, "values")[0] for iid in conv_tv.selection()]
+            return [
+                {"nombre": conv_tv.item(iid, "values")[0],
+                 "cantidad_dosis": int(conv_tv.item(iid, "values")[2])}
+                for iid in conv_tv.selection()
+            ]
 
         def save():
             name = name_var.get().strip()

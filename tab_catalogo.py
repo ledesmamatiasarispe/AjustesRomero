@@ -88,7 +88,7 @@ def _basic_alloys():
 class TabCatalogo(ttk.Frame):
     BASE_COLS = ("Nombre","Tipo","Rendimiento %","Costo","Límites")
     COLS = BASE_COLS + tuple(ELEMENTS)
-    TYPES = ["Ferroaleación", "Metal puro", "Recorte", "Retorno", "Aditivo", "Aleación propia", "Aleación especial", "Aleación final", "Otro"]
+    TYPES = ["Ferroaleación", "Metal puro", "Recorte", "Retorno", "Aditivo", "Aleación propia", "Aleación final", "Otro"]
 
     def __init__(self, master, model):
         super().__init__(master, padding=8)

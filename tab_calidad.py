@@ -478,6 +478,17 @@ class TabCalidad(ttk.Frame):
             "alloy": alloy,
         }
 
+    def _get_final_alloy_by_code(self, code):
+        """Busca la Aleación final en el catálogo por su código (calidad_meta.codigo o nombre)."""
+        for a in self.alloys:
+            meta = a.get("calidad_meta", {}) if isinstance(a, dict) else {}
+            if not isinstance(meta, dict) or not meta.get("es_material_final"):
+                continue
+            c = str(meta.get("codigo") or a.get("nombre", "")).strip()
+            if c == str(code).strip():
+                return a
+        return None
+
     def _reload_final_material_catalog(self):
         self._final_materials = {}
         self._base_to_materials = {}
@@ -3406,6 +3417,9 @@ class TabCalidad(ttk.Frame):
             "imagenes": self._normalize_report_images(self._report_images),
             "_draft_pending": bool(pending),
             "_draft_fields": sorted(self._draft_fields) if pending else [],
+            "inoculacion_snapshot": (
+                (self._get_final_alloy_by_code(self.var_material.get().strip()) or {}).get("inoculacion_meta", {})
+            ),
         }
 
     def _autosave_draft(self):
@@ -3820,6 +3834,9 @@ class TabCalidad(ttk.Frame):
                 "_draft_pending": False,
                 "_draft_base": None,
                 "_draft_fields": [],
+                "inoculacion_snapshot": (
+                    (self._get_final_alloy_by_code(material) or {}).get("inoculacion_meta", {})
+                ),
             }
             existing_idx = next(
                 (

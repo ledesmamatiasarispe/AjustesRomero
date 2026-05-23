@@ -341,9 +341,20 @@ def _init_db():
         try:
             _create_tables(conn)
             _migrate_from_json(conn)
+            _migrate_types(conn)
         finally:
             conn.close()
         _db_initialized = True
+
+
+def _migrate_types(conn):
+    """Elimina tipos obsoletos. Idempotente."""
+    n = conn.execute(
+        "SELECT COUNT(*) FROM alloys WHERE tipo='Aleación especial'"
+    ).fetchone()[0]
+    if n:
+        conn.execute("DELETE FROM alloys WHERE tipo='Aleación especial'")
+        conn.commit()
 
 
 # ---------- Catálogo ----------

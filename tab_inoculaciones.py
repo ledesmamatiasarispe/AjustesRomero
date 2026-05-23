@@ -7,7 +7,7 @@ from utils import simulate_with_plan, to_float, fmt
 from ce import ce_from_percent
 
 
-SPECIAL_TYPE = "Aleación especial"
+SPECIAL_TYPE = "Aleación final"
 
 
 class TabInoculaciones(ttk.Frame):
@@ -17,11 +17,9 @@ class TabInoculaciones(ttk.Frame):
 
         top = ttk.Frame(self)
         top.pack(fill="x", pady=(0, 8))
-        ttk.Label(top, text="Aleaciones especiales").pack(side="left")
-        ttk.Button(top, text="Nueva",    command=self.add_special).pack(side="left", padx=(12, 2))
-        ttk.Button(top, text="Editar",   command=self.edit_special).pack(side="left", padx=2)
-        ttk.Button(top, text="Eliminar", command=self.delete_special).pack(side="left", padx=2)
-        ttk.Button(top, text="Refrescar", command=self.refresh_catalog).pack(side="right")
+        ttk.Label(top, text="Aleaciones finales — Inoculación").pack(side="left")
+        ttk.Button(top, text="Editar inoculación", command=self.edit_special).pack(side="left", padx=(12, 2))
+        ttk.Button(top, text="Refrescar",          command=self.refresh_catalog).pack(side="right")
         self._btn_real = ttk.Button(top, text="Ver comp. real",     command=self._ver_comp_real,     state="disabled")
         self._btn_real.pack(side="right", padx=(0, 6))
         self._btn_est  = ttk.Button(top, text="Ver comp. estimada", command=self._ver_comp_estimada, state="disabled")
@@ -85,15 +83,6 @@ class TabInoculaciones(ttk.Frame):
 
     def _special_entries(self):
         return [(idx, alloy) for idx, alloy in enumerate(self.alloys) if self._is_special(alloy)]
-
-    def _base_names(self):
-        return sorted(
-            {str(a.get("nombre", "")).strip()
-             for a in self.alloys
-             if str(a.get("tipo", "")).strip() == "Aleación propia"
-             and str(a.get("nombre", "")).strip()},
-            key=lambda v: (0, int(v)) if v.isdigit() else (1, v.lower()),
-        )
 
     def _converter_names(self):
         names = [
@@ -169,10 +158,11 @@ class TabInoculaciones(ttk.Frame):
         self._btn_est.config(state="normal")
         self._btn_real.config(state="normal")
 
-        alloy = self.alloys[idx]
-        meta  = alloy.get("inoculacion_meta", {}) if isinstance(alloy.get("inoculacion_meta", {}), dict) else {}
-        bases       = meta.get("bases", []) if isinstance(meta.get("bases", []), list) else []
-        inoculacion = self._meta_inoculacion_full(meta)
+        alloy        = self.alloys[idx]
+        meta         = alloy.get("inoculacion_meta", {}) if isinstance(alloy.get("inoculacion_meta", {}), dict) else {}
+        calidad_meta = alloy.get("calidad_meta", {}) if isinstance(alloy.get("calidad_meta", {}), dict) else {}
+        bases        = calidad_meta.get("bases", []) if isinstance(calidad_meta.get("bases", []), list) else []
+        inoculacion  = self._meta_inoculacion_full(meta)
 
         self._detail_nombre.config(text=alloy.get("nombre", ""))
         self._detail_bases.config(text="  /  ".join(bases) if bases else "—")
@@ -204,12 +194,9 @@ class TabInoculaciones(ttk.Frame):
         if selected_iid:
             self.tree.selection_set(selected_iid)
         self._show_selected_detail()
-        self.status_var.set(f"Aleaciones especiales: {len(self._special_entries())}")
+        self.status_var.set(f"Aleaciones finales con inoculación: {len(self._special_entries())}")
 
     # ── Acciones ──────────────────────────────────────────────────────────────
-
-    def add_special(self):
-        self._edit_dialog()
 
     def edit_special(self):
         idx = self._selected_index()
@@ -250,36 +237,43 @@ class TabInoculaciones(ttk.Frame):
         return lb
 
     def _edit_dialog(self, idx=None):
-        item = self.alloys[idx] if idx is not None else {}
+        if idx is None:
+            messagebox.showinfo("Inoculaciones", "Seleccioná una Aleación final para editar su inoculación.")
+            return
+        item = self.alloys[idx]
         meta = item.get("inoculacion_meta", {}) if isinstance(item.get("inoculacion_meta", {}), dict) else {}
+
+        # Bases desde calidad_meta
+        calidad_meta = item.get("calidad_meta", {}) if isinstance(item.get("calidad_meta", {}), dict) else {}
+        bases_str = "  /  ".join(calidad_meta.get("bases", [])) or "—"
+
         win  = tk.Toplevel(self)
-        win.title("Aleación especial")
+        win.title(f"Inoculación — {item.get('nombre', '')}")
         win.transient(self)
         win.grab_set()
-        win.geometry("720x620")
-        win.minsize(620, 520)
+        win.geometry("560x580")
+        win.minsize(480, 460)
 
-        # Botones al fondo primero para que no queden ocultos
         actions = ttk.Frame(win, padding=8)
         actions.pack(side="bottom", fill="x")
 
         root = ttk.Frame(win, padding=10)
         root.pack(fill="both", expand=True)
 
-        name_var = tk.StringVar(value=item.get("nombre", ""))
+        # Nombre (readonly)
         row = ttk.Frame(root)
-        row.pack(fill="x", pady=(0, 8))
-        ttk.Label(row, text="Nombre", width=14).pack(side="left")
-        ttk.Entry(row, textvariable=name_var, width=40).pack(side="left", padx=6)
+        row.pack(fill="x", pady=(0, 4))
+        ttk.Label(row, text="Aleación final:", width=16).pack(side="left")
+        ttk.Label(row, text=item.get("nombre", ""), font=("Segoe UI", 10, "bold")).pack(side="left", padx=6)
 
-        lists = ttk.Frame(root)
-        lists.pack(fill="both", expand=True)
-        bases_box = ttk.LabelFrame(lists, text="Bases permitidas (Aleación propia)", padding=6)
-        conv_box  = ttk.LabelFrame(lists, text="Inoculación", padding=6)
-        bases_box.pack(side="left", fill="both", expand=True, padx=(0, 6))
-        conv_box.pack(side="left",  fill="both", expand=True)
+        # Bases (readonly, desde calidad_meta)
+        row_b = ttk.Frame(root)
+        row_b.pack(fill="x", pady=(0, 10))
+        ttk.Label(row_b, text="Bases (propias):", width=16).pack(side="left")
+        ttk.Label(row_b, text=bases_str, foreground="#888888").pack(side="left", padx=6)
 
-        base_list = self._make_listbox(bases_box)
+        conv_box = ttk.LabelFrame(root, text="Inoculación", padding=6)
+        conv_box.pack(fill="both", expand=True)
 
         # Treeview para inoculación con columnas g/cucharin1 y cant. dosis
         conv_tv = ttk.Treeview(
@@ -402,9 +396,6 @@ class TabInoculaciones(ttk.Frame):
         conv_tv.bind("<Button-4>",   _on_tv_scroll)
         conv_tv.bind("<Button-5>",   _on_tv_scroll)
 
-        def selected_bases():
-            return [base_list.get(i) for i in base_list.curselection()]
-
         def selected_converters():
             result = []
             for iid in conv_tv.get_children():
@@ -418,37 +409,11 @@ class TabInoculaciones(ttk.Frame):
             return result
 
         def save():
-            name = name_var.get().strip()
-            if not name:
-                messagebox.showerror("Validación", "El nombre es obligatorio.", parent=win)
-                return
-            bases      = selected_bases()
             converters = selected_converters()
-            if not bases:
-                messagebox.showerror("Validación", "Seleccioná al menos una base.", parent=win)
-                return
             if not converters:
                 messagebox.showerror("Validación", "Asigná cantidad > 0 a al menos un material de inoculación.", parent=win)
                 return
-            entry = dict(item or {})
-            entry.update({
-                "nombre":     name,
-                "tipo":       SPECIAL_TYPE,
-                "rendimiento": entry.get("rendimiento", 100.0),
-                "costo":       entry.get("costo", 0.0),
-                "composicion": entry.get("composicion", {}),
-                "limites":     entry.get("limites", {}),
-                "especiales":  entry.get("especiales", {}),
-                "ajuste":      False,
-                "inoculacion_meta": {
-                    "bases":       bases,
-                    "inoculacion": converters,
-                },
-            })
-            if idx is None:
-                self.alloys.append(entry)
-            else:
-                self.alloys[idx] = entry
+            self.alloys[idx]["inoculacion_meta"] = {"inoculacion": converters}
             self._save_and_refresh()
             win.destroy()
 
@@ -503,10 +468,11 @@ class TabInoculaciones(ttk.Frame):
         idx = self._selected_index()
         if idx is None:
             return
-        alloy = self.alloys[idx]
-        meta  = alloy.get("inoculacion_meta", {}) if isinstance(alloy.get("inoculacion_meta", {}), dict) else {}
-        bases       = meta.get("bases", []) if isinstance(meta.get("bases", []), list) else []
-        inoculacion = self._meta_inoculacion_full(meta)
+        alloy        = self.alloys[idx]
+        meta         = alloy.get("inoculacion_meta", {}) if isinstance(alloy.get("inoculacion_meta", {}), dict) else {}
+        calidad_meta = alloy.get("calidad_meta", {}) if isinstance(alloy.get("calidad_meta", {}), dict) else {}
+        bases        = calidad_meta.get("bases", []) if isinstance(calidad_meta.get("bases", []), list) else []
+        inoculacion  = self._meta_inoculacion_full(meta)
 
         if not bases:
             messagebox.showinfo("Estimada", "Esta aleación no tiene bases permitidas configuradas.")
@@ -596,9 +562,9 @@ class TabInoculaciones(ttk.Frame):
         idx = self._selected_index()
         if idx is None:
             return
-        alloy = self.alloys[idx]
-        meta  = alloy.get("inoculacion_meta", {}) if isinstance(alloy.get("inoculacion_meta", {}), dict) else {}
-        bases_perm = {str(b).strip() for b in (meta.get("bases", []) or [])}
+        alloy        = self.alloys[idx]
+        calidad_meta = alloy.get("calidad_meta", {}) if isinstance(alloy.get("calidad_meta", {}), dict) else {}
+        bases_perm   = {str(b).strip() for b in (calidad_meta.get("bases", []) or [])}
 
         history = load_history()
         sesiones = [

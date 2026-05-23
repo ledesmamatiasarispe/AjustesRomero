@@ -198,6 +198,7 @@ class TabCalidad(ttk.Frame):
         ttk.Button(action_bar, text="Agregar", command=self._add_report_to_selected_group).pack(side="left", padx=(6, 0))
         ttk.Button(action_bar, text="Cargar en Access", command=self._load_current_report_in_access).pack(side="left", padx=(6, 0))
         ttk.Button(action_bar, text="Abrir en Access", command=self._open_current_report_in_access_for_review).pack(side="left", padx=(6, 0))
+        ttk.Button(action_bar, text="Ver comp. estimada", command=self._ver_comp_estimada_grupo).pack(side="left", padx=(6, 0))
         ttk.Button(action_bar, text="Eliminar", command=self._delete_selected).pack(side="right")
         ttk.Button(action_bar, text="Eliminar grupo", command=self._delete_selected_group).pack(side="right", padx=(0, 6))
         self.lbl_bases_help = None
@@ -477,6 +478,127 @@ class TabCalidad(ttk.Frame):
             "section_options": section_options or list(DEFAULT_SECTION_OPTIONS),
             "alloy": alloy,
         }
+
+    def _ver_comp_estimada_grupo(self):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        parent_iid = str(sel[0])
+        if not parent_iid.startswith("group:"):
+            # si seleccionó un informe hijo, usar su grupo padre
+            parent_iid = self.tree.parent(parent_iid)
+        if not parent_iid or not parent_iid.startswith("group:"):
+            return
+
+        children   = self.tree.get_children(parent_iid)
+        group_rpts = [self.reports[self._item_to_index[c]]
+                      for c in children if c in self._item_to_index]
+        if not group_rpts:
+            return
+
+        lote     = group_rpts[0].get("lote", "")
+        base_disp = group_rpts[0].get("base_display", group_rpts[0].get("base", ""))
+
+        # Composición base desde historial
+        from storage import load_history
+        from utils import simulate_with_plan, to_float, fmt
+        from config import ELEMENTS
+        from ce import ce_from_percent
+
+        base_comp = {}
+        session = next((s for s in load_history() if s.get("colada", "") == lote), None)
+        if session and session.get("ajustes"):
+            base_comp = session["ajustes"][-1].get("estimado", {}).get("comp", {}) or {}
+
+        def _eff_add(alloy, kg):
+            rend = to_float(alloy.get("rendimiento", 100)) / 100
+            return {e: kg * (to_float(alloy.get("composicion", {}).get(e, 0)) / 100) * rend
+                    for e in ELEMENTS}
+
+        def _get_alloy(name):
+            for a in self.alloys:
+                if str(a.get("nombre", "")).strip() == name:
+                    return a
+            return None
+
+        def _gramos(nombre):
+            a = _get_alloy(nombre)
+            return (a.get("gramos_cucharin1", 0) or 0) if a else 0
+
+        # Calcular composición por material
+        results = {}  # material → comp_dict
+        for rpt in group_rpts:
+            mat      = rpt.get("material", "")
+            snapshot = rpt.get("inoculacion_snapshot", {})
+            if not isinstance(snapshot, dict):
+                snapshot = {}
+            inoc = snapshot.get("inoculacion", [])
+            if not inoc:
+                results[mat] = dict(base_comp)
+                continue
+            plan = {}
+            for e in inoc:
+                if isinstance(e, str):
+                    nombre, cant = e, 1
+                elif isinstance(e, dict):
+                    nombre = e.get("nombre", "")
+                    cant   = int(e.get("cantidad_dosis", 1) or 1)
+                else:
+                    continue
+                g = _gramos(nombre)
+                if g and cant:
+                    plan[nombre] = (g * cant) / 1000
+            if plan:
+                try:
+                    _, comp = simulate_with_plan(
+                        50, base_comp, plan, ELEMENTS,
+                        get_alloy=_get_alloy,
+                        effective_add=_eff_add,
+                        effective_total_perkg=lambda a: to_float(a.get("rendimiento",100))/100,
+                    )
+                    results[mat] = comp
+                except Exception:
+                    results[mat] = dict(base_comp)
+            else:
+                results[mat] = dict(base_comp)
+
+        if not results:
+            messagebox.showinfo("Composición estimada", "No hay datos de inoculación para este grupo.")
+            return
+
+        # Diálogo resultado
+        win = tk.Toplevel(self)
+        win.title(f"Composición estimada — Base {base_disp} / {lote}")
+        win.transient(self)
+        win.grab_set()
+        win.resizable(True, True)
+
+        frm = ttk.Frame(win, padding=12)
+        frm.pack(fill="both", expand=True)
+
+        materials = list(results.keys())
+        cols      = ("el",) + tuple(materials)
+        tv = ttk.Treeview(frm, columns=cols, show="headings", height=14, selectmode="none")
+        tv.heading("el", text="Elemento")
+        tv.column("el", width=80, anchor="w")
+        for m in materials:
+            tv.heading(m, text=m)
+            tv.column(m, width=80, anchor="center")
+        tv_sb = ttk.Scrollbar(frm, orient="vertical", command=tv.yview)
+        tv.configure(yscrollcommand=tv_sb.set)
+        tv_sb.pack(side="right", fill="y")
+        tv.pack(fill="both", expand=True)
+
+        # Filas de elementos
+        for el in ELEMENTS:
+            vals = [to_float(results[m].get(el, 0)) for m in materials]
+            if any(v > 0.001 for v in vals):
+                tv.insert("", "end", values=(el,) + tuple(fmt(v, 4) for v in vals))
+        # Fila CE
+        ce_vals = [ce_from_percent(results[m]) for m in materials]
+        tv.insert("", "end", values=("CE",) + tuple(fmt(v, 4) for v in ce_vals))
+
+        ttk.Button(frm, text="Cerrar", command=win.destroy).pack(pady=(10, 0))
 
     def _get_final_alloy_by_code(self, code):
         """Busca la Aleación final en el catálogo por su código (calidad_meta.codigo o nombre)."""

@@ -15,7 +15,6 @@ from tab_ajuste import TabAjuste
 from tab_historicos import TabHistoricos
 from tab_informes import TabInformes
 from tab_calidad import TabCalidad
-from tab_inoculaciones import TabInoculaciones
 from tab_analisis_termico import TabAnalisisTermico
 from tab_pie_horno import TabPieHorno
 
@@ -307,7 +306,6 @@ class App(tk.Frame):
         self.tab_hist     = TabHistoricos(nb, self.alloys)
         self.tab_info     = TabInformes(nb, self.alloys)
         self.tab_calidad  = TabCalidad(nb, self.alloys)
-        self.tab_inoculaciones = TabInoculaciones(nb, self.alloys)
         self.tab_analisis_termico = TabAnalisisTermico(nb)
         self.tab_analisis_termico.set_adjust_target(self.tab_ajuste)
         self.tab_ajuste.set_thermal_source(self.tab_analisis_termico)
@@ -327,7 +325,6 @@ class App(tk.Frame):
 
         nb.add(self.tab_info,     text="Estadisticas")
         nb.add(self.tab_calidad,  text="Calidad")
-        nb.add(self.tab_inoculaciones, text="Inoculaciones")
         nb.add(self.tab_analisis_termico, text="Analisis termico")
         nb.add(self.tab_pie_horno, text="PIE DE HORNO")
         nb.add(self.tab_catalogo, text="Catálogo")
@@ -337,7 +334,7 @@ class App(tk.Frame):
 
         self.tab_ajuste.bind("<<HistoryUpdated>>", lambda e: (self.tab_hist.refresh(), self.tab_info.refresh()))
         self.tab_analisis_termico.bind("<<HistoryUpdated>>", lambda e: self.tab_hist.refresh())
-        self.tab_catalogo.bind("<<CatalogUpdated>>", lambda e: (self.tab_ajuste.refresh_objectives(), self.tab_hist.refresh_catalog(), self.tab_info.refresh(), self.tab_calidad.refresh_catalog(), self.tab_inoculaciones.refresh_catalog()))
+        self.tab_catalogo.bind("<<CatalogUpdated>>", lambda e: (self.tab_ajuste.refresh_objectives(), self.tab_hist.refresh_catalog(), self.tab_info.refresh(), self.tab_calidad.refresh_catalog()))
 
         self._save_job = None
         self.master.bind("<<AppBgChanged>>", lambda e: self._on_app_bg_changed(), add="+")

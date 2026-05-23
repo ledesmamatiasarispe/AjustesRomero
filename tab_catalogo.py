@@ -6,8 +6,10 @@ import json, csv
 # Módulos del proyecto
 from widgets import ScrollFrame
 from config import ELEMENTS
-from storage import save_alloys
-from utils import to_float, to_float_or_none, fmt, fmt_opt, _norm
+from storage import save_alloys, load_history
+from utils import to_float, to_float_or_none, fmt, fmt_opt, _norm, simulate_with_plan
+from config import ELEMENTS, BG_ENTRY, FG, ACCENT
+from ce import ce_from_percent
 
 # ---------------- Helpers locales (evita dependencias ocultas) ----------------
 def _normalize_limites(lim_dict):
@@ -55,6 +57,29 @@ def _find_limit_targets(model, name, alloy_type=None):
         return [a for a in matches if a.get("tipo", "") == wanted_type]
     preferred = [a for a in matches if a.get("tipo", "") in ("Aleación propia", "Aleación final")]
     return preferred or matches
+
+def _meta_inoculacion_full(meta):
+    """Devuelve lista de dicts {nombre, cantidad_dosis} desde inoculacion_meta."""
+    raw = (meta or {}).get("inoculacion", [])
+    if not isinstance(raw, list):
+        raw = []
+    result = []
+    for v in raw:
+        if isinstance(v, str) and v.strip():
+            result.append({"nombre": v.strip(), "cantidad_dosis": 1})
+        elif isinstance(v, dict) and str(v.get("nombre", "")).strip():
+            result.append({
+                "nombre": str(v["nombre"]).strip(),
+                "cantidad_dosis": int(v.get("cantidad_dosis", 1) or 1),
+            })
+    return result
+
+
+def _effective_add_inoc(alloy, kg):
+    rend = to_float(alloy.get("rendimiento", 100)) / 100
+    return {e: kg * (to_float(alloy.get("composicion", {}).get(e, 0)) / 100) * rend
+            for e in ELEMENTS}
+
 
 def _basic_alloys():
     def alloy(nombre, tipo, rendimiento, costo, comp, limites=None, especiales=None, ajuste=False):
@@ -105,6 +130,8 @@ class TabCatalogo(ttk.Frame):
         ttk.Button(top, text="Duplicar", command=self.dup_item).pack(side="left", padx=2)
         ttk.Button(top, text="Eliminar", command=self.del_item).pack(side="left", padx=2)
         ttk.Button(top, text="Restablecer básicos", command=self.reset_basics).pack(side="left", padx=12)
+        self._btn_ver_inoc = ttk.Button(top, text="Ver inoculación", command=self._ver_inoculacion, state="disabled")
+        self._btn_ver_inoc.pack(side="left", padx=2)
 
         right = ttk.Frame(top); right.pack(side="right")
         ttk.Button(right, text="Exportar límites", command=self.export_limits_csv).pack(side="right", padx=2)
@@ -127,6 +154,7 @@ class TabCatalogo(ttk.Frame):
         ysb.grid(row=0, column=1, sticky="ns")
         xsb.grid(row=1, column=0, sticky="ew")
         grid_frame.rowconfigure(0, weight=1); grid_frame.columnconfigure(0, weight=1)
+        self.tree.bind("<<TreeviewSelect>>", lambda _e: self._update_ver_inoc_btn())
 
         self.refresh()
 
@@ -134,6 +162,12 @@ class TabCatalogo(ttk.Frame):
         ttk.Label(bot, text="Tip: 'Recalcular Fe' ajusta Fe = 100 - suma(resto).").pack(side="left")
 
     # --------------------- acciones básicas de grilla -------------------------
+    def _gramos_cucharin1(self, nombre):
+        for a in self.model:
+            if str(a.get("nombre", "")).strip() == nombre:
+                return a.get("gramos_cucharin1", 0) or 0
+        return 0
+
     def _has_any_limits(self, a):
         lim = a.get("limites", {})
         for e in ELEMENTS:
@@ -168,6 +202,15 @@ class TabCatalogo(ttk.Frame):
                 "Sí" if self._has_any_limits(a) else "",
             ] + [fmt(to_float(a["composicion"].get(e,0)), 6) for e in ELEMENTS]
             self.tree.insert("", "end", iid=str(idx), values=tuple(row))
+        # Habilitar "Ver inoculación" solo si hay una Aleación final seleccionada
+        self._update_ver_inoc_btn()
+
+    def _update_ver_inoc_btn(self):
+        idx = self._selected_index()
+        if idx is not None and self.model[idx].get("tipo", "") == "Aleación final":
+            self._btn_ver_inoc.config(state="normal")
+        else:
+            self._btn_ver_inoc.config(state="disabled")
 
     def apply_filter(self):
         q = self.q.get().strip().lower()
@@ -538,6 +581,117 @@ class TabCatalogo(ttk.Frame):
         ttk.Label(rowf4, text="Cementita", width=10).pack(side="left", padx=(20,0))
         ttk.Entry(rowf4, textvariable=final_cementita, width=12).pack(side="left", padx=6)
 
+        # ── Panel de inoculación (dentro de final_frame) ──────────────────────
+        inoc_panel = ttk.LabelFrame(final_frame, text="Protocolo de inoculación", padding=6)
+        inoc_panel.pack(fill="both", expand=True, pady=(10, 0))
+
+        inoc_meta_saved = (item or {}).get("inoculacion_meta", {}) if isinstance((item or {}).get("inoculacion_meta", {}), dict) else {}
+        saved_inoc_full = {e["nombre"]: e["cantidad_dosis"] for e in _meta_inoculacion_full(inoc_meta_saved)}
+
+        inoc_tv = ttk.Treeview(
+            inoc_panel,
+            columns=("material", "cantidad", "gramos"),
+            show="headings", selectmode="browse", height=7,
+        )
+        inoc_tv.heading("material", text="Material")
+        inoc_tv.heading("cantidad", text="Cant. dosis")
+        inoc_tv.heading("gramos",   text="g/cucharin1")
+        inoc_tv.column("material", width=180, anchor="w")
+        inoc_tv.column("cantidad", width=80,  anchor="center")
+        inoc_tv.column("gramos",   width=80,  anchor="center")
+        inoc_sb = ttk.Scrollbar(inoc_panel, orient="vertical", command=inoc_tv.yview)
+        inoc_tv.configure(yscrollcommand=inoc_sb.set)
+        inoc_sb.pack(side="right", fill="y")
+        inoc_tv.pack(fill="both", expand=True)
+
+        for name in sorted({a.get("nombre","") for a in self.model if a.get("nombre","")},
+                           key=lambda v: (0, int(v)) if v.isdigit() else (1, v.lower())):
+            if not name:
+                continue
+            g    = self._gramos_cucharin1(name)
+            cant = saved_inoc_full.get(name, 0)
+            inoc_tv.insert("", "end", iid=name, values=(name, cant if cant else 0, f"{g} g" if g else "—"))
+
+        _inoc_inline = {}
+
+        def _inoc_close_inline():
+            e = _inoc_inline.pop("widget", None)
+            if e:
+                try: e.destroy()
+                except Exception: pass
+
+        def _inoc_dblclick(event):
+            _inoc_close_inline()
+            region = inoc_tv.identify_region(event.x, event.y)
+            col    = inoc_tv.identify_column(event.x)
+            iid    = inoc_tv.identify_row(event.y)
+            if region != "cell" or col not in ("#2", "#3") or not iid:
+                return
+            x, y, w, h = inoc_tv.bbox(iid, col)
+            vals   = inoc_tv.item(iid, "values")
+            nombre = iid
+            if col == "#2":
+                init = str(vals[1]) if len(vals) > 1 else "0"
+            else:
+                g_val = self._gramos_cucharin1(nombre)
+                init  = str(g_val) if g_val else ""
+            var   = tk.StringVar(value=init)
+            entry = tk.Entry(inoc_tv, textvariable=var, justify="center",
+                             bg=BG_ENTRY, fg=FG, insertbackground=FG,
+                             relief="flat", highlightthickness=1, highlightbackground=ACCENT)
+            entry.place(x=x, y=y, width=w, height=h)
+            entry.focus_set(); entry.select_range(0, tk.END)
+            _inoc_inline["widget"] = entry
+
+            def _commit(ev=None):
+                txt = var.get().strip().replace(",", ".")
+                if col == "#2":
+                    try: cant = max(0, int(float(txt))) if txt else 0
+                    except ValueError: _inoc_close_inline(); return
+                    inoc_tv.item(iid, values=(nombre, cant, vals[2]))
+                else:
+                    try:
+                        g = float(txt) if txt else 0.0
+                        if g < 0: raise ValueError
+                    except ValueError: _inoc_close_inline(); return
+                    for a in self.model:
+                        if str(a.get("nombre","")).strip() == nombre:
+                            a["gramos_cucharin1"] = g; break
+                    inoc_tv.item(iid, values=(nombre, vals[1], f"{g} g" if g else "—"))
+                _inoc_close_inline()
+
+            entry.bind("<Return>",   _commit)
+            entry.bind("<KP_Enter>", _commit)
+            entry.bind("<Escape>",   lambda ev: _inoc_close_inline())
+            entry.bind("<FocusOut>", _commit)
+
+        def _inoc_scroll(event):
+            _inoc_close_inline()
+            col = inoc_tv.identify_column(event.x)
+            iid = inoc_tv.identify_row(event.y)
+            if col != "#2" or not iid: return
+            delta = -1 if (getattr(event,"delta",0)<0 or getattr(event,"num",0)==5) else 1
+            vals  = inoc_tv.item(iid, "values")
+            try: cant = int(float(vals[1])) if vals[1] else 0
+            except (ValueError, IndexError): cant = 0
+            cant = max(0, cant + delta)
+            inoc_tv.item(iid, values=(vals[0], cant, vals[2]))
+
+        inoc_tv.bind("<Double-Button-1>", _inoc_dblclick)
+        inoc_tv.bind("<MouseWheel>", _inoc_scroll)
+        inoc_tv.bind("<Button-4>",   _inoc_scroll)
+        inoc_tv.bind("<Button-5>",   _inoc_scroll)
+
+        def _get_inoc_converters():
+            result = []
+            for iid in inoc_tv.get_children():
+                vals = inoc_tv.item(iid, "values")
+                try: cant = int(float(vals[1])) if vals[1] else 0
+                except (ValueError, IndexError): cant = 0
+                if cant > 0:
+                    result.append({"nombre": vals[0], "cantidad_dosis": cant})
+            return result
+
         comp_title = ttk.Label(form, text="Composición (% en peso)", font=("Segoe UI", 10, "bold"))
         comp_title.pack(anchor="w", pady=(8,2))
         comp_vars = {}
@@ -871,6 +1025,11 @@ class TabCatalogo(ttk.Frame):
                         "section_options": prev_meta.get("section_options", []),
                         "defaults": defaults,
                     }
+                    inoc_converters = _get_inoc_converters()
+                    if inoc_converters:
+                        a["inoculacion_meta"] = {"inoculacion": inoc_converters}
+                    elif "inoculacion_meta" in src_item:
+                        a["inoculacion_meta"] = src_item["inoculacion_meta"]
                     if idx is None:
                         self.model.append(a)
                     else:
@@ -929,6 +1088,137 @@ class TabCatalogo(ttk.Frame):
         actions.columnconfigure(0, weight=1)
         ttk.Button(actions, text="Guardar", command=accept).pack(side="right")
         ttk.Button(actions, text="Cancelar", command=win.destroy).pack(side="right", padx=6)
+
+    # ── Ver inoculación ──────────────────────────────────────────────────────
+    def _ver_inoculacion(self):
+        idx = self._selected_index()
+        if idx is None:
+            return
+        alloy        = self.model[idx]
+        meta         = alloy.get("inoculacion_meta", {}) if isinstance(alloy.get("inoculacion_meta", {}), dict) else {}
+        calidad_meta = alloy.get("calidad_meta", {}) if isinstance(alloy.get("calidad_meta", {}), dict) else {}
+        bases        = calidad_meta.get("bases", [])
+        inoculacion  = _meta_inoculacion_full(meta)
+
+        win = tk.Toplevel(self)
+        win.title(f"Inoculación — {alloy.get('nombre','')}")
+        win.transient(self)
+        win.grab_set()
+        win.geometry("520x460")
+        win.minsize(440, 360)
+
+        frm = ttk.Frame(win, padding=12)
+        frm.pack(fill="both", expand=True)
+
+        row0 = ttk.Frame(frm); row0.pack(fill="x", pady=(0, 4))
+        ttk.Label(row0, text="Material:", width=12).pack(side="left")
+        ttk.Label(row0, text=alloy.get("nombre",""), font=("Segoe UI", 10, "bold")).pack(side="left", padx=4)
+
+        row1 = ttk.Frame(frm); row1.pack(fill="x", pady=(0, 10))
+        ttk.Label(row1, text="Bases:", width=12).pack(side="left")
+        ttk.Label(row1, text="  /  ".join(bases) if bases else "—", foreground="#888888").pack(side="left", padx=4)
+
+        tv = ttk.Treeview(frm, columns=("material","cantidad","gramos","total"),
+                          show="headings", height=10, selectmode="none")
+        tv.heading("material", text="Material")
+        tv.heading("cantidad", text="Cant.")
+        tv.heading("gramos",   text="g/cucharin1")
+        tv.heading("total",    text="Total g")
+        tv.column("material", width=150, anchor="w")
+        tv.column("cantidad", width=60,  anchor="center")
+        tv.column("gramos",   width=80,  anchor="center")
+        tv.column("total",    width=70,  anchor="center")
+        tv_sb = ttk.Scrollbar(frm, orient="vertical", command=tv.yview)
+        tv.configure(yscrollcommand=tv_sb.set)
+        tv_sb.pack(side="right", fill="y")
+        tv.pack(fill="both", expand=True)
+
+        for e in inoculacion:
+            g     = self._gramos_cucharin1(e["nombre"])
+            cant  = e["cantidad_dosis"]
+            total = round(g * cant, 2) if g and cant else "—"
+            tv.insert("", "end", values=(
+                e["nombre"], cant,
+                f"{g} g" if g else "—",
+                f"{total} g" if total != "—" else "—",
+            ))
+
+        btn_frm = ttk.Frame(frm)
+        btn_frm.pack(fill="x", pady=(10, 0))
+        ttk.Button(btn_frm, text="Ver composición estimada",
+                   command=lambda: self._ver_comp_estimada_inoc(alloy, inoculacion, bases, win)).pack(side="left")
+        ttk.Button(btn_frm, text="Cerrar", command=win.destroy).pack(side="right")
+
+    def _ver_comp_estimada_inoc(self, alloy, inoculacion, bases, parent_win):
+        if not bases:
+            messagebox.showinfo("Estimada", "Esta Aleación final no tiene bases configuradas.", parent=parent_win)
+            return
+
+        win = tk.Toplevel(parent_win)
+        win.title(f"Composición estimada — {alloy.get('nombre','')}")
+        win.transient(parent_win)
+        win.grab_set()
+        win.resizable(False, False)
+
+        frm = ttk.Frame(win, padding=12)
+        frm.pack(fill="both", expand=True)
+
+        row0 = ttk.Frame(frm); row0.pack(fill="x", pady=(0, 6))
+        ttk.Label(row0, text="Base:", width=12).pack(side="left")
+        base_var = tk.StringVar(value=bases[0])
+        ttk.Combobox(row0, textvariable=base_var, values=bases, state="readonly", width=16).pack(side="left", padx=4)
+
+        row1 = ttk.Frame(frm); row1.pack(fill="x", pady=(0, 10))
+        ttk.Label(row1, text="Masa baño (kg):", width=16).pack(side="left")
+        masa_var = tk.StringVar(value="50")
+        ttk.Entry(row1, textvariable=masa_var, width=10).pack(side="left", padx=4)
+
+        tv = ttk.Treeview(frm, columns=("el","pct"), show="headings", height=14, selectmode="none")
+        tv.heading("el",  text="Elemento")
+        tv.heading("pct", text="%")
+        tv.column("el",  width=100, anchor="w")
+        tv.column("pct", width=110, anchor="center")
+        tv.pack(fill="both", expand=True)
+
+        ce_var = tk.StringVar(value="")
+        ttk.Label(frm, textvariable=ce_var, foreground="#888888").pack(anchor="w", pady=(6, 0))
+
+        def calcular(*_):
+            for row in tv.get_children(): tv.delete(row)
+            base_alloy = next((a for a in self.model
+                               if str(a.get("nombre","")).strip() == base_var.get()), None)
+            if not base_alloy:
+                messagebox.showerror("Error", f"Base '{base_var.get()}' no encontrada.", parent=win)
+                return
+            try:
+                M0 = float(masa_var.get().replace(",","."))
+                if M0 <= 0: raise ValueError
+            except ValueError:
+                messagebox.showerror("Error", "Masa inválida.", parent=win)
+                return
+            plan = {e["nombre"]: (self._gramos_cucharin1(e["nombre"]) * e["cantidad_dosis"]) / 1000
+                    for e in inoculacion
+                    if e["cantidad_dosis"] > 0 and self._gramos_cucharin1(e["nombre"])}
+            try:
+                _, comp = simulate_with_plan(
+                    M0, base_alloy.get("composicion",{}), plan, ELEMENTS,
+                    get_alloy=lambda n: next((a for a in self.model if str(a.get("nombre","")).strip()==n), None),
+                    effective_add=_effective_add_inoc,
+                    effective_total_perkg=lambda a: to_float(a.get("rendimiento",100))/100,
+                )
+            except Exception as ex:
+                messagebox.showerror("Error de cálculo", str(ex), parent=win)
+                return
+            for el in ELEMENTS:
+                v = to_float(comp.get(el, 0))
+                if v > 0.001:
+                    tv.insert("", "end", values=(el, fmt(v, 4)))
+            ce_var.set(f"CE (Fundición): {fmt(ce_from_percent(comp), 4)}")
+
+        base_var.trace_add("write", calcular)
+        ttk.Button(frm, text="Calcular", command=calcular).pack(pady=(8, 0))
+        ttk.Button(frm, text="Cerrar",   command=win.destroy).pack(pady=(4, 0))
+        calcular()
 
     # -------------------------- helpers ----------------------------
     def _save_and_refresh(self):

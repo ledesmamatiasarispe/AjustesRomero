@@ -28,6 +28,8 @@ class TabAjuste(ttk.Frame):
 
         self._auto_job = None
         self._busy = False
+        self._last_calc_sig = None
+        self._last_timer_min = -1
         self._save_cb = None
         self._thermal_source = None
         self._restoring = False
@@ -1493,6 +1495,17 @@ class TabAjuste(ttk.Frame):
         except Exception:
             pass
 
+    def _calc_signature(self):
+        try:
+            mass = self.mass.get()
+            comp = tuple(e.get() for _, e in self.actual_rows)
+            kgs = tuple(v.get() for v in self.kg_vars.values())
+            obj = self.cb_obj.get()
+            pct = self.partial_pct.get()
+            return (mass, comp, kgs, obj, pct)
+        except Exception:
+            return None
+
     def _schedule_auto(self):
         if getattr(self, "_view_mode", False):
             if self._auto_job is not None:
@@ -1652,9 +1665,15 @@ class TabAjuste(ttk.Frame):
                     self._busy = False
             self._maybe_consume_pending_carbomax()
             self._maybe_schedule_carbomax_auto()
-            self.calc_prediction()
+            sig = self._calc_signature()
+            if sig != self._last_calc_sig:
+                self._last_calc_sig = sig
+                self.calc_prediction()
             self._maybe_auto_save_session()
-            self._refresh_session_timer_labels()
+            now_min = int(time.monotonic() / 30)
+            if now_min != self._last_timer_min:
+                self._last_timer_min = now_min
+                self._refresh_session_timer_labels()
         finally:
             self._schedule_auto()
 
@@ -2747,6 +2766,7 @@ class TabAjuste(ttk.Frame):
             self._apply_ce_colors(ce_now, ce_est, ce_tgt, ce_min, ce_max)
             self._apply_estimated_colors(pred_pct)
             self._predicted = (Mnew, pred_pct)
+            self._last_calc_sig = self._calc_signature()
             self._schedule_graph_update()
         except Exception as ex:
             self._status(f"Error de cálculo: {ex}")

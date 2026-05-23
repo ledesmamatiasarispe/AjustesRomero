@@ -20,16 +20,10 @@ from tab_pie_horno import TabPieHorno
 
 from storage import load_alloys, save_alloys
 from config import THEME, BG, FG, BG_ENTRY, ACCENT
-from host_api import HOST_API_PORT, HOST_API_PUBLIC_PORT, HostAPIServer, get_host_api_port
-from pie_horno_config import PUBLIC_TUNNEL_SUBDOMAIN, PUBLIC_TUNNEL_URL
+from host_api import HOST_API_PORT, HostAPIServer, get_host_api_port
 
 APP_TITLE = "Ajuste de Composición"
 STATE_FILENAME = "ajuste_comp_ui.json"
-TUNNEL_WATCHDOG_INTERVAL_MS = 10000
-TUNNEL_WATCHDOG_START_DELAY_MS = 12000
-TUNNEL_HEALTH_TIMEOUT_SECONDS = 8
-TUNNEL_RESTART_AFTER_FAILURES = 1
-TUNNEL_ALERT_AFTER_RESTARTS = 3
 DEV_RELOAD_POLL_MS = 800
 INPUT_COLOR_PRESETS = {
     "Celeste base": ACCENT,
@@ -281,15 +275,6 @@ class App(tk.Frame):
         self._auto_refresh_seconds_var = tk.StringVar(value="0.25")
         self._debug_mode_var = tk.BooleanVar(value=False)
         self._host_api = None
-        self._host_api_public = None
-        self._tunnel_proc = None
-        self._tunnel_watchdog_job = None
-        self._tunnel_checking = False
-        self._tunnel_failure_count = 0
-        self._tunnel_restart_count = 0
-        self._tunnel_status = {}
-        self._tunnel_paused = False
-        self._orphan_tunnel_cleanup_running = False
 
         self.alloys = load_alloys()
 
@@ -310,7 +295,6 @@ class App(tk.Frame):
         self.tab_analisis_termico.set_adjust_target(self.tab_ajuste)
         self.tab_ajuste.set_thermal_source(self.tab_analisis_termico)
         self.tab_pie_horno = TabPieHorno(nb)
-        self.tab_pie_horno.set_tunnel_pause_callback(self.toggle_public_tunnel_pause)
         self.tab_options  = ttk.Frame(nb, padding=12)
         self.tab_hist.set_quality_target(nb, self.tab_calidad)
         self.tab_hist.set_thermal_target(nb, self.tab_analisis_termico)
@@ -348,14 +332,6 @@ class App(tk.Frame):
         self.master.protocol("WM_DELETE_WINDOW", self._on_close)
         self._restore_state()
         self._start_host_api()
-        if not self._tunnel_paused:
-            self._set_tunnel_status("starting", f"Preparando tunnel publico: {PUBLIC_TUNNEL_URL}")
-            self._stop_orphan_public_tunnels(
-                on_done=lambda: (
-                    self._start_public_tunnel(),
-                    self._schedule_tunnel_watchdog(TUNNEL_WATCHDOG_START_DELAY_MS),
-                )
-            )
         self._schedule_dev_reload_watch()
         self.after(6000, self._start_update_check)
 
@@ -915,241 +891,10 @@ class App(tk.Frame):
     def _start_host_api(self):
         try:
             self._host_api = HostAPIServer(port=HOST_API_PORT).start()
-            self._host_api_public = HostAPIServer(port=HOST_API_PUBLIC_PORT).start()
             print(f"[HOST API] LAN escuchando en {self._host_api.url()}")
-            print(f"[HOST API] PUBLIC escuchando en http://127.0.0.1:{self._host_api_public.port}")
         except Exception as ex:
             self._host_api = None
-            self._host_api_public = None
             print(f"[HOST API] No se pudo iniciar: {ex}")
-
-    def _public_tunnel_command(self):
-        port = self._host_api_public.port if self._host_api_public is not None else HOST_API_PUBLIC_PORT
-        appdata = os.environ.get("APPDATA", "")
-        lt_cmd = os.path.join(appdata, "npm", "lt.cmd") if appdata else ""
-        lt_js = os.path.join(appdata, "npm", "node_modules", "localtunnel", "bin", "lt.js") if appdata else ""
-        if os.path.exists(lt_js):
-            command = ["node", lt_js, "--port", str(port), "--subdomain", PUBLIC_TUNNEL_SUBDOMAIN]
-        else:
-            command = [lt_cmd if os.path.exists(lt_cmd) else "lt", "--port", str(port), "--subdomain", PUBLIC_TUNNEL_SUBDOMAIN]
-        env = os.environ.copy()
-        node_dir = r"C:\Program Files\nodejs"
-        if os.path.isdir(node_dir):
-            env["PATH"] = node_dir + os.pathsep + env.get("PATH", "")
-        creationflags = subprocess.CREATE_NO_WINDOW if hasattr(subprocess, "CREATE_NO_WINDOW") else 0
-        return command, env, creationflags
-
-    def _set_tunnel_status(self, state, message, error=""):
-        info = {
-            "state": state,
-            "message": message,
-            "error": error,
-            "url": PUBLIC_TUNNEL_URL,
-            "checked_at": datetime.now().isoformat(timespec="seconds"),
-            "failures": self._tunnel_failure_count,
-            "restarts": self._tunnel_restart_count,
-            "paused": self._tunnel_paused,
-        }
-        self._tunnel_status = info
-        try:
-            self.tab_pie_horno.set_tunnel_status(info)
-        except Exception:
-            pass
-
-    def _start_public_tunnel(self):
-        if self._tunnel_paused:
-            self._set_tunnel_status("paused", f"Tunnel publico pausado: {PUBLIC_TUNNEL_URL}")
-            return
-        if self._tunnel_proc is not None and self._tunnel_proc.poll() is None:
-            return
-
-        command, env, creationflags = self._public_tunnel_command()
-
-        try:
-            self._tunnel_proc = subprocess.Popen(
-                command,
-                cwd=os.path.dirname(os.path.abspath(__file__)),
-                env=env,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=creationflags,
-            )
-            self._set_tunnel_status("starting", f"Tunnel publico iniciando: {PUBLIC_TUNNEL_URL}")
-            print(f"[LOCAL TUNNEL] URL publica: {PUBLIC_TUNNEL_URL}")
-        except FileNotFoundError:
-            self._tunnel_proc = None
-            self._set_tunnel_status("error", "No se encontro localtunnel.", "Instalar con: npm install -g localtunnel")
-            print("[LOCAL TUNNEL] No se encontro localtunnel. Instalar con: npm install -g localtunnel")
-        except Exception as ex:
-            self._tunnel_proc = None
-            self._set_tunnel_status("error", "No se pudo iniciar el tunnel publico.", str(ex))
-            print(f"[LOCAL TUNNEL] No se pudo iniciar: {ex}")
-
-    def toggle_public_tunnel_pause(self):
-        self._set_public_tunnel_paused(not self._tunnel_paused)
-
-    def _set_public_tunnel_paused(self, paused):
-        paused = bool(paused)
-        if paused == self._tunnel_paused:
-            return
-        self._tunnel_paused = paused
-        self._tunnel_failure_count = 0
-        if paused:
-            try:
-                if self._tunnel_watchdog_job is not None:
-                    self.after_cancel(self._tunnel_watchdog_job)
-                    self._tunnel_watchdog_job = None
-            except Exception:
-                pass
-            self._stop_public_tunnel()
-            self._stop_orphan_public_tunnels()
-            self._set_tunnel_status("paused", f"Tunnel publico pausado: {PUBLIC_TUNNEL_URL}")
-            print("[LOCAL TUNNEL] Pausado por usuario.")
-            return
-
-        self._set_tunnel_status("starting", f"Reanudando tunnel publico: {PUBLIC_TUNNEL_URL}")
-        self._start_public_tunnel()
-        self._schedule_tunnel_watchdog(TUNNEL_WATCHDOG_START_DELAY_MS)
-        print("[LOCAL TUNNEL] Reanudado por usuario.")
-
-    def _stop_public_tunnel(self):
-        proc = self._tunnel_proc
-        self._tunnel_proc = None
-        if proc is None:
-            return
-
-        def worker():
-            try:
-                if proc.poll() is None:
-                    proc.terminate()
-                    try:
-                        proc.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-            except Exception:
-                pass
-
-        threading.Thread(target=worker, name="localtunnel-stop", daemon=True).start()
-
-    def _stop_orphan_public_tunnels(self, on_done=None):
-        if self._orphan_tunnel_cleanup_running:
-            if callable(on_done):
-                self.after(500, lambda: self._stop_orphan_public_tunnels(on_done=on_done))
-            return
-        self._orphan_tunnel_cleanup_running = True
-
-        def worker():
-            try:
-                port = self._host_api_public.port if self._host_api_public is not None else HOST_API_PUBLIC_PORT
-                script = (
-                    "Get-CimInstance Win32_Process -Filter \"name='node.exe'\" | "
-                    f"Where-Object {{ $_.CommandLine -like '*localtunnel*--port {port}*' }} | "
-                    "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"
-                )
-                subprocess.run(
-                    ["powershell", "-NoProfile", "-Command", script],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    timeout=8,
-                    check=False,
-                )
-            except Exception:
-                pass
-            finally:
-                def finish():
-                    self._orphan_tunnel_cleanup_running = False
-                    if callable(on_done) and not self._closing:
-                        on_done()
-                try:
-                    self.after(0, finish)
-                except Exception:
-                    self._orphan_tunnel_cleanup_running = False
-
-        threading.Thread(target=worker, name="localtunnel-orphan-cleanup", daemon=True).start()
-
-    def _public_tunnel_health_url(self):
-        return PUBLIC_TUNNEL_URL.rstrip("/") + "/api/health"
-
-    def _check_public_tunnel_health(self):
-        if self._tunnel_proc is None or self._tunnel_proc.poll() is not None:
-            return False, "El proceso de LocalTunnel no esta corriendo."
-        req = urllib.request.Request(
-            self._public_tunnel_health_url(),
-            headers={
-                "Accept": "application/json",
-                "Cache-Control": "no-cache",
-                "User-Agent": "ajuste_comp_tunnel_watchdog/1.0",
-            },
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=TUNNEL_HEALTH_TIMEOUT_SECONDS) as resp:
-                body = resp.read(4096).decode("utf-8", errors="replace")
-                if 200 <= int(resp.status) < 300 and "ajuste_comp_host" in body:
-                    return True, ""
-                return False, f"Respuesta inesperada HTTP {resp.status}."
-        except urllib.error.HTTPError as ex:
-            return False, f"HTTP {ex.code}"
-        except urllib.error.URLError as ex:
-            return False, str(ex.reason or ex)
-        except Exception as ex:
-            return False, str(ex)
-
-    def _schedule_tunnel_watchdog(self, delay_ms=TUNNEL_WATCHDOG_INTERVAL_MS):
-        if self._tunnel_paused:
-            return
-        try:
-            if self._tunnel_watchdog_job is not None:
-                self.after_cancel(self._tunnel_watchdog_job)
-        except Exception:
-            pass
-        self._tunnel_watchdog_job = self.after(delay_ms, self._run_tunnel_watchdog)
-
-    def _run_tunnel_watchdog(self):
-        self._tunnel_watchdog_job = None
-        if self._tunnel_paused:
-            return
-        if self._tunnel_checking:
-            self._schedule_tunnel_watchdog()
-            return
-        self._tunnel_checking = True
-
-        def worker():
-            ok, error = self._check_public_tunnel_health()
-            try:
-                self.after(0, lambda: self._finish_tunnel_watchdog(ok, error))
-            except Exception:
-                pass
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _finish_tunnel_watchdog(self, ok, error):
-        self._tunnel_checking = False
-        if self._tunnel_paused:
-            self._set_tunnel_status("paused", f"Tunnel publico pausado: {PUBLIC_TUNNEL_URL}")
-            return
-        if ok:
-            self._tunnel_failure_count = 0
-            self._set_tunnel_status("ok", f"Tunnel publico OK: {PUBLIC_TUNNEL_URL}")
-            self._schedule_tunnel_watchdog()
-            return
-
-        self._tunnel_failure_count += 1
-        if self._tunnel_failure_count >= TUNNEL_RESTART_AFTER_FAILURES:
-            self._tunnel_restart_count += 1
-            print(f"[LOCAL TUNNEL] Reiniciando por fallo de salud: {error}")
-            self._set_tunnel_status("restarting", f"Reiniciando tunnel publico. Fallo: {error}")
-            self._stop_public_tunnel()
-            self._stop_orphan_public_tunnels(on_done=self._start_public_tunnel)
-            self._tunnel_failure_count = 0
-            if self._tunnel_restart_count >= TUNNEL_ALERT_AFTER_RESTARTS:
-                self._set_tunnel_status(
-                    "error",
-                    f"Tunnel publico falla seguido. Reinicios: {self._tunnel_restart_count}.",
-                    error,
-                )
-        else:
-            self._set_tunnel_status("warning", f"Tunnel publico no responde. Reintentando: {error}", error)
-        self._schedule_tunnel_watchdog()
 
     def _dev_reload_file_mtime(self):
         if not self._dev_reload_file:
@@ -1247,23 +992,8 @@ class App(tk.Frame):
         except Exception:
             pass
         try:
-            if self._tunnel_watchdog_job is not None:
-                self.after_cancel(self._tunnel_watchdog_job)
-                self._tunnel_watchdog_job = None
-        except Exception:
-            pass
-        try:
             if self._host_api is not None:
                 self._host_api.stop()
-        except Exception:
-            pass
-        try:
-            if self._host_api_public is not None:
-                self._host_api_public.stop()
-        except Exception:
-            pass
-        try:
-            self._stop_public_tunnel()
         except Exception:
             pass
         self.master.destroy()

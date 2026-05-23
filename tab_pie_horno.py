@@ -7,7 +7,6 @@ from datetime import datetime
 from tkinter import ttk, messagebox
 
 from host_api import get_host_api_port, notify_data_changed
-from pie_horno_config import PUBLIC_TUNNEL_URL
 from storage import load_devices_state, save_devices_state
 
 RASPBERRY_USER = "raspberry"
@@ -80,8 +79,6 @@ class TabPieHorno(ttk.Frame):
         self._raspberry_busy = False
         self._raspberry_status_failures = 0
         self._raspberry_auto_refresh_enabled = True
-        self._tunnel_pause_callback = None
-        self.tunnel_pause_text_var = tk.StringVar(value="Pausar tunnel")
         self.local_url_var = tk.StringVar(value=self._local_url_text())
         self._build()
         self.refresh()
@@ -93,26 +90,12 @@ class TabPieHorno(ttk.Frame):
         top = ttk.LabelFrame(self, text="Acceso Pie de Horno", padding=12)
         top.pack(fill="x", pady=(0, 12))
 
-        ttk.Label(top, text="URL publica para Raspberry / celular:").grid(row=0, column=0, sticky="w")
-        ttk.Label(top, text=PUBLIC_TUNNEL_URL, font=("TkDefaultFont", 10, "bold")).grid(row=0, column=1, sticky="w", padx=(10, 0))
-        ttk.Label(top, text="URL dentro de la red:").grid(row=1, column=0, sticky="w", pady=(6, 0))
-        ttk.Label(top, textvariable=self.local_url_var).grid(row=1, column=1, sticky="w", padx=(10, 0), pady=(6, 0))
-        ttk.Label(top, text="Estado tunnel publico:").grid(row=2, column=0, sticky="w", pady=(8, 0))
-        self.tunnel_status_var = tk.StringVar(value="Iniciando...")
-        tunnel_row = ttk.Frame(top)
-        tunnel_row.grid(row=2, column=1, sticky="ew", padx=(10, 0), pady=(8, 0))
-        tunnel_row.columnconfigure(0, weight=1)
-        self.tunnel_status_label = ttk.Label(tunnel_row, textvariable=self.tunnel_status_var, foreground="#9a6a00")
-        self.tunnel_status_label.grid(row=0, column=0, sticky="w")
-        ttk.Button(
-            tunnel_row,
-            textvariable=self.tunnel_pause_text_var,
-            command=self._toggle_tunnel_pause,
-        ).grid(row=0, column=1, sticky="e", padx=(10, 0))
+        ttk.Label(top, text="URL dentro de la red:").grid(row=0, column=0, sticky="w")
+        ttk.Label(top, textvariable=self.local_url_var).grid(row=0, column=1, sticky="w", padx=(10, 0))
         ttk.Label(
             top,
             text="Un dispositivo aprobado normal solo ve datos. Marca como Pie editor a los dispositivos que pueden sumar/restar cucharas.",
-        ).grid(row=3, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        ).grid(row=1, column=0, columnspan=2, sticky="w", pady=(10, 0))
         top.columnconfigure(1, weight=1)
 
         raspberry_box = ttk.LabelFrame(self, text="Raspberry Pie de Horno", padding=12)
@@ -186,44 +169,6 @@ class TabPieHorno(ttk.Frame):
 
     def _local_url_text(self):
         return f"http://{_local_ip()}:{get_host_api_port()}/"
-
-    def set_tunnel_pause_callback(self, callback):
-        self._tunnel_pause_callback = callback
-
-    def _toggle_tunnel_pause(self):
-        if callable(self._tunnel_pause_callback):
-            self._tunnel_pause_callback()
-
-    def set_tunnel_status(self, info):
-        if not isinstance(info, dict):
-            return
-        self.local_url_var.set(self._local_url_text())
-        message = str(info.get("message") or "").strip()
-        checked_at = str(info.get("checked_at") or "").strip()
-        restarts = int(info.get("restarts") or 0)
-        if checked_at:
-            message = f"{message} | {checked_at}"
-        if restarts:
-            message = f"{message} | reinicios: {restarts}"
-        self.tunnel_status_var.set(message or "Sin datos")
-
-        state = str(info.get("state") or "").lower()
-        paused = bool(info.get("paused")) or state == "paused"
-        try:
-            self.tunnel_pause_text_var.set("Reanudar tunnel" if paused else "Pausar tunnel")
-        except Exception:
-            pass
-        color = "#1c7c35"
-        if state == "paused":
-            color = "#555555"
-        elif state in ("warning", "starting", "restarting"):
-            color = "#9a6a00"
-        elif state == "error":
-            color = "#b00020"
-        try:
-            self.tunnel_status_label.configure(foreground=color)
-        except Exception:
-            pass
 
     def _schedule_raspberry_refresh(self):
         if not self._raspberry_auto_refresh_enabled:

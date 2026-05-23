@@ -23,7 +23,6 @@ from storage import (
 
 HOST_API_HOST = "0.0.0.0"
 HOST_API_PORT = 8765
-HOST_API_PUBLIC_PORT = 50500
 CURRENT_HOST_API_PORT = HOST_API_PORT
 WEB_DIR = Path(__file__).resolve().parent / "web"
 MAX_JSON_BODY_BYTES = 32 * 1024

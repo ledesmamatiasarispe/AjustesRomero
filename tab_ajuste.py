@@ -245,7 +245,7 @@ class TabAjuste(ttk.Frame):
         self._graph_results = queue.Queue()
         self._graph_thread = threading.Thread(target=self._graph_worker_loop, daemon=True)
         self._graph_thread.start()
-        self.after(150, self._poll_graph_results)
+        self.after(250, self._poll_graph_results)
 
         # Sashes iniciales para 5 paneles
         def _place_sashes_cols():
@@ -1265,7 +1265,7 @@ class TabAjuste(ttk.Frame):
             self._graph_drawn_seq = latest.get("seq", 0)
             self._draw_graph(latest)
         try:
-            self.after(150, self._poll_graph_results)
+            self.after(250, self._poll_graph_results)
         except Exception:
             pass
 

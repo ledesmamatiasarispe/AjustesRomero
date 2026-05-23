@@ -36,9 +36,37 @@ class TabInoculaciones(ttk.Frame):
         self.tree.bind("<<TreeviewSelect>>", lambda _e: self._show_selected_detail())
         self.tree.bind("<Double-Button-1>", lambda _e: self.edit_special())
 
-        self.detail_text = tk.Text(right, height=18, wrap="word")
-        self.detail_text.pack(fill="both", expand=True)
-        self.detail_text.config(state="disabled")
+        # Panel de detalle estructurado
+        self._detail_nombre = ttk.Label(right, text="", font=("Segoe UI", 11, "bold"))
+        self._detail_nombre.pack(anchor="w", pady=(0, 6))
+
+        ttk.Label(right, text="Bases permitidas", font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        self._detail_bases = ttk.Label(right, text="—", foreground="#888888", wraplength=260)
+        self._detail_bases.pack(anchor="w", pady=(2, 10))
+
+        ttk.Label(right, text="Inoculación", font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        inoc_frame = ttk.Frame(right)
+        inoc_frame.pack(fill="both", expand=True, pady=(2, 0))
+
+        self._detail_tv = ttk.Treeview(
+            inoc_frame,
+            columns=("material", "gramos", "cantidad", "total"),
+            show="headings",
+            height=10,
+            selectmode="none",
+        )
+        self._detail_tv.heading("material", text="Material")
+        self._detail_tv.heading("gramos",   text="g/cucharin1")
+        self._detail_tv.heading("cantidad", text="Cant.")
+        self._detail_tv.heading("total",    text="Total g")
+        self._detail_tv.column("material", width=130, anchor="w")
+        self._detail_tv.column("gramos",   width=75,  anchor="center")
+        self._detail_tv.column("cantidad", width=55,  anchor="center")
+        self._detail_tv.column("total",    width=65,  anchor="center")
+        detail_sb = ttk.Scrollbar(inoc_frame, orient="vertical", command=self._detail_tv.yview)
+        self._detail_tv.configure(yscrollcommand=detail_sb.set)
+        detail_sb.pack(side="right", fill="y")
+        self._detail_tv.pack(fill="both", expand=True)
 
         self.status_var = tk.StringVar(value="")
         ttk.Label(self, textvariable=self.status_var, foreground="#555555").pack(anchor="w", pady=(8, 0))
@@ -120,31 +148,34 @@ class TabInoculaciones(ttk.Frame):
 
     def _show_selected_detail(self):
         idx = self._selected_index()
-        self.detail_text.config(state="normal")
-        self.detail_text.delete("1.0", tk.END)
+        # Limpiar panel
+        self._detail_nombre.config(text="")
+        self._detail_bases.config(text="—")
+        for row in self._detail_tv.get_children():
+            self._detail_tv.delete(row)
+
         if idx is None or idx < 0 or idx >= len(self.alloys):
-            self.detail_text.insert("1.0", "Seleccioná una aleación especial.")
-            self.detail_text.config(state="disabled")
+            self._detail_nombre.config(text="Seleccioná una aleación especial.")
             return
+
         alloy = self.alloys[idx]
         meta  = alloy.get("inoculacion_meta", {}) if isinstance(alloy.get("inoculacion_meta", {}), dict) else {}
-        bases        = meta.get("bases", []) if isinstance(meta.get("bases", []), list) else []
-        inoculacion  = self._meta_inoculacion_full(meta)
-        def _fmt_entry(e):
-            g   = self._gramos_cucharin1(e["nombre"])
-            g_s = f"{g} g/dos" if g else "—"
-            return f"  - {e['nombre']}  ×{e['cantidad_dosis']}  ({g_s})"
-        lines = [
-            f"Nombre: {alloy.get('nombre', '')}",
-            "",
-            "Bases permitidas:",
-            *(f"  - {n}" for n in bases),
-            "",
-            "Inoculación:",
-            *(_fmt_entry(e) for e in inoculacion),
-        ]
-        self.detail_text.insert("1.0", "\n".join(lines))
-        self.detail_text.config(state="disabled")
+        bases       = meta.get("bases", []) if isinstance(meta.get("bases", []), list) else []
+        inoculacion = self._meta_inoculacion_full(meta)
+
+        self._detail_nombre.config(text=alloy.get("nombre", ""))
+        self._detail_bases.config(text="  /  ".join(bases) if bases else "—")
+
+        for e in inoculacion:
+            g     = self._gramos_cucharin1(e["nombre"])
+            cant  = e["cantidad_dosis"]
+            total = round(g * cant, 2) if g and cant else "—"
+            self._detail_tv.insert("", "end", values=(
+                e["nombre"],
+                f"{g} g" if g else "—",
+                cant,
+                f"{total} g" if total != "—" else "—",
+            ))
 
     # ── Refresh ───────────────────────────────────────────────────────────────
 

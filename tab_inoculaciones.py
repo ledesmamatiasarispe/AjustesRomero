@@ -69,6 +69,12 @@ class TabInoculaciones(ttk.Frame):
         ]
         return sorted(set(names), key=lambda v: (0, int(v)) if v.isdigit() else (1, v.lower()))
 
+    def _gramos_cucharin1(self, nombre):
+        for a in self.alloys:
+            if str(a.get("nombre", "")).strip() == nombre:
+                return a.get("gramos_cucharin1", 0) or 0
+        return 0
+
     def _meta_inoculacion(self, meta):
         values = meta.get("inoculacion", [])
         if not isinstance(values, list):
@@ -109,6 +115,9 @@ class TabInoculaciones(ttk.Frame):
         meta  = alloy.get("inoculacion_meta", {}) if isinstance(alloy.get("inoculacion_meta", {}), dict) else {}
         bases      = meta.get("bases", []) if isinstance(meta.get("bases", []), list) else []
         inoculacion = self._meta_inoculacion(meta)
+        def _fmt_gramos(nombre):
+            g = self._gramos_cucharin1(nombre)
+            return f"{g} g/cucharin1" if g else "—"
         lines = [
             f"Nombre: {alloy.get('nombre', '')}",
             "",
@@ -116,7 +125,7 @@ class TabInoculaciones(ttk.Frame):
             *(f"  - {n}" for n in bases),
             "",
             "Inoculación:",
-            *(f"  - {n}" for n in inoculacion),
+            *(f"  - {n}  {_fmt_gramos(n)}" for n in inoculacion),
         ]
         self.detail_text.insert("1.0", "\n".join(lines))
         self.detail_text.config(state="disabled")
@@ -213,7 +222,24 @@ class TabInoculaciones(ttk.Frame):
         conv_box.pack(side="left",  fill="both", expand=True)
 
         base_list = self._make_listbox(bases_box)
-        conv_list = self._make_listbox(conv_box)
+
+        # Treeview para inoculación con columna g/cucharin1
+        top = self.winfo_toplevel()
+        lb_bg = getattr(top, "_input_bg", BG_ENTRY)
+        conv_tv = ttk.Treeview(
+            conv_box,
+            columns=("material", "gramos"),
+            show="headings",
+            selectmode="extended",
+        )
+        conv_tv.heading("material", text="Material")
+        conv_tv.heading("gramos",   text="g/cucharin1")
+        conv_tv.column("material", width=200, anchor="w")
+        conv_tv.column("gramos",   width=90,  anchor="center")
+        conv_sb = ttk.Scrollbar(conv_box, orient="vertical", command=conv_tv.yview)
+        conv_tv.configure(yscrollcommand=conv_sb.set)
+        conv_sb.pack(side="right", fill="y")
+        conv_tv.pack(fill="both", expand=True)
 
         saved_bases      = {str(x).strip() for x in (meta.get("bases", []) or [])}
         saved_converters = set(self._meta_inoculacion(meta))
@@ -222,21 +248,26 @@ class TabInoculaciones(ttk.Frame):
             base_list.insert(tk.END, name)
             if name in saved_bases:
                 base_list.selection_set(i)
-        for i, name in enumerate(self._converter_names()):
-            conv_list.insert(tk.END, name)
-            if name in saved_converters:
-                conv_list.selection_set(i)
 
-        def selected(lb):
-            return [lb.get(i) for i in lb.curselection()]
+        for name in self._converter_names():
+            g = self._gramos_cucharin1(name)
+            conv_tv.insert("", "end", iid=name, values=(name, f"{g} g" if g else "—"))
+            if name in saved_converters:
+                conv_tv.selection_add(name)
+
+        def selected_bases():
+            return [base_list.get(i) for i in base_list.curselection()]
+
+        def selected_converters():
+            return [conv_tv.item(iid, "values")[0] for iid in conv_tv.selection()]
 
         def save():
             name = name_var.get().strip()
             if not name:
                 messagebox.showerror("Validación", "El nombre es obligatorio.", parent=win)
                 return
-            bases      = selected(base_list)
-            converters = selected(conv_list)
+            bases      = selected_bases()
+            converters = selected_converters()
             if not bases:
                 messagebox.showerror("Validación", "Seleccioná al menos una base.", parent=win)
                 return

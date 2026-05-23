@@ -337,8 +337,9 @@ class TabCatalogo(ttk.Frame):
             or (item or {}).get("subtipo", "") == "Inoculante"
             or (item or {}).get("tipo", "") == "Inoculante"
         )
-        rend   = tk.StringVar(value=fmt(to_float((item or {}).get("rendimiento",90)),6))
-        costo  = tk.StringVar(value=fmt(to_float((item or {}).get("costo",0)),6))
+        rend             = tk.StringVar(value=fmt(to_float((item or {}).get("rendimiento", 90)), 6))
+        costo            = tk.StringVar(value=fmt(to_float((item or {}).get("costo", 0)), 6))
+        v_gramos_cucharin1 = tk.StringVar(value=fmt(to_float((item or {}).get("gramos_cucharin1", 0)), 6))
         v_ajuste = tk.BooleanVar(value=bool((item or {}).get("ajuste", False)))
         calidad_meta = (item or {}).get("calidad_meta", {}) or {}
         q_defaults = calidad_meta.get("defaults", {}) if isinstance(calidad_meta.get("defaults", {}), dict) else {}
@@ -370,8 +371,10 @@ class TabCatalogo(ttk.Frame):
         row2 = ttk.Frame(form); row2.pack(fill="x", pady=4)
         ttk.Label(row2, text="Rendimiento (%)", width=16).pack(side="left")
         ttk.Entry(row2, textvariable=rend, width=12).pack(side="left", padx=6)
-        ttk.Label(row2, text="Costo (opcional)", width=16).pack(side="left", padx=(20,0))
+        ttk.Label(row2, text="Costo (opcional)", width=16).pack(side="left", padx=(20, 0))
         ttk.Entry(row2, textvariable=costo, width=12).pack(side="left", padx=6)
+        ttk.Label(row2, text="g/cucharin1", width=12).pack(side="left", padx=(20, 0))
+        ttk.Entry(row2, textvariable=v_gramos_cucharin1, width=10).pack(side="left", padx=6)
 
         inoc_meta = (item or {}).get("inoculante_meta", {}) if isinstance((item or {}).get("inoculante_meta", {}), dict) else {}
         material_names = []
@@ -772,6 +775,7 @@ class TabCatalogo(ttk.Frame):
                     "limites": {},
                     "especiales": {},
                     "ajuste": bool(v_ajuste.get()),
+                    "gramos_cucharin1": to_float(v_gramos_cucharin1.get()),
                 }
                 src_item = item or {}
                 for extra_key, extra_val in src_item.items():

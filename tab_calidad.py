@@ -3968,8 +3968,12 @@ class TabCalidad(ttk.Frame):
                 None,
             )
             if existing_idx is None:
+                if not report.get("id"):
+                    report["id"] = uuid.uuid4().hex
                 self.reports.append(report)
             else:
+                if not report.get("id"):
+                    report["id"] = self.reports[existing_idx].get("id") or uuid.uuid4().hex
                 self.reports[existing_idx] = report
             updated += 1
 
@@ -4795,8 +4799,12 @@ class TabCalidad(ttk.Frame):
         report["_draft_base"] = None
         report["_draft_fields"] = []
         if self._selected_index is None:
+            if not report.get("id"):
+                report["id"] = uuid.uuid4().hex
             self.reports.append(report)
         else:
+            if not report.get("id"):
+                report["id"] = self.reports[self._selected_index].get("id") or uuid.uuid4().hex
             self.reports[self._selected_index] = report
         self._confirmed_snapshot = self._normalize_report_payload(report)
         self._draft_fields = set()

@@ -666,6 +666,7 @@ def load_quality_reports():
 
 
 def save_quality_reports(reports):
+    import uuid as _uuid
     _init_db()
     reports = reports or []
     with _db_lock:
@@ -673,12 +674,18 @@ def save_quality_reports(reports):
         try:
             with conn:
                 conn.execute("DELETE FROM quality_reports")
+                seen_ids = set()
                 for r in reports:
                     if not isinstance(r, dict):
                         continue
+                    rid = r.get("id", "") or ""
+                    if not rid or rid in seen_ids:
+                        rid = _uuid.uuid4().hex
+                        r["id"] = rid
+                    seen_ids.add(rid)
                     conn.execute(
                         "INSERT INTO quality_reports (id, colada, data) VALUES (?,?,?)",
-                        (r.get("id", ""), r.get("colada", ""), json.dumps(r, ensure_ascii=False))
+                        (rid, r.get("colada", ""), json.dumps(r, ensure_ascii=False))
                     )
         finally:
             conn.close()

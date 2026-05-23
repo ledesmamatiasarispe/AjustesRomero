@@ -324,7 +324,7 @@ class TabInoculaciones(ttk.Frame):
                     conv_tv.item(iid, values=(nombre, f"{g} g" if g else "—", vals[2]))
                 else:
                     try:
-                        cant = max(1, int(float(txt))) if txt else 1
+                        cant = max(0, int(float(txt))) if txt else 0
                     except ValueError:
                         _close_inline(); return
                     conv_tv.item(iid, values=(nombre, vals[1], cant))
@@ -339,6 +339,26 @@ class TabInoculaciones(ttk.Frame):
             entry.bind("<FocusOut>", _commit)
 
         conv_tv.bind("<Double-Button-1>", _on_tv_double_click)
+
+        def _on_tv_scroll(event):
+            _close_inline()
+            col = conv_tv.identify_column(event.x)
+            iid = conv_tv.identify_row(event.y)
+            if col != "#3" or not iid:
+                return "break" if col == "#3" else None
+            delta = -1 if (getattr(event, "delta", 0) < 0 or getattr(event, "num", 0) == 5) else 1
+            vals = conv_tv.item(iid, "values")
+            try:
+                cant = int(float(vals[2])) if vals[2] else 0
+            except (ValueError, IndexError):
+                cant = 0
+            cant = max(0, cant + delta)
+            conv_tv.item(iid, values=(vals[0], vals[1], cant))
+            return "break"
+
+        conv_tv.bind("<MouseWheel>", _on_tv_scroll)
+        conv_tv.bind("<Button-4>",   _on_tv_scroll)
+        conv_tv.bind("<Button-5>",   _on_tv_scroll)
 
         def selected_bases():
             return [base_list.get(i) for i in base_list.curselection()]

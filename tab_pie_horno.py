@@ -72,12 +72,10 @@ def _fmt_seconds(seconds):
 class TabPieHorno(ttk.Frame):
     def __init__(self, parent):
         super().__init__(parent, padding=12)
-        self._refresh_job = None
         self._raspberry_busy = False
         self.local_url_var = tk.StringVar(value=self._local_url_text())
         self._build()
         self.refresh()
-        self._schedule_refresh()
         self.refresh_raspberry_status(manual=False)
 
     def _build(self):
@@ -329,19 +327,6 @@ printf 'SLEEPING=%s\n' "$(test -f /tmp/pie-horno-sleep.txt && echo yes || echo n
             self.raspberry_action_var.set(f"Error: {message[:100]}")
         delay = 12000 if action == "reboot" else 2500
         self.after(delay, self.refresh_raspberry_status)
-
-    def _schedule_refresh(self):
-        try:
-            if self._refresh_job is not None:
-                self.after_cancel(self._refresh_job)
-        except Exception:
-            pass
-        self._refresh_job = self.after(5000, self._refresh_tick)
-
-    def _refresh_tick(self):
-        self._refresh_job = None
-        self.refresh(keep_selection=True)
-        self._schedule_refresh()
 
     def _selected_id(self):
         selection = self.tree.selection()

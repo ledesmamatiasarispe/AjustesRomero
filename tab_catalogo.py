@@ -869,85 +869,95 @@ class TabCatalogo(ttk.Frame):
         _toggle_dialog_mode()
 
         # --- Guardar/Cancelar ---
-        def accept():
-            try:
-                a = {
-                    "nombre": nombre.get().strip(),
-                    "tipo": "Ferroaleación" if v_inoculante.get() else (tipo.get().strip() or "Ferroaleación"),
-                    "rendimiento": to_float(rend.get()),
-                    "costo": to_float(costo.get()),
-                    "composicion": {el: to_float(comp_vars[el].get()) for el in ELEMENTS},
-                    "limites": {},
-                    "especiales": {},
-                    "ajuste": bool(v_ajuste.get()),
-                    "gramos_cucharin1": to_float(v_gramos_cucharin1.get()),
-                }
-                src_item = item or {}
-                for extra_key, extra_val in src_item.items():
-                    if extra_key not in a:
-                        a[extra_key] = extra_val
-                if v_inoculante.get():
-                    a["subtipo"] = "Inoculante"
-                    a["inoculante"] = True
-                else:
-                    a.pop("subtipo", None)
-                    a.pop("inoculante", None)
-                if not a["nombre"]:
-                    raise ValueError("El nombre es obligatorio.")
-                if not (0 < a["rendimiento"] <= 100):
-                    raise ValueError("Rendimiento debe estar entre 0 y 100.")
+        def _base_dict():
+            a = {
+                "nombre": nombre.get().strip(),
+                "tipo": "Ferroaleación" if v_inoculante.get() else (tipo.get().strip() or "Ferroaleación"),
+                "rendimiento": to_float(rend.get()),
+                "costo": to_float(costo.get()),
+                "composicion": {el: to_float(comp_vars[el].get()) for el in ELEMENTS},
+                "limites": {},
+                "especiales": {},
+                "ajuste": bool(v_ajuste.get()),
+                "gramos_cucharin1": to_float(v_gramos_cucharin1.get()),
+            }
+            for k, v in (item or {}).items():
+                if k not in a:
+                    a[k] = v
+            if v_inoculante.get():
+                a["subtipo"] = "Inoculante"
+                a["inoculante"] = True
+            else:
+                a.pop("subtipo", None)
+                a.pop("inoculante", None)
+            if not a["nombre"]:
+                raise ValueError("El nombre es obligatorio.")
+            if not (0 < a["rendimiento"] <= 100):
+                raise ValueError("Rendimiento debe estar entre 0 y 100.")
+            return a
 
-                if a["tipo"] == "Inoculante":
-                    base_name = inoc_base.get().strip()
-                    if not base_name:
-                        raise ValueError("Seleccioná el material base del inoculante.")
-                    base_item = None
-                    for candidate in self.model:
-                        if candidate is item:
-                            continue
-                        if str(candidate.get("nombre", "")).strip() == base_name:
-                            base_item = candidate
-                            break
-                    if not base_item:
-                        raise ValueError("No se encontró el material base del inoculante.")
-                    medidas = []
-                    for med in inoc_medidas:
-                        grams = to_float(med.get("gramos", 0.0))
-                        if grams <= 0:
-                            continue
-                        medidas.append({
-                            "nombre": str(med.get("nombre", "") or f"Medida {len(medidas) + 1}").strip(),
-                            "gramos": grams,
-                        })
-                    if not medidas:
-                        raise ValueError("Agregá al menos una medida del inoculante.")
-                    a["composicion"] = dict(base_item.get("composicion", {}) or {})
-                    a["limites"] = _normalize_limites(None)
-                    a["especiales"] = _normalize_especiales(None)
-                    a["ajuste"] = False
-                    a["inoculante"] = True
-                    a["subtipo"] = "Inoculante"
-                    a["inoculante_meta"] = {
-                        "base_material": base_name,
-                        "medidas": medidas,
-                    }
-                    if idx is None:
-                        self.model.append(a)
-                    else:
-                        self.model[idx] = a
-                    self._save_and_refresh()
-                    win.destroy()
-                    return
+        def _commit(a):
+            if idx is None:
+                self.model.append(a)
+            else:
+                self.model[idx] = a
+            self._save_and_refresh()
+            win.destroy()
 
-                if a["tipo"] == "Aleación final":
-                    bases = [base for base, var in base_vars.items() if var.get()]
-                    if not bases:
-                        raise ValueError("Seleccioná al menos una base válida.")
-                    family = final_family.get().strip()
-                    if family not in ("Gris", "Nodular"):
-                        raise ValueError("Seleccioná una familia válida.")
-                    base_ref = bases[0]
-                    defaults = {
+        def _save_inoculante(a):
+            base_name = inoc_base.get().strip()
+            if not base_name:
+                raise ValueError("Seleccioná el material base del inoculante.")
+            base_item = next(
+                (c for c in self.model if c is not item and str(c.get("nombre","")).strip() == base_name),
+                None,
+            )
+            if not base_item:
+                raise ValueError("No se encontró el material base del inoculante.")
+            medidas = []
+            for med in inoc_medidas:
+                grams = to_float(med.get("gramos", 0.0))
+                if grams <= 0:
+                    continue
+                medidas.append({
+                    "nombre": str(med.get("nombre", "") or f"Medida {len(medidas) + 1}").strip(),
+                    "gramos": grams,
+                })
+            if not medidas:
+                raise ValueError("Agregá al menos una medida del inoculante.")
+            a.update({
+                "composicion": dict(base_item.get("composicion", {}) or {}),
+                "limites": _normalize_limites(None),
+                "especiales": _normalize_especiales(None),
+                "ajuste": False,
+                "inoculante": True,
+                "subtipo": "Inoculante",
+                "inoculante_meta": {"base_material": base_name, "medidas": medidas},
+            })
+            _commit(a)
+
+        def _save_final(a):
+            src = item or {}
+            bases = [b for b, var in base_vars.items() if var.get()]
+            if not bases:
+                raise ValueError("Seleccioná al menos una base válida.")
+            family = final_family.get().strip()
+            if family not in ("Gris", "Nodular"):
+                raise ValueError("Seleccioná una familia válida.")
+            prev_meta = src.get("calidad_meta", {}) if isinstance(src.get("calidad_meta", {}), dict) else {}
+            a.update({
+                "ajuste": False,
+                "composicion": src.get("composicion", {}),
+                "limites": src.get("limites", {}),
+                "especiales": src.get("especiales", {}),
+                "calidad_meta": {
+                    "es_material_final": True,
+                    "codigo": a["nombre"],
+                    "base_ref": bases[0],
+                    "bases": bases,
+                    "family": family,
+                    "section_options": prev_meta.get("section_options", []),
+                    "defaults": {
                         "traccion": final_traccion.get().strip(),
                         "seccion": final_seccion.get().strip(),
                         "dureza": final_dureza.get().strip(),
@@ -960,77 +970,56 @@ class TabCatalogo(ttk.Frame):
                         "perlita": final_perlita.get().strip(),
                         "ferrita": final_ferrita.get().strip(),
                         "cementita": final_cementita.get().strip(),
-                    }
-                    src_item = item or {}
-                    prev_meta = src_item.get("calidad_meta", {}) if isinstance(src_item.get("calidad_meta", {}), dict) else {}
-                    a["ajuste"] = False
-                    a["composicion"] = src_item.get("composicion", {})
-                    a["limites"] = src_item.get("limites", {})
-                    a["especiales"] = src_item.get("especiales", {})
-                    a["calidad_meta"] = {
-                        "es_material_final": True,
-                        "codigo": a["nombre"],
-                        "base_ref": base_ref,
-                        "bases": bases,
-                        "family": family,
-                        "section_options": prev_meta.get("section_options", []),
-                        "defaults": defaults,
-                    }
-                    inoc_converters = _get_inoc_converters()
-                    if inoc_converters:
-                        a["inoculacion_meta"] = {"inoculacion": inoc_converters}
-                    elif "inoculacion_meta" in src_item:
-                        a["inoculacion_meta"] = src_item["inoculacion_meta"]
-                    if idx is None:
-                        self.model.append(a)
-                    else:
-                        self.model[idx] = a
-                    self._save_and_refresh()
-                    win.destroy()
-                    return
+                    },
+                },
+            })
+            inoc_converters = _get_inoc_converters()
+            if inoc_converters:
+                a["inoculacion_meta"] = {"inoculacion": inoc_converters}
+            elif "inoculacion_meta" in src:
+                a["inoculacion_meta"] = src["inoculacion_meta"]
+            _commit(a)
 
-                # limites (solo soft por rango ± absoluto)
-                for el in ELEMENTS:
-                    v_rng, *_ = limit_vars[el]
-                    rng = to_float_or_none(v_rng.get())
-                    ideal = to_float_or_none(comp_vars[el].get())
-                    if rng is None or ideal is None or ideal <= 0:
-                        sm = None; sM = None
-                    else:
-                        if rng < 0:
-                            raise ValueError(f"[{el}] Rango inválido.")
-                        sm = ideal - rng
-                        sM = ideal + rng
-                        if sm > sM:
-                            raise ValueError(f"[{el}] Rango inválido.")
-                    a["limites"][el] = {"soft_min": sm, "soft_max": sM, "hard_min": None, "hard_max": None}
-
-                # CE
-                ce_min = to_float_or_none(v_ce_min.get()); ce_max = to_float_or_none(v_ce_max.get())
-                if ce_min is not None and ce_max is not None and ce_min > ce_max:
-                    raise ValueError("CE min > CE max")
-                ce_formula = _norm(v_ce_formula.get() or "FUNDICION")
-                esp_out = {"CE_formula": ce_formula, "CE_min": ce_min, "CE_max": ce_max}
-                if ce_formula == "PERSONALIZADA":
-                    coefs = {}
-                    for el, var in cust_vars.items():
-                        val = to_float_or_none(var.get())
-                        if val is not None and abs(val) > 0.0:
-                            coefs[el] = val
-                    if "C" not in coefs: coefs["C"] = 1.0
-                    esp_out["CE_custom"] = coefs
-                a["especiales"] = esp_out
-
-                # suma composición
-                s = sum(a["composicion"].values())
-                if s > 100.000001 and not messagebox.askyesno("Composición", f"La suma da {fmt(s)}%. ¿Guardar igual?"):
-                    return
-
-                if idx is None:
-                    self.model.append(a)
+        def _save_generic(a):
+            for el in ELEMENTS:
+                v_rng, *_ = limit_vars[el]
+                rng = to_float_or_none(v_rng.get())
+                ideal = to_float_or_none(comp_vars[el].get())
+                if rng is None or ideal is None or ideal <= 0:
+                    sm = sM = None
                 else:
-                    self.model[idx] = a
-                self._save_and_refresh(); win.destroy()
+                    if rng < 0:
+                        raise ValueError(f"[{el}] Rango inválido.")
+                    sm, sM = ideal - rng, ideal + rng
+                    if sm > sM:
+                        raise ValueError(f"[{el}] Rango inválido.")
+                a["limites"][el] = {"soft_min": sm, "soft_max": sM, "hard_min": None, "hard_max": None}
+            ce_min = to_float_or_none(v_ce_min.get())
+            ce_max = to_float_or_none(v_ce_max.get())
+            if ce_min is not None and ce_max is not None and ce_min > ce_max:
+                raise ValueError("CE min > CE max")
+            ce_formula = _norm(v_ce_formula.get() or "FUNDICION")
+            esp_out = {"CE_formula": ce_formula, "CE_min": ce_min, "CE_max": ce_max}
+            if ce_formula == "PERSONALIZADA":
+                coefs = {el: v for el, var in cust_vars.items()
+                         if (v := to_float_or_none(var.get())) is not None and abs(v) > 0.0}
+                coefs.setdefault("C", 1.0)
+                esp_out["CE_custom"] = coefs
+            a["especiales"] = esp_out
+            s = sum(a["composicion"].values())
+            if s > 100.000001 and not messagebox.askyesno("Composición", f"La suma da {fmt(s)}%. ¿Guardar igual?"):
+                return
+            _commit(a)
+
+        def accept():
+            try:
+                a = _base_dict()
+                if a["tipo"] == "Inoculante":
+                    _save_inoculante(a)
+                elif a["tipo"] == "Aleación final":
+                    _save_final(a)
+                else:
+                    _save_generic(a)
             except Exception as ex:
                 messagebox.showerror("Validación", str(ex))
 

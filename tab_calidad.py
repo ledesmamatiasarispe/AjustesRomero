@@ -12,10 +12,11 @@ import uuid
 import webbrowser
 from pathlib import Path
 
-from storage import load_quality_reports, save_quality_reports, ensure_quality_images_dir
-from utils import fmt
-from config import BG_ENTRY, FG, ACCENT
+from storage import load_quality_reports, save_quality_reports, ensure_quality_images_dir, load_history
+from utils import fmt, simulate_with_plan, to_float
+from config import BG_ENTRY, FG, ACCENT, ELEMENTS
 from widgets import ScrollFrame
+from ce import ce_from_percent
 
 try:
     from PIL import Image, ImageOps, ImageTk
@@ -498,12 +499,6 @@ class TabCalidad(ttk.Frame):
 
         lote     = group_rpts[0].get("lote", "")
         base_disp = group_rpts[0].get("base_display", group_rpts[0].get("base", ""))
-
-        # Composición base desde historial
-        from storage import load_history
-        from utils import simulate_with_plan, to_float, fmt
-        from config import ELEMENTS
-        from ce import ce_from_percent
 
         base_comp = {}
         session = next((s for s in load_history() if s.get("colada", "") == lote), None)

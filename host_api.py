@@ -785,161 +785,132 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Pie-Device-Id, X-Pie-Device-Name")
         self.end_headers()
 
+    # ── GET handlers ──────────────────────────────────────────────────────────
+
+    def _handle_get_health(self):
+        try:
+            listen_port = int(self.server.server_address[1])
+        except Exception:
+            listen_port = get_host_api_port()
+        self._send_json({
+            "ok": True,
+            "service": "ajuste_comp_host",
+            "listen_host": HOST_API_HOST,
+            "listen_port": listen_port,
+            "local_ip": _local_ip(),
+            "auth_required": True,
+            "auth_mode": "device_approval",
+        })
+
+    def _handle_get_device_status(self):
+        device_id, _ = self._device_headers()
+        device = get_device(device_id)
+        self._send_json({
+            "ok": True,
+            "status": str((device or {}).get("status") or "unknown"),
+            "role": str((device or {}).get("role") or "viewer"),
+            "device_id": str(device_id or ""),
+        })
+
+    def _handle_get_pie_horno(self):
+        device = self._device_auth_device()
+        status = str((device or {}).get("status") or "unknown")
+        if status != "approved":
+            self._send_device_error(status)
+            return
+        payload = build_host_payload()
+        role = str((device or {}).get("role") or "viewer")
+        payload["permissions"] = {
+            "role": role,
+            "can_edit_cucharas": self._can_edit_cucharas(device),
+            "can_edit_ajuste": self._can_edit_cucharas(device),
+        }
+        self._send_json(payload)
+
+    def _handle_get_inoculaciones(self):
+        device = self._device_auth_device()
+        if str((device or {}).get("status") or "unknown") != "approved":
+            self._send_device_error(str((device or {}).get("status") or "unknown"))
+            return
+        alloys = load_alloys()
+        gramos_map = {al.get("nombre", ""): al.get("gramos_cucharin1", 0) or 0 for al in alloys}
+        result = []
+        for a in alloys:
+            meta = a.get("inoculacion_meta", {})
+            if not isinstance(meta, dict):
+                continue
+            inoc = meta.get("inoculacion", [])
+            if not inoc:
+                continue
+            procedimiento = []
+            for e in inoc:
+                if isinstance(e, str):
+                    nombre, cant = e, 1
+                elif isinstance(e, dict):
+                    nombre = e.get("nombre", "")
+                    cant = int(e.get("cantidad_dosis", 1) or 1)
+                else:
+                    continue
+                g = gramos_map.get(nombre, 0)
+                procedimiento.append({
+                    "nombre": nombre,
+                    "cant": cant,
+                    "gramos": g,
+                    "total": round(g * cant, 2) if g and cant else None,
+                })
+            result.append({"nombre": a.get("nombre", ""), "procedimiento": procedimiento})
+        self._send_json({"ok": True, "inoculaciones": result})
+
     def do_GET(self):
         path = self._request_path()
         if path in ("/", "/index.html"):
             self._serve_file(WEB_DIR / "index.html")
-            return
-        if path == "/static/app.css":
+        elif path == "/static/app.css":
             self._serve_file(WEB_DIR / "app.css")
-            return
-        if path == "/static/app.js":
+        elif path == "/static/app.js":
             self._serve_file(WEB_DIR / "app.js")
-            return
-        if path in ("/api/events", "/api/events/"):
+        elif path in ("/api/events", "/api/events/"):
             self._serve_events()
-            return
-        if path in ("/api/health", "/api/health/"):
-            listen_port = ""
-            try:
-                listen_port = int(self.server.server_address[1])
-            except Exception:
-                listen_port = get_host_api_port()
+        elif path in ("/api/health", "/api/health/"):
+            self._handle_get_health()
+        elif path in ("/api/device/status", "/api/device/status/"):
+            self._handle_get_device_status()
+        elif path in ("/api/pie-horno", "/api/pie-horno/"):
+            self._handle_get_pie_horno()
+        elif path in ("/api/inoculaciones", "/api/inoculaciones/"):
+            self._handle_get_inoculaciones()
+        else:
             self._send_json({
-                "ok": True,
-                "service": "ajuste_comp_host",
-                "listen_host": HOST_API_HOST,
-                "listen_port": listen_port,
-                "local_ip": _local_ip(),
-                "auth_required": True,
-                "auth_mode": "device_approval",
-            })
+                "ok": False,
+                "error": "not_found",
+                "endpoints": ["/", "/api/health", "/api/device/register", "/api/device/status", "/api/pie-horno", "/api/inoculaciones", "/api/events"],
+            }, status=404)
+
+    # ── POST handlers ─────────────────────────────────────────────────────────
+
+    def _handle_post_device_register(self):
+        payload = self._read_json_body()
+        if payload is None:
+            self._send_json({"ok": False, "error": "invalid_json"}, status=400)
             return
-        if path in ("/api/device/status", "/api/device/status/"):
-            device_id, _ = self._device_headers()
-            device = get_device(device_id)
-            self._send_json({
-                "ok": True,
-                "status": str((device or {}).get("status") or "unknown"),
-                "role": str((device or {}).get("role") or "viewer"),
-                "device_id": str(device_id or ""),
-            })
-            return
-        if path in ("/api/pie-horno", "/api/pie-horno/"):
-            device = self._device_auth_device()
-            status = str((device or {}).get("status") or "unknown")
-            if status != "approved":
-                self._send_device_error(status)
-                return
-            payload = build_host_payload()
-            role = str((device or {}).get("role") or "viewer")
-            payload["permissions"] = {
-                "role": role,
-                "can_edit_cucharas": self._can_edit_cucharas(device),
-                "can_edit_ajuste": self._can_edit_cucharas(device),
-            }
-            self._send_json(payload)
-            return
-        if path in ("/api/inoculaciones", "/api/inoculaciones/"):
-            device = self._device_auth_device()
-            if str((device or {}).get("status") or "unknown") != "approved":
-                self._send_device_error(str((device or {}).get("status") or "unknown"))
-                return
-            alloys = load_alloys()
-            result = []
-            for a in alloys:
-                meta = a.get("inoculacion_meta", {})
-                if not isinstance(meta, dict):
-                    continue
-                inoc = meta.get("inoculacion", [])
-                if not inoc:
-                    continue
-                gramos_map = {al.get("nombre",""): al.get("gramos_cucharin1", 0) or 0 for al in alloys}
-                procedimiento = []
-                for e in inoc:
-                    if isinstance(e, str):
-                        nombre, cant = e, 1
-                    elif isinstance(e, dict):
-                        nombre = e.get("nombre", "")
-                        cant   = int(e.get("cantidad_dosis", 1) or 1)
-                    else:
-                        continue
-                    g = gramos_map.get(nombre, 0)
-                    procedimiento.append({
-                        "nombre":  nombre,
-                        "cant":    cant,
-                        "gramos":  g,
-                        "total":   round(g * cant, 2) if g and cant else None,
-                    })
-                result.append({
-                    "nombre":       a.get("nombre", ""),
-                    "procedimiento": procedimiento,
-                })
-            self._send_json({"ok": True, "inoculaciones": result})
+        device_id = str(payload.get("device_id", "") or "").strip()
+        device_name = str(payload.get("name", "") or "").strip()
+        device = register_or_touch_device(
+            device_id, device_name,
+            self.headers.get("User-Agent", ""),
+            self._client_ip(),
+        )
+        if not device:
+            self._send_json({"ok": False, "error": "invalid_device"}, status=400)
             return
         self._send_json({
-            "ok": False,
-            "error": "not_found",
-            "endpoints": ["/", "/api/health", "/api/device/register", "/api/device/status", "/api/pie-horno", "/api/inoculaciones", "/api/events"],
-        }, status=404)
+            "ok": True,
+            "status": str(device.get("status") or "pending"),
+            "role": str(device.get("role") or "viewer"),
+            "device_id": device_id,
+        })
 
-    def do_POST(self):
-        path = self._request_path()
-        if path in ("/api/device/register", "/api/device/register/"):
-            payload = self._read_json_body()
-            if payload is None:
-                self._send_json({"ok": False, "error": "invalid_json"}, status=400)
-                return
-            device_id = str(payload.get("device_id", "") or "").strip()
-            device_name = str(payload.get("name", "") or "").strip()
-            device = register_or_touch_device(
-                device_id,
-                device_name,
-                self.headers.get("User-Agent", ""),
-                self._client_ip(),
-            )
-            if not device:
-                self._send_json({"ok": False, "error": "invalid_device"}, status=400)
-                return
-            self._send_json({
-                "ok": True,
-                "status": str(device.get("status") or "pending"),
-                "role": str(device.get("role") or "viewer"),
-                "device_id": device_id,
-            })
-            return
-        if path in ("/api/pie-horno", "/api/pie-horno/"):
-            device = self._device_auth_device()
-            status = str((device or {}).get("status") or "unknown")
-            if status != "approved":
-                self._send_device_error(status)
-                return
-            if not self._can_edit_cucharas(device):
-                self._send_json({
-                    "ok": False,
-                    "error": "read_only",
-                    "status": "approved",
-                    "role": str((device or {}).get("role") or "viewer"),
-                    "message": "Este dispositivo solo puede ver.",
-                }, status=403)
-                return
-            payload = self._read_json_body()
-            if payload is None:
-                self._send_json({"ok": False, "error": "invalid_json"}, status=400)
-                return
-            action = str(payload.get("action", "") or "").strip().lower()
-            if action != "save_materiales":
-                self._send_json({"ok": False, "error": "invalid_action"}, status=400)
-                return
-            host_payload = save_furnace_material_confirmation(
-                payload.get("rows", []),
-                general_pct=payload.get("general_pct"),
-            )
-            self._send_json({"ok": True, "payload": host_payload})
-            return
-        if path not in ("/api/cucharas", "/api/cucharas/"):
-            self._send_json({"ok": False, "error": "not_found"}, status=404)
-            return
+    def _handle_post_pie_horno(self):
         device = self._device_auth_device()
         status = str((device or {}).get("status") or "unknown")
         if status != "approved":
@@ -947,9 +918,32 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
             return
         if not self._can_edit_cucharas(device):
             self._send_json({
-                "ok": False,
-                "error": "read_only",
-                "status": "approved",
+                "ok": False, "error": "read_only", "status": "approved",
+                "role": str((device or {}).get("role") or "viewer"),
+                "message": "Este dispositivo solo puede ver.",
+            }, status=403)
+            return
+        payload = self._read_json_body()
+        if payload is None:
+            self._send_json({"ok": False, "error": "invalid_json"}, status=400)
+            return
+        if str(payload.get("action", "") or "").strip().lower() != "save_materiales":
+            self._send_json({"ok": False, "error": "invalid_action"}, status=400)
+            return
+        host_payload = save_furnace_material_confirmation(
+            payload.get("rows", []), general_pct=payload.get("general_pct"),
+        )
+        self._send_json({"ok": True, "payload": host_payload})
+
+    def _handle_post_cucharas(self):
+        device = self._device_auth_device()
+        status = str((device or {}).get("status") or "unknown")
+        if status != "approved":
+            self._send_device_error(status)
+            return
+        if not self._can_edit_cucharas(device):
+            self._send_json({
+                "ok": False, "error": "read_only", "status": "approved",
                 "role": str((device or {}).get("role") or "viewer"),
                 "message": "Este dispositivo solo puede ver.",
             }, status=403)
@@ -964,16 +958,14 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
                 cucharas = start_cucharas_count()
             except CucharasContextError:
                 self._send_json({
-                    "ok": False,
-                    "error": "missing_ajuste_context",
+                    "ok": False, "error": "missing_ajuste_context",
                     "message": "Inicia la sesion en Ajuste con numero de colada y material objetivo.",
                 }, status=409)
                 return
             self._send_json({"ok": True, "cucharas": cucharas})
             return
         if action == "save":
-            cucharas = save_cucharas_current()
-            self._send_json({"ok": True, "cucharas": cucharas})
+            self._send_json({"ok": True, "cucharas": save_cucharas_current()})
             return
         if "delta" in payload:
             if not _is_valid_delta_payload(payload):
@@ -986,10 +978,20 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
             self._send_json({"ok": True, "cucharas": cucharas})
             return
         self._send_json({
-            "ok": False,
-            "error": "snapshot_counts_disabled",
+            "ok": False, "error": "snapshot_counts_disabled",
             "message": "Usa delta/start/save. No se aceptan snapshots completos para evitar pisar conteos desde clientes viejos.",
         }, status=409)
+
+    def do_POST(self):
+        path = self._request_path()
+        if path in ("/api/device/register", "/api/device/register/"):
+            self._handle_post_device_register()
+        elif path in ("/api/pie-horno", "/api/pie-horno/"):
+            self._handle_post_pie_horno()
+        elif path in ("/api/cucharas", "/api/cucharas/"):
+            self._handle_post_cucharas()
+        else:
+            self._send_json({"ok": False, "error": "not_found"}, status=404)
 
 
 class _QuietThreadingHTTPServer(ThreadingHTTPServer):

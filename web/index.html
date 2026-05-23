@@ -51,6 +51,7 @@
     <nav class="tabbar" aria-label="Secciones">
       <button class="tab is-active" data-tab-target="ajuste-panel" type="button">Pestana ajuste</button>
       <button class="tab" data-tab-target="cucharas-panel" type="button">Pestana cucharas</button>
+      <button class="tab" data-tab-target="inoc-panel" type="button">Inoculaciones</button>
     </nav>
 
     <main class="panels">
@@ -266,6 +267,44 @@
             </div>
           </section>
         </section>
+      </section>
+      <section class="panel" id="inoc-panel">
+        <div class="content-grid inoc-grid">
+          <section class="data-card inoc-list-card">
+            <div class="card-header">
+              <div>
+                <p class="card-kicker">Procedimientos</p>
+                <h2>Material final</h2>
+              </div>
+            </div>
+            <ul class="inoc-list" id="inoc-list">
+              <li class="empty-state" id="inoc-list-empty">Sin procedimientos configurados.</li>
+            </ul>
+          </section>
+
+          <section class="data-card inoc-detail-card" id="inoc-detail-card">
+            <div class="card-header">
+              <div>
+                <p class="card-kicker">Inoculacion</p>
+                <h2 id="inoc-detail-title">—</h2>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Inoculante</th>
+                    <th>Cant.</th>
+                    <th>g / cucharin1</th>
+                    <th>Total g</th>
+                  </tr>
+                </thead>
+                <tbody id="inoc-detail-body"></tbody>
+              </table>
+              <p class="empty-state" id="inoc-detail-empty">Selecciona un material para ver el procedimiento.</p>
+            </div>
+          </section>
+        </div>
       </section>
     </main>
   </div>

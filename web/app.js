@@ -1020,3 +1020,77 @@ async function startApp() {
 }
 
 startApp();
+
+// ── Inoculaciones ────────────────────────────────────────────────────────────
+
+let inocData = [];
+
+async function loadInoculaciones() {
+  try {
+    const res = await apiFetch("/api/inoculaciones");
+    const data = await res.json();
+    inocData = data.inoculaciones || [];
+    renderInocList();
+  } catch (_) {
+    inocData = [];
+  }
+}
+
+function renderInocList() {
+  const list  = document.getElementById("inoc-list");
+  const empty = document.getElementById("inoc-list-empty");
+  list.innerHTML = "";
+  if (!inocData.length) {
+    list.appendChild(empty);
+    return;
+  }
+  inocData.forEach((item, idx) => {
+    const li = document.createElement("li");
+    li.className = "inoc-item";
+    li.textContent = item.nombre;
+    li.addEventListener("click", () => showInocDetail(idx));
+    list.appendChild(li);
+  });
+}
+
+function showInocDetail(idx) {
+  const item = inocData[idx];
+  if (!item) return;
+
+  // Marcar activo
+  document.querySelectorAll(".inoc-item").forEach((el, i) =>
+    el.classList.toggle("is-active", i === idx)
+  );
+
+  document.getElementById("inoc-detail-title").textContent = item.nombre;
+
+  const body  = document.getElementById("inoc-detail-body");
+  const empty = document.getElementById("inoc-detail-empty");
+  body.innerHTML = "";
+
+  const proc = item.procedimiento || [];
+  if (!proc.length) {
+    empty.hidden = false;
+    return;
+  }
+  empty.hidden = true;
+  proc.forEach(e => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${e.nombre}</td>
+      <td>${e.cant}</td>
+      <td>${e.gramos ? e.gramos + " g" : "—"}</td>
+      <td>${e.total != null ? e.total + " g" : "—"}</td>
+    `;
+    body.appendChild(tr);
+  });
+}
+
+// Cargar al entrar a la pestaña
+document.querySelectorAll("[data-tab-target]").forEach(btn => {
+  btn.addEventListener("click", () => {
+    if (btn.dataset.tabTarget === "inoc-panel" && !inocData.length) {
+      loadInoculaciones();
+    }
+  });
+});

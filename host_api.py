@@ -841,10 +841,47 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
             }
             self._send_json(payload)
             return
+        if path in ("/api/inoculaciones", "/api/inoculaciones/"):
+            device = self._device_auth_device()
+            if str((device or {}).get("status") or "unknown") != "approved":
+                self._send_device_error(str((device or {}).get("status") or "unknown"))
+                return
+            alloys = load_alloys()
+            result = []
+            for a in alloys:
+                meta = a.get("inoculacion_meta", {})
+                if not isinstance(meta, dict):
+                    continue
+                inoc = meta.get("inoculacion", [])
+                if not inoc:
+                    continue
+                gramos_map = {al.get("nombre",""): al.get("gramos_cucharin1", 0) or 0 for al in alloys}
+                procedimiento = []
+                for e in inoc:
+                    if isinstance(e, str):
+                        nombre, cant = e, 1
+                    elif isinstance(e, dict):
+                        nombre = e.get("nombre", "")
+                        cant   = int(e.get("cantidad_dosis", 1) or 1)
+                    else:
+                        continue
+                    g = gramos_map.get(nombre, 0)
+                    procedimiento.append({
+                        "nombre":  nombre,
+                        "cant":    cant,
+                        "gramos":  g,
+                        "total":   round(g * cant, 2) if g and cant else None,
+                    })
+                result.append({
+                    "nombre":       a.get("nombre", ""),
+                    "procedimiento": procedimiento,
+                })
+            self._send_json({"ok": True, "inoculaciones": result})
+            return
         self._send_json({
             "ok": False,
             "error": "not_found",
-            "endpoints": ["/", "/api/health", "/api/device/register", "/api/device/status", "/api/pie-horno", "/api/events"],
+            "endpoints": ["/", "/api/health", "/api/device/register", "/api/device/status", "/api/pie-horno", "/api/inoculaciones", "/api/events"],
         }, status=404)
 
     def do_POST(self):

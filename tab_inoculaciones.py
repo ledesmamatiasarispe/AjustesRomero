@@ -255,6 +255,64 @@ class TabInoculaciones(ttk.Frame):
             if name in saved_converters:
                 conv_tv.selection_add(name)
 
+        # Edición inline de g/cucharin1 con doble clic
+        _inline_entry = {}
+
+        def _close_inline():
+            e = _inline_entry.pop("widget", None)
+            if e:
+                try: e.destroy()
+                except Exception: pass
+
+        def _on_tv_double_click(event):
+            _close_inline()
+            region = conv_tv.identify_region(event.x, event.y)
+            col    = conv_tv.identify_column(event.x)
+            iid    = conv_tv.identify_row(event.y)
+            if region != "cell" or col != "#2" or not iid:
+                return
+            x, y, w, h = conv_tv.bbox(iid, col)
+            nombre = iid
+            g_actual = self._gramos_cucharin1(nombre)
+            var = tk.StringVar(value=str(g_actual) if g_actual else "")
+            entry = tk.Entry(conv_tv, textvariable=var, justify="center",
+                             bg=BG_ENTRY, fg=FG, insertbackground=FG,
+                             relief="flat", highlightthickness=1,
+                             highlightbackground=ACCENT)
+            entry.place(x=x, y=y, width=w, height=h)
+            entry.focus_set()
+            entry.select_range(0, tk.END)
+            _inline_entry["widget"] = entry
+
+            def _commit(event=None):
+                txt = var.get().strip().replace(",", ".")
+                try:
+                    g = float(txt) if txt else 0.0
+                    if g < 0:
+                        raise ValueError
+                except ValueError:
+                    _close_inline()
+                    return
+                # Actualizar el material en el catálogo
+                for alloy in self.alloys:
+                    if str(alloy.get("nombre", "")).strip() == nombre:
+                        alloy["gramos_cucharin1"] = g
+                        break
+                save_alloys(self.alloys)
+                # Refrescar celda en el treeview
+                conv_tv.item(iid, values=(nombre, f"{g} g" if g else "—"))
+                _close_inline()
+
+            def _cancel(event=None):
+                _close_inline()
+
+            entry.bind("<Return>",  _commit)
+            entry.bind("<KP_Enter>", _commit)
+            entry.bind("<Escape>",  _cancel)
+            entry.bind("<FocusOut>", _commit)
+
+        conv_tv.bind("<Double-Button-1>", _on_tv_double_click)
+
         def selected_bases():
             return [base_list.get(i) for i in base_list.curselection()]
 

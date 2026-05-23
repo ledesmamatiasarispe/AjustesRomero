@@ -948,8 +948,15 @@ class App(tk.Frame):
             if r.returncode != 0 or not r.stdout.strip():
                 return
             remote = r.stdout.split()[0]
-            if local and remote and local != remote:
-                self.after(0, self._prompt_and_update)
+            if not (local and remote) or local == remote:
+                return
+            local_log = subprocess.run(
+                ["git", "-C", str(app_dir), "log", "--format=%H"],
+                capture_output=True, text=True, timeout=10
+            )
+            if remote in local_log.stdout.split():
+                return  # remote está en nuestro historial: estamos al día o adelantados
+            self.after(0, self._prompt_and_update)
         except Exception:
             pass
 

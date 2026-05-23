@@ -309,7 +309,7 @@ class App(tk.Frame):
         self.tab_analisis_termico = TabAnalisisTermico(nb)
         self.tab_analisis_termico.set_adjust_target(self.tab_ajuste)
         self.tab_ajuste.set_thermal_source(self.tab_analisis_termico)
-        self.tab_pie_horno = TabPieHorno(nb, self.alloys)
+        self.tab_pie_horno = TabPieHorno(nb)
         self.tab_pie_horno.set_tunnel_pause_callback(self.toggle_public_tunnel_pause)
         self.tab_options  = ttk.Frame(nb, padding=12)
         self.tab_hist.set_quality_target(nb, self.tab_calidad)
@@ -334,7 +334,7 @@ class App(tk.Frame):
 
         self.tab_ajuste.bind("<<HistoryUpdated>>", lambda e: (self.tab_hist.refresh(), self.tab_info.refresh()))
         self.tab_analisis_termico.bind("<<HistoryUpdated>>", lambda e: self.tab_hist.refresh())
-        self.tab_catalogo.bind("<<CatalogUpdated>>", lambda e: (self.tab_ajuste.refresh_objectives(), self.tab_hist.refresh_catalog(), self.tab_info.refresh(), self.tab_calidad.refresh_catalog(), self.tab_pie_horno.refresh_alloys()))
+        self.tab_catalogo.bind("<<CatalogUpdated>>", lambda e: (self.tab_ajuste.refresh_objectives(), self.tab_hist.refresh_catalog(), self.tab_info.refresh(), self.tab_calidad.refresh_catalog()))
 
         self._save_job = None
         self.master.bind("<<AppBgChanged>>", lambda e: self._on_app_bg_changed(), add="+")

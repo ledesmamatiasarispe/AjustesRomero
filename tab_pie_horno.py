@@ -9,8 +9,6 @@ from tkinter import ttk, messagebox
 from host_api import get_host_api_port, notify_data_changed
 from pie_horno_config import PUBLIC_TUNNEL_URL
 from storage import load_devices_state, save_devices_state
-from utils import to_float, fmt
-from config import ELEMENTS
 
 RASPBERRY_USER = "raspberry"
 RASPBERRY_HOST = "192.168.0.133"
@@ -75,9 +73,8 @@ def _fmt_seconds(seconds):
 
 
 class TabPieHorno(ttk.Frame):
-    def __init__(self, parent, alloys_model=None):
+    def __init__(self, parent):
         super().__init__(parent, padding=12)
-        self.alloys = alloys_model or []
         self._refresh_job = None
         self._raspberry_refresh_job = None
         self._raspberry_busy = False
@@ -91,10 +88,6 @@ class TabPieHorno(ttk.Frame):
         self._schedule_refresh()
         self.refresh_raspberry_status(manual=False)
         self._schedule_raspberry_refresh()
-
-    def refresh_alloys(self):
-        """Llamado desde app.py cuando el catálogo cambia."""
-        self._build_inoc_list()
 
     def _build(self):
         top = ttk.LabelFrame(self, text="Acceso Pie de Horno", padding=12)
@@ -190,90 +183,6 @@ class TabPieHorno(ttk.Frame):
 
         self.info_var = tk.StringVar(value="")
         ttk.Label(devices_box, textvariable=self.info_var).grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
-
-        # ── Pestaña Inoculaciones ─────────────────────────────────────────────
-        inoc_frame = ttk.LabelFrame(self, text="Inoculaciones", padding=8)
-        inoc_frame.pack(fill="both", expand=True, pady=(12, 0))
-
-        split = ttk.PanedWindow(inoc_frame, orient="horizontal")
-        split.pack(fill="both", expand=True)
-
-        left_inoc  = ttk.Frame(split)
-        right_inoc = ttk.Frame(split)
-        split.add(left_inoc,  weight=1)
-        split.add(right_inoc, weight=2)
-
-        ttk.Label(left_inoc, text="Material final", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(0, 4))
-        self._inoc_lb = tk.Listbox(left_inoc, selectmode="single", exportselection=False,
-                                   font=("Segoe UI", 10))
-        self._inoc_lb.pack(fill="both", expand=True)
-        self._inoc_lb.bind("<<ListboxSelect>>", lambda _e: self._show_inoc_detail())
-
-        ttk.Label(right_inoc, text="Procedimiento", font=("Segoe UI", 9, "bold")).pack(anchor="w", pady=(0, 4))
-        self._inoc_tv = ttk.Treeview(
-            right_inoc,
-            columns=("material", "cantidad", "gramos", "total"),
-            show="headings", selectmode="none",
-        )
-        self._inoc_tv.heading("material", text="Inoculante")
-        self._inoc_tv.heading("cantidad", text="Cant.")
-        self._inoc_tv.heading("gramos",   text="g/cucharin1")
-        self._inoc_tv.heading("total",    text="Total g")
-        self._inoc_tv.column("material", width=160, anchor="w")
-        self._inoc_tv.column("cantidad", width=55,  anchor="center")
-        self._inoc_tv.column("gramos",   width=80,  anchor="center")
-        self._inoc_tv.column("total",    width=70,  anchor="center")
-        inoc_sb = ttk.Scrollbar(right_inoc, orient="vertical", command=self._inoc_tv.yview)
-        self._inoc_tv.configure(yscrollcommand=inoc_sb.set)
-        inoc_sb.pack(side="right", fill="y")
-        self._inoc_tv.pack(fill="both", expand=True)
-
-        self._build_inoc_list()
-
-    def _inoc_final_alloys(self):
-        result = []
-        for a in self.alloys:
-            meta = a.get("inoculacion_meta", {})
-            if not isinstance(meta, dict):
-                continue
-            inoc = meta.get("inoculacion", [])
-            if inoc:
-                result.append(a)
-        return result
-
-    def _build_inoc_list(self):
-        self._inoc_lb.delete(0, tk.END)
-        for a in self._inoc_final_alloys():
-            self._inoc_lb.insert(tk.END, a.get("nombre", ""))
-        self._show_inoc_detail()
-
-    def _show_inoc_detail(self):
-        for row in self._inoc_tv.get_children():
-            self._inoc_tv.delete(row)
-        sel = self._inoc_lb.curselection()
-        if not sel:
-            return
-        alloys_final = self._inoc_final_alloys()
-        if sel[0] >= len(alloys_final):
-            return
-        alloy = alloys_final[sel[0]]
-        meta  = alloy.get("inoculacion_meta", {}) or {}
-        for e in meta.get("inoculacion", []):
-            if isinstance(e, str):
-                nombre, cant = e, 1
-            elif isinstance(e, dict):
-                nombre = e.get("nombre", "")
-                cant   = int(e.get("cantidad_dosis", 1) or 1)
-            else:
-                continue
-            g = next((to_float(a.get("gramos_cucharin1", 0))
-                      for a in self.alloys if str(a.get("nombre","")).strip() == nombre), 0)
-            total = round(g * cant, 2) if g and cant else "—"
-            self._inoc_tv.insert("", "end", values=(
-                nombre, cant,
-                f"{g} g" if g else "—",
-                f"{total} g" if total != "—" else "—",
-            ))
 
     def _local_url_text(self):
         return f"http://{_local_ip()}:{get_host_api_port()}/"

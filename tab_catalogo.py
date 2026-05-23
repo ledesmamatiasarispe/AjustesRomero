@@ -599,109 +599,49 @@ class TabCatalogo(ttk.Frame):
         inoc_meta_saved = (item or {}).get("inoculacion_meta", {}) if isinstance((item or {}).get("inoculacion_meta", {}), dict) else {}
         saved_inoc_full = {e["nombre"]: e["cantidad_dosis"] for e in _meta_inoculacion_full(inoc_meta_saved)}
 
-        inoc_tv = ttk.Treeview(
-            inoc_panel,
-            columns=("material", "cantidad", "gramos"),
-            show="headings", selectmode="browse", height=7,
-        )
-        inoc_tv.heading("material", text="Material")
-        inoc_tv.heading("cantidad", text="Cant. dosis")
-        inoc_tv.heading("gramos",   text="g/cucharin1")
-        inoc_tv.column("material", width=180, anchor="w")
-        inoc_tv.column("cantidad", width=80,  anchor="center")
-        inoc_tv.column("gramos",   width=80,  anchor="center")
-        inoc_sb = ttk.Scrollbar(inoc_panel, orient="vertical", command=inoc_tv.yview)
-        inoc_tv.configure(yscrollcommand=inoc_sb.set)
-        inoc_sb.pack(side="right", fill="y")
-        inoc_tv.pack(fill="both", expand=True)
+        # Filas con Spinbox: una por material
+        inoc_scroll_frame = ScrollFrame(inoc_panel)
+        inoc_scroll_frame.pack(fill="both", expand=True)
 
-        for name in sorted({a.get("nombre","") for a in self.model if a.get("nombre","")},
-                           key=lambda v: (0, int(v)) if v.isdigit() else (1, v.lower())):
+        # Cabecera
+        hdr = ttk.Frame(inoc_scroll_frame.inner)
+        hdr.pack(fill="x", padx=4, pady=(0, 2))
+        ttk.Label(hdr, text="Material",    width=22, font=("Segoe UI", 9, "bold")).pack(side="left")
+        ttk.Label(hdr, text="Cant. dosis", width=10, font=("Segoe UI", 9, "bold"), anchor="center").pack(side="left")
+        ttk.Label(hdr, text="g/cucharin1", width=10, font=("Segoe UI", 9, "bold"), anchor="center").pack(side="left")
+
+        ttk.Separator(inoc_scroll_frame.inner, orient="horizontal").pack(fill="x", pady=(0, 4))
+
+        inoc_vars = {}  # nombre → IntVar (cantidad)
+        nombres_sorted = sorted(
+            {a.get("nombre","") for a in self.model if a.get("nombre","")},
+            key=lambda v: (0, int(v)) if v.isdigit() else (1, v.lower())
+        )
+        for name in nombres_sorted:
             if not name:
                 continue
             g    = self._gramos_cucharin1(name)
             cant = saved_inoc_full.get(name, 0)
-            inoc_tv.insert("", "end", iid=name, values=(name, cant if cant else 0, f"{g} g" if g else "—"))
+            var  = tk.IntVar(value=cant if cant else 0)
+            inoc_vars[name] = var
 
-        _inoc_inline = {}
-
-        def _inoc_close_inline():
-            e = _inoc_inline.pop("widget", None)
-            if e:
-                try: e.destroy()
-                except Exception: pass
-
-        def _inoc_dblclick(event):
-            _inoc_close_inline()
-            region = inoc_tv.identify_region(event.x, event.y)
-            col    = inoc_tv.identify_column(event.x)
-            iid    = inoc_tv.identify_row(event.y)
-            if region != "cell" or col not in ("#2", "#3") or not iid:
-                return
-            x, y, w, h = inoc_tv.bbox(iid, col)
-            vals   = inoc_tv.item(iid, "values")
-            nombre = iid
-            if col == "#2":
-                init = str(vals[1]) if len(vals) > 1 else "0"
-            else:
-                g_val = self._gramos_cucharin1(nombre)
-                init  = str(g_val) if g_val else ""
-            var   = tk.StringVar(value=init)
-            entry = tk.Entry(inoc_tv, textvariable=var, justify="center",
-                             bg=BG_ENTRY, fg=FG, insertbackground=FG,
-                             relief="flat", highlightthickness=1, highlightbackground=ACCENT)
-            entry.place(x=x, y=y, width=w, height=h)
-            entry.focus_set(); entry.select_range(0, tk.END)
-            _inoc_inline["widget"] = entry
-
-            def _commit(ev=None):
-                txt = var.get().strip().replace(",", ".")
-                if col == "#2":
-                    try: cant = max(0, int(float(txt))) if txt else 0
-                    except ValueError: _inoc_close_inline(); return
-                    inoc_tv.item(iid, values=(nombre, cant, vals[2]))
-                else:
-                    try:
-                        g = float(txt) if txt else 0.0
-                        if g < 0: raise ValueError
-                    except ValueError: _inoc_close_inline(); return
-                    for a in self.model:
-                        if str(a.get("nombre","")).strip() == nombre:
-                            a["gramos_cucharin1"] = g; break
-                    inoc_tv.item(iid, values=(nombre, vals[1], f"{g} g" if g else "—"))
-                _inoc_close_inline()
-
-            entry.bind("<Return>",   _commit)
-            entry.bind("<KP_Enter>", _commit)
-            entry.bind("<Escape>",   lambda ev: _inoc_close_inline())
-            entry.bind("<FocusOut>", _commit)
-
-        def _inoc_scroll(event):
-            _inoc_close_inline()
-            col = inoc_tv.identify_column(event.x)
-            iid = inoc_tv.identify_row(event.y)
-            if col != "#2" or not iid: return
-            delta = -1 if (getattr(event,"delta",0)<0 or getattr(event,"num",0)==5) else 1
-            vals  = inoc_tv.item(iid, "values")
-            try: cant = int(float(vals[1])) if vals[1] else 0
-            except (ValueError, IndexError): cant = 0
-            cant = max(0, cant + delta)
-            inoc_tv.item(iid, values=(vals[0], cant, vals[2]))
-
-        inoc_tv.bind("<Double-Button-1>", _inoc_dblclick)
-        inoc_tv.bind("<MouseWheel>", _inoc_scroll)
-        inoc_tv.bind("<Button-4>",   _inoc_scroll)
-        inoc_tv.bind("<Button-5>",   _inoc_scroll)
+            row = ttk.Frame(inoc_scroll_frame.inner)
+            row.pack(fill="x", padx=4, pady=1)
+            ttk.Label(row, text=name, width=22, anchor="w").pack(side="left")
+            sb = tk.Spinbox(
+                row, from_=0, to=99, textvariable=var,
+                width=6, justify="center",
+                bg=BG_ENTRY, fg=FG, insertbackground=FG,
+                buttonbackground=BG_ENTRY,
+                increment=1, wrap=False,
+            )
+            sb.pack(side="left", padx=(0, 8))
+            ttk.Label(row, text=f"{g} g" if g else "—",
+                      width=10, anchor="center", foreground="#888888").pack(side="left")
 
         def _get_inoc_converters():
-            result = []
-            for iid in inoc_tv.get_children():
-                vals = inoc_tv.item(iid, "values")
-                try: cant = int(float(vals[1])) if vals[1] else 0
-                except (ValueError, IndexError): cant = 0
-                if cant > 0:
-                    result.append({"nombre": vals[0], "cantidad_dosis": cant})
-            return result
+            return [{"nombre": n, "cantidad_dosis": v.get()}
+                    for n, v in inoc_vars.items() if v.get() > 0]
 
         comp_title = ttk.Label(form, text="Composición (% en peso)", font=("Segoe UI", 10, "bold"))
         comp_title.pack(anchor="w", pady=(8,2))

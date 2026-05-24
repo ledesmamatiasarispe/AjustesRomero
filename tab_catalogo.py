@@ -510,10 +510,7 @@ class TabCatalogo(ttk.Frame):
                 lbl_color_preview.winfo_rgb(c)
                 lbl_color_preview.config(bg=c)
             except Exception:
-                try:
-                    lbl_color_preview.config(bg=lbl_color_preview.master.cget("background"))
-                except Exception:
-                    pass
+                lbl_color_preview.config(bg="#d9d9d9")
 
         def _pick_color():
             import tkinter.colorchooser as cc

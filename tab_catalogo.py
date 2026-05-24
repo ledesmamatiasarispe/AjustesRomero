@@ -11,6 +11,9 @@ from utils import to_float, to_float_or_none, fmt, fmt_opt, _norm, simulate_with
 from config import ELEMENTS, BG_ENTRY, FG, ACCENT
 from ce import ce_from_percent
 
+INOC_MOMENTOS = ("horno", "cuchara_transp", "cuchara_colar")
+INOC_MOMENTO_LABELS = {"horno": "Horno", "cuchara_transp": "C. transp.", "cuchara_colar": "C. colar"}
+
 # ---------------- Helpers locales (evita dependencias ocultas) ----------------
 def _normalize_limites(lim_dict):
     out = {}
@@ -59,18 +62,22 @@ def _find_limit_targets(model, name, alloy_type=None):
     return preferred or matches
 
 def _meta_inoculacion_full(meta):
-    """Devuelve lista de dicts {nombre, cantidad_dosis} desde inoculacion_meta."""
+    """Devuelve lista de dicts {nombre, cantidad_dosis, momento} desde inoculacion_meta."""
     raw = (meta or {}).get("inoculacion", [])
     if not isinstance(raw, list):
         raw = []
     result = []
     for v in raw:
         if isinstance(v, str) and v.strip():
-            result.append({"nombre": v.strip(), "cantidad_dosis": 1})
+            result.append({"nombre": v.strip(), "cantidad_dosis": 1, "momento": "horno"})
         elif isinstance(v, dict) and str(v.get("nombre", "")).strip():
+            mom = str(v.get("momento", "horno") or "horno")
+            if mom not in INOC_MOMENTOS:
+                mom = "horno"
             result.append({
                 "nombre": str(v["nombre"]).strip(),
                 "cantidad_dosis": int(v.get("cantidad_dosis", 1) or 1),
+                "momento": mom,
             })
     return result
 
@@ -597,51 +604,57 @@ class TabCatalogo(ttk.Frame):
         inoc_panel.pack(fill="both", expand=True, pady=(10, 0))
 
         inoc_meta_saved = (item or {}).get("inoculacion_meta", {}) if isinstance((item or {}).get("inoculacion_meta", {}), dict) else {}
-        saved_inoc_full = {e["nombre"]: e["cantidad_dosis"] for e in _meta_inoculacion_full(inoc_meta_saved)}
+        saved_inoc_map = {
+            (e["nombre"], e["momento"]): e["cantidad_dosis"]
+            for e in _meta_inoculacion_full(inoc_meta_saved)
+        }
 
-        # Filas con Spinbox: una por material
+        # Grilla: filas = material, columnas = Horno / C. transp. / C. colar
         inoc_scroll_frame = ScrollFrame(inoc_panel)
         inoc_scroll_frame.pack(fill="both", expand=True)
 
-        # Cabecera
         hdr = ttk.Frame(inoc_scroll_frame.inner)
         hdr.pack(fill="x", padx=4, pady=(0, 2))
         ttk.Label(hdr, text="Material",    width=22, font=("Segoe UI", 9, "bold")).pack(side="left")
-        ttk.Label(hdr, text="Cant. dosis", width=10, font=("Segoe UI", 9, "bold"), anchor="center").pack(side="left")
+        for mom in INOC_MOMENTOS:
+            ttk.Label(hdr, text=INOC_MOMENTO_LABELS[mom], width=10,
+                      font=("Segoe UI", 9, "bold"), anchor="center").pack(side="left")
         ttk.Label(hdr, text="g/cucharin1", width=10, font=("Segoe UI", 9, "bold"), anchor="center").pack(side="left")
 
         ttk.Separator(inoc_scroll_frame.inner, orient="horizontal").pack(fill="x", pady=(0, 4))
 
-        inoc_vars = {}  # nombre → IntVar (cantidad)
+        inoc_vars = {}  # (nombre, momento) → IntVar
         nombres_sorted = sorted(
-            {a.get("nombre","") for a in self.model if a.get("nombre","")},
+            {a.get("nombre", "") for a in self.model if a.get("nombre", "")},
             key=lambda v: (0, int(v)) if v.isdigit() else (1, v.lower())
         )
         for name in nombres_sorted:
             if not name:
                 continue
-            g    = self._gramos_cucharin1(name)
-            cant = saved_inoc_full.get(name, 0)
-            var  = tk.IntVar(value=cant if cant else 0)
-            inoc_vars[name] = var
-
+            g = self._gramos_cucharin1(name)
             row = ttk.Frame(inoc_scroll_frame.inner)
             row.pack(fill="x", padx=4, pady=1)
             ttk.Label(row, text=name, width=22, anchor="w").pack(side="left")
-            sb = tk.Spinbox(
-                row, from_=0, to=99, textvariable=var,
-                width=6, justify="center",
-                bg=BG_ENTRY, fg=FG, insertbackground=FG,
-                buttonbackground=BG_ENTRY,
-                increment=1, wrap=False,
-            )
-            sb.pack(side="left", padx=(0, 8))
+            for mom in INOC_MOMENTOS:
+                cant = saved_inoc_map.get((name, mom), 0)
+                var = tk.IntVar(value=cant if cant else 0)
+                inoc_vars[(name, mom)] = var
+                sb = tk.Spinbox(
+                    row, from_=0, to=99, textvariable=var,
+                    width=6, justify="center",
+                    bg=BG_ENTRY, fg=FG, insertbackground=FG,
+                    buttonbackground=BG_ENTRY,
+                    increment=1, wrap=False,
+                )
+                sb.pack(side="left", padx=(0, 4))
             ttk.Label(row, text=f"{g} g" if g else "—",
                       width=10, anchor="center", foreground="#888888").pack(side="left")
 
         def _get_inoc_converters():
-            return [{"nombre": n, "cantidad_dosis": v.get()}
-                    for n, v in inoc_vars.items() if v.get() > 0]
+            return [
+                {"nombre": nombre, "cantidad_dosis": var.get(), "momento": momento}
+                for (nombre, momento), var in inoc_vars.items() if var.get() > 0
+            ]
 
         comp_title = ttk.Label(form, text="Composición (% en peso)", font=("Segoe UI", 10, "bold"))
         comp_title.pack(anchor="w", pady=(8,2))

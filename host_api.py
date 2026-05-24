@@ -845,10 +845,11 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
             procedimiento = []
             for e in inoc:
                 if isinstance(e, str):
-                    nombre, cant = e, 1
+                    nombre, cant, momento = e, 1, "horno"
                 elif isinstance(e, dict):
                     nombre = e.get("nombre", "")
                     cant = int(e.get("cantidad_dosis", 1) or 1)
+                    momento = str(e.get("momento", "horno") or "horno")
                 else:
                     continue
                 g = gramos_map.get(nombre, 0)
@@ -857,6 +858,7 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
                     "cant": cant,
                     "gramos": g,
                     "total": round(g * cant, 2) if g and cant else None,
+                    "momento": momento,
                 })
             result.append({"nombre": a.get("nombre", ""), "procedimiento": procedimiento})
         self._send_json({"ok": True, "inoculaciones": result})

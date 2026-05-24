@@ -1023,6 +1023,12 @@ startApp();
 
 // ── Inoculaciones ────────────────────────────────────────────────────────────
 
+const MOMENTO_LABEL = {
+  horno: "Horno",
+  cuchara_transp: "C. transp.",
+  cuchara_colar: "C. colar",
+};
+
 let inocData = [];
 
 async function loadInoculaciones() {
@@ -1081,6 +1087,7 @@ function showInocDetail(idx) {
       <td>${e.cant}</td>
       <td>${e.gramos ? e.gramos + " g" : "—"}</td>
       <td>${e.total != null ? e.total + " g" : "—"}</td>
+      <td>${MOMENTO_LABEL[e.momento] || "Horno"}</td>
     `;
     body.appendChild(tr);
   });

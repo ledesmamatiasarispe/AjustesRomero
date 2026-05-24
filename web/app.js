@@ -1080,17 +1080,40 @@ function showInocDetail(idx) {
     return;
   }
   empty.hidden = true;
-  proc.forEach(e => {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `
-      <td>${e.nombre}</td>
-      <td>${e.cant}</td>
-      <td>${e.gramos ? e.gramos + " g" : "—"}</td>
-      <td>${e.total != null ? e.total + " g" : "—"}</td>
-      <td>${MOMENTO_LABEL[e.momento] || "Horno"}</td>
-    `;
-    body.appendChild(tr);
-  });
+
+  const MOMENTO_ORDER = ["horno", "cuchara_transp", "cuchara_colar"];
+  const sorted = [...proc].sort((a, b) =>
+    MOMENTO_ORDER.indexOf(a.momento || "horno") - MOMENTO_ORDER.indexOf(b.momento || "horno")
+  );
+
+  let i = 0;
+  while (i < sorted.length) {
+    const mom = sorted[i].momento || "horno";
+    let count = 0;
+    while (i + count < sorted.length && (sorted[i + count].momento || "horno") === mom) count++;
+
+    for (let j = 0; j < count; j++) {
+      const e = sorted[i + j];
+      const tr = document.createElement("tr");
+      if (j === 0) {
+        const td = document.createElement("td");
+        td.rowSpan = count;
+        td.textContent = MOMENTO_LABEL[mom] || mom;
+        td.className = "inoc-etapa-cell";
+        tr.appendChild(td);
+      }
+      const rest = document.createElement("template");
+      rest.innerHTML = `
+        <td>${e.nombre}</td>
+        <td>${e.cant}</td>
+        <td>${e.gramos ? e.gramos + " g" : "—"}</td>
+        <td>${e.total != null ? e.total + " g" : "—"}</td>
+      `;
+      tr.append(...rest.content.childNodes);
+      body.appendChild(tr);
+    }
+    i += count;
+  }
 }
 
 // Cargar al entrar a la pestaña

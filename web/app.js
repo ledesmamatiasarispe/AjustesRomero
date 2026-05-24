@@ -1117,6 +1117,7 @@ function showInocDetail(idx) {
       const eUnit = e.unidad || "cucharín";
       const tr = document.createElement("tr");
       if (j === 0) {
+        tr.classList.add("inoc-etapa-first-row");
         const td = document.createElement("td");
         td.rowSpan = count;
         td.textContent = MOMENTO_LABEL[mom] || mom;

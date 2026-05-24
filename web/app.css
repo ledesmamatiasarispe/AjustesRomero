@@ -937,6 +937,11 @@ tbody tr:nth-child(even) {
   border-left: 3px solid var(--accent);
 }
 
+#inoc-detail-body .inoc-etapa-first-row td,
+#inoc-detail-body .inoc-etapa-first-row th {
+  border-top: 2px solid var(--accent);
+}
+
 .inoc-etapa-cell {
   text-align: center;
   vertical-align: middle;

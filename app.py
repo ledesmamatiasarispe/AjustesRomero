@@ -268,12 +268,14 @@ class App(tk.Frame):
         self._auto_save_hours = 3.0
         self._auto_refresh_seconds = 0.25
         self._debug_mode = False
+        self._host_api_port = HOST_API_PORT
         self._input_color_var = tk.StringVar(value=self._input_color_name)
         self._highlight_color_var = tk.StringVar(value=self._highlight_color_name)
         self._print_group_color_vars = [tk.StringVar(value=name) for name in self._print_group_color_names]
         self._auto_save_hours_var = tk.StringVar(value="3")
         self._auto_refresh_seconds_var = tk.StringVar(value="0.25")
         self._debug_mode_var = tk.BooleanVar(value=False)
+        self._host_api_port_var = tk.StringVar(value=str(HOST_API_PORT))
         self._host_api = None
 
         self.alloys = load_alloys()
@@ -670,6 +672,23 @@ class App(tk.Frame):
             preview.pack(side="left", fill="x", expand=True)
             self._print_group_previews.append(preview)
 
+        api_box = ttk.LabelFrame(box, text="Red local (API)", padding=12)
+        api_box.pack(fill="x", pady=(12, 0))
+        ttk.Label(api_box, text="Puerto de escucha de la API (requiere reiniciar el servidor)").pack(anchor="w")
+        api_row = ttk.Frame(api_box)
+        api_row.pack(fill="x", pady=(6, 8))
+        self._host_api_port_spin = tk.Spinbox(
+            api_row,
+            from_=1024,
+            to=65535,
+            increment=1,
+            textvariable=self._host_api_port_var,
+            width=8,
+        )
+        self._host_api_port_spin.pack(side="left")
+        ttk.Button(api_row, text="Aplicar", command=self._apply_host_api_port_from_ui).pack(side="left", padx=(8, 0))
+        ttk.Label(api_box, text="El puerto por defecto es 8765. Cambiarlo si esta ocupado o si hay conflicto con otro programa.").pack(anchor="w")
+
     def _on_input_color_changed(self):
         try:
             if hasattr(self, "_preview") and self._preview.winfo_exists():
@@ -806,6 +825,7 @@ class App(tk.Frame):
                     "auto_save_hours": self._auto_save_hours,
                     "auto_refresh_seconds": self._auto_refresh_seconds,
                     "debug_mode": self._debug_mode,
+                    "host_api_port": self._host_api_port,
                     "thermal_device_ip": self.tab_analisis_termico.device_ip_var.get().strip(),
                 },
                 "ajuste_state": self.tab_ajuste.get_state()
@@ -849,6 +869,12 @@ class App(tk.Frame):
         self._apply_auto_save_hours(opts.get("auto_save_hours", 3.0), save=False)
         self._apply_auto_refresh_seconds(opts.get("auto_refresh_seconds", 0.25), save=False)
         self._apply_debug_mode(opts.get("debug_mode", False), save=False)
+        saved_port = opts.get("host_api_port", HOST_API_PORT)
+        try:
+            self._host_api_port = max(1024, min(65535, int(saved_port)))
+        except (ValueError, TypeError):
+            self._host_api_port = HOST_API_PORT
+        self._host_api_port_var.set(str(self._host_api_port))
         saved_print_names = list(opts.get("print_group_color_names") or DEFAULT_PRINT_GROUP_COLORS)
         saved_print_custom = list(opts.get("custom_print_group_colors") or [None, None, None])
         while len(saved_print_names) < 3:
@@ -890,11 +916,42 @@ class App(tk.Frame):
 
     def _start_host_api(self):
         try:
-            self._host_api = HostAPIServer(port=HOST_API_PORT).start()
+            self._host_api = HostAPIServer(port=self._host_api_port).start()
+            self._host_api_port = self._host_api.port
             print(f"[HOST API] LAN escuchando en {self._host_api.url()}")
         except Exception as ex:
             self._host_api = None
             print(f"[HOST API] No se pudo iniciar: {ex}")
+
+    def _apply_host_api_port(self, port, save=True):
+        try:
+            value = int(port)
+        except (ValueError, TypeError):
+            value = self._host_api_port
+        if value < 1024 or value > 65535:
+            value = self._host_api_port
+        self._host_api_port = value
+        self._host_api_port_var.set(str(value))
+        if self._host_api is not None:
+            self._host_api.stop()
+            self._host_api = None
+        try:
+            self._host_api = HostAPIServer(port=value).start()
+            self._host_api_port = self._host_api.port
+            self._host_api_port_var.set(str(self._host_api_port))
+            print(f"[HOST API] Reiniciado en puerto {self._host_api_port}")
+        except Exception as ex:
+            self._host_api = None
+            print(f"[HOST API] No se pudo reiniciar: {ex}")
+        try:
+            self.tab_pie_horno.local_url_var.set(self.tab_pie_horno._local_url_text())
+        except Exception:
+            pass
+        if save:
+            self._fire_save()
+
+    def _apply_host_api_port_from_ui(self):
+        self._apply_host_api_port(self._host_api_port_var.get())
 
     def _dev_reload_file_mtime(self):
         if not self._dev_reload_file:

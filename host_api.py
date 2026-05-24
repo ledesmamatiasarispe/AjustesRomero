@@ -836,6 +836,7 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
         alloys = load_alloys()
         gramos_map = {al.get("nombre", ""): al.get("gramos_cucharin1", 0) or 0 for al in alloys}
         unidad_map = {al.get("nombre", ""): str(al.get("unidad_inoculacion", "") or "cucharín") for al in alloys}
+        color_map  = {al.get("nombre", ""): al.get("color_inoculacion") or None for al in alloys}
         momentos_cfg = load_inoc_momentos()
         momento_label_map = {m["key"]: m["label"] for m in momentos_cfg}
         momento_idx_map   = {m["key"]: i for i, m in enumerate(momentos_cfg)}
@@ -867,6 +868,7 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
                     "momento_label": momento_label_map.get(momento, momento),
                     "momento_idx": momento_idx_map.get(momento, 999),
                     "unidad": unidad_map.get(nombre, "cucharín"),
+                    "color": color_map.get(nombre),
                 })
             result.append({"nombre": a.get("nombre", ""), "procedimiento": procedimiento})
         self._send_json({"ok": True, "inoculaciones": result})

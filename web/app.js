@@ -1120,6 +1120,10 @@ function showInocDetail(idx) {
       const e = sorted[i + j];
       const eUnit = e.unidad || "cucharín";
       const tr = document.createElement("tr");
+      if (e.color && /^#[0-9a-fA-F]{6}$/.test(e.color)) {
+        tr.style.backgroundColor = e.color;
+        tr.style.color = contrastColor(e.color);
+      }
       if (j === 0) {
         tr.classList.add("inoc-etapa-first-row");
         const td = document.createElement("td");
@@ -1144,6 +1148,16 @@ function showInocDetail(idx) {
     }
     i += count;
   }
+}
+
+function contrastColor(hex) {
+  const c = hex.replace("#", "");
+  const r = parseInt(c.substring(0, 2), 16) / 255;
+  const g = parseInt(c.substring(2, 4), 16) / 255;
+  const b = parseInt(c.substring(4, 6), 16) / 255;
+  const toLinear = x => x <= 0.04045 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4);
+  const L = 0.2126 * toLinear(r) + 0.7152 * toLinear(g) + 0.0722 * toLinear(b);
+  return L > 0.179 ? "#1a1a1a" : "#ffffff";
 }
 
 document.getElementById("inoc-mode-btn").addEventListener("click", () => {

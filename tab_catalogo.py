@@ -403,6 +403,7 @@ class TabCatalogo(ttk.Frame):
         costo            = tk.StringVar(value=fmt(to_float((item or {}).get("costo", 0)), 6))
         v_gramos_cucharin1 = tk.StringVar(value=fmt(to_float((item or {}).get("gramos_cucharin1", 0)), 6))
         v_unidad_inoc = tk.StringVar(value=str((item or {}).get("unidad_inoculacion", "") or "cucharín"))
+        v_color_inoc = tk.StringVar(value=str((item or {}).get("color_inoculacion", "") or ""))
         v_ajuste = tk.BooleanVar(value=bool((item or {}).get("ajuste", False)))
         calidad_meta = (item or {}).get("calidad_meta", {}) or {}
         q_defaults = calidad_meta.get("defaults", {}) if isinstance(calidad_meta.get("defaults", {}), dict) else {}
@@ -494,6 +495,37 @@ class TabCatalogo(ttk.Frame):
         ttk.Button(dosif_box, text="Editar lista", command=_edit_inoc_units).pack(side="left", padx=(12, 0))
         ttk.Label(dosif_box, text="g/cucharin1", width=12).pack(side="left", padx=(20, 0))
         ttk.Entry(dosif_box, textvariable=v_gramos_cucharin1, width=10).pack(side="left", padx=6)
+
+        color_row = ttk.Frame(dosif_box)
+        color_row.pack(side="left", padx=(20, 0))
+        ttk.Label(color_row, text="Color PDH", width=10).pack(side="left")
+        ent_color = ttk.Entry(color_row, textvariable=v_color_inoc, width=10)
+        ent_color.pack(side="left", padx=4)
+        lbl_color_preview = tk.Label(color_row, text="  ", width=3, relief="solid")
+        lbl_color_preview.pack(side="left")
+
+        def _update_color_preview(*_):
+            c = v_color_inoc.get().strip()
+            try:
+                lbl_color_preview.winfo_rgb(c)
+                lbl_color_preview.config(bg=c)
+            except Exception:
+                lbl_color_preview.config(bg="SystemButtonFace")
+
+        def _pick_color():
+            import tkinter.colorchooser as cc
+            current = v_color_inoc.get().strip() or "#ffffff"
+            try:
+                result = cc.askcolor(color=current, title="Color del inoculante")
+            except Exception:
+                result = (None, None)
+            if result[1]:
+                v_color_inoc.set(result[1])
+                _update_color_preview()
+
+        v_color_inoc.trace_add("write", _update_color_preview)
+        _update_color_preview()
+        ttk.Button(color_row, text="...", width=3, command=_pick_color).pack(side="left")
 
         inoc_meta = (item or {}).get("inoculante_meta", {}) if isinstance((item or {}).get("inoculante_meta", {}), dict) else {}
         material_names = []
@@ -1118,6 +1150,7 @@ class TabCatalogo(ttk.Frame):
                 "ajuste": bool(v_ajuste.get()),
                 "gramos_cucharin1": to_float(v_gramos_cucharin1.get()),
                 "unidad_inoculacion": v_unidad_inoc.get().strip() or "cucharín",
+                "color_inoculacion": v_color_inoc.get().strip() or None,
             }
             for k, v in (item or {}).items():
                 if k not in a:

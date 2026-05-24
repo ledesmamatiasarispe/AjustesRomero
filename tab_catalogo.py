@@ -6,7 +6,7 @@ import json, csv
 # Módulos del proyecto
 from widgets import ScrollFrame
 from config import ELEMENTS
-from storage import save_alloys, load_history
+from storage import save_alloys, load_history, load_inoc_units, save_inoc_units
 from utils import to_float, to_float_or_none, fmt, fmt_opt, _norm, simulate_with_plan
 from config import ELEMENTS, BG_ENTRY, FG, ACCENT
 from ce import ce_from_percent
@@ -438,9 +438,52 @@ class TabCatalogo(ttk.Frame):
 
         dosif_box = ttk.LabelFrame(form, text="Dosificación", padding=6)
         ttk.Label(dosif_box, text="Unidad", width=8).pack(side="left")
-        ttk.Combobox(dosif_box, textvariable=v_unidad_inoc,
-                     values=["cucharín", "porción", "sobre", "g", "kg"],
-                     width=10).pack(side="left", padx=6)
+        _inoc_units = load_inoc_units()
+        cb_unidad = ttk.Combobox(dosif_box, textvariable=v_unidad_inoc,
+                                 values=_inoc_units, width=10)
+        cb_unidad.pack(side="left", padx=6)
+
+        def _edit_inoc_units():
+            d = tk.Toplevel(win)
+            d.title("Unidades de inoculante")
+            d.transient(win)
+            d.grab_set()
+            d.resizable(False, False)
+            frm = ttk.Frame(d, padding=12); frm.pack(fill="both", expand=True)
+            ttk.Label(frm, text="Lista de unidades disponibles:").pack(anchor="w")
+            lb = tk.Listbox(frm, height=8, selectmode="single",
+                            bg=BG_ENTRY, fg=FG, selectbackground=ACCENT)
+            lb.pack(fill="both", expand=True, pady=(4, 0))
+            current_units = list(cb_unidad["values"])
+            for u in current_units:
+                lb.insert(tk.END, u)
+            add_row = ttk.Frame(frm); add_row.pack(fill="x", pady=(6, 0))
+            new_var = tk.StringVar()
+            ttk.Entry(add_row, textvariable=new_var, width=18).pack(side="left")
+            def _add():
+                val = new_var.get().strip()
+                if not val: return
+                if val not in lb.get(0, tk.END):
+                    lb.insert(tk.END, val)
+                new_var.set("")
+            ttk.Button(add_row, text="Agregar", command=_add).pack(side="left", padx=(6, 0))
+            def _delete():
+                sel = lb.curselection()
+                if sel: lb.delete(sel[0])
+            ttk.Button(frm, text="Eliminar seleccionado", command=_delete).pack(anchor="w", pady=(4, 0))
+            def _save_units():
+                units = list(lb.get(0, tk.END))
+                if not units:
+                    messagebox.showwarning("Unidades", "La lista no puede quedar vacía.", parent=d)
+                    return
+                save_inoc_units(units)
+                cb_unidad.configure(values=units)
+                d.destroy()
+            btn_row = ttk.Frame(frm); btn_row.pack(fill="x", pady=(10, 0))
+            ttk.Button(btn_row, text="Guardar", command=_save_units).pack(side="right")
+            ttk.Button(btn_row, text="Cancelar", command=d.destroy).pack(side="right", padx=(0, 6))
+
+        ttk.Button(dosif_box, text="Editar lista", command=_edit_inoc_units).pack(side="left", padx=(12, 0))
         ttk.Label(dosif_box, text="g/cucharin1", width=12).pack(side="left", padx=(20, 0))
         ttk.Entry(dosif_box, textvariable=v_gramos_cucharin1, width=10).pack(side="left", padx=6)
 

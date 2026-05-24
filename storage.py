@@ -958,3 +958,24 @@ def save_devices_state(state):
                     ))
         finally:
             conn.close()
+
+
+_INOC_UNITS_FILE = os.path.join(os.path.expanduser("~"), "ajuste_comp_inoc_units.json")
+_DEFAULT_INOC_UNITS = ["cucharín", "porción", "sobre", "g", "kg"]
+
+def load_inoc_units():
+    if os.path.exists(_INOC_UNITS_FILE):
+        try:
+            with open(_INOC_UNITS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list) and data:
+                return [str(u) for u in data if str(u).strip()]
+        except Exception:
+            pass
+    return list(_DEFAULT_INOC_UNITS)
+
+def save_inoc_units(units):
+    tmp = _INOC_UNITS_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(units, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, _INOC_UNITS_FILE)

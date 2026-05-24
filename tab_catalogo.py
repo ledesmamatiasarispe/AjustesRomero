@@ -893,9 +893,6 @@ class TabCatalogo(ttk.Frame):
                 + (f" + {n} inoculante(s)" if n else "")
                 + f"\nMasa: {bath_kg} kg.", parent=win)
 
-        btn_calc = ttk.Button(btns, text="Calcular desde base + inoculantes",
-                              command=_calc_from_base_inoc)
-
         def auto_limits():
             win = tk.Toplevel(self)
             win.title("Auto-límites")
@@ -1071,25 +1068,18 @@ class TabCatalogo(ttk.Frame):
             is_inoc = (tipo.get().strip() == "Inoculante")
             _toggle_dosif_box()
             if is_final:
+                comp_title.pack_forget()
+                grid.pack_forget()
+                btns.pack_forget()
                 limits_frame.pack_forget()
                 esp_frame.pack_forget()
                 inoc_frame.pack_forget()
                 final_frame.pack(fill="x", pady=(12, 0))
-                if not comp_title.winfo_manager():
-                    comp_title.pack(anchor="w", pady=(8, 2))
-                if not grid.winfo_manager():
-                    grid.pack(fill="x")
-                if not btns.winfo_manager():
-                    btns.pack(fill="x", pady=(8, 0))
-                if not btn_calc.winfo_manager():
-                    btn_calc.pack(side="left", padx=(12, 0))
-                v_ajuste.set(False)
             elif is_inoc:
                 final_frame.pack_forget()
                 comp_title.pack_forget()
                 grid.pack_forget()
                 btns.pack_forget()
-                btn_calc.pack_forget()
                 limits_frame.pack_forget()
                 esp_frame.pack_forget()
                 inoc_frame.pack(fill="both", expand=True, pady=(12, 0))
@@ -1097,7 +1087,6 @@ class TabCatalogo(ttk.Frame):
             else:
                 final_frame.pack_forget()
                 inoc_frame.pack_forget()
-                btn_calc.pack_forget()
                 if not comp_title.winfo_manager():
                     comp_title.pack(anchor="w", pady=(8,2))
                 if not grid.winfo_manager():

@@ -2057,7 +2057,57 @@ class TabAjuste(ttk.Frame):
         name = self.cb_obj.get()
         return self._alloy_by_name(name, prefer_type="Aleación propia") if name else None
 
+    def _synthesize_final_alloy(self, final_alloy, base_alloy, synthetic_name):
+        try:
+            bath_kg = self._bath_mass()
+        except Exception:
+            bath_kg = 1000.0
+        base_comp = base_alloy.get("composicion", {})
+        inoc_list = (final_alloy.get("inoculacion_meta") or {}).get("inoculacion", [])
+        if not isinstance(inoc_list, list):
+            inoc_list = []
+        inoc_grams = {}
+        for e in inoc_list:
+            if isinstance(e, str):
+                iname, dosis = e, 1
+            elif isinstance(e, dict):
+                iname = str(e.get("nombre", ""))
+                dosis = int(e.get("cantidad_dosis", 1) or 1)
+            else:
+                continue
+            if not iname or dosis <= 0:
+                continue
+            ia = self._alloy_by_name(iname)
+            if ia:
+                g = to_float(ia.get("gramos_cucharin1", 0) or 0)
+                if g:
+                    inoc_grams[iname] = inoc_grams.get(iname, 0.0) + dosis * g
+        total_inoc_kg = sum(v / 1000 for v in inoc_grams.values())
+        base_kg = max(0.0, bath_kg - total_inoc_kg)
+        comp = {}
+        for el in ELEMENTS:
+            contrib = base_kg * to_float(base_comp.get(el, 0)) / 100
+            for iname, grams in inoc_grams.items():
+                ia = self._alloy_by_name(iname)
+                if ia:
+                    contrib += (grams / 1000) * to_float(ia.get("composicion", {}).get(el, 0)) / 100
+            comp[el] = contrib / bath_kg * 100 if bath_kg else 0.0
+        return {
+            "nombre": synthetic_name,
+            "tipo": "Aleación final",
+            "rendimiento": to_float(final_alloy.get("rendimiento", 100.0)),
+            "composicion": comp,
+            "ajuste": True,
+        }
+
     def _adjuster_alloy(self, name):
+        if " / " in name:
+            parts = name.split(" / ", 1)
+            final_alloy = self._alloy_by_name(parts[0].strip())
+            base_alloy  = self._alloy_by_name(parts[1].strip())
+            if (final_alloy and final_alloy.get("tipo") == "Aleación final"
+                    and base_alloy):
+                return self._synthesize_final_alloy(final_alloy, base_alloy, name)
         items = self._alloys_named(name)
         for alloy in items:
             if bool(alloy.get("ajuste", False)) and alloy.get("tipo", "") != "Aleación final":
@@ -2461,6 +2511,14 @@ class TabAjuste(ttk.Frame):
                 },
                 key=lambda val: (0, int(val)) if str(val).isdigit() else (1, str(val).lower()),
             )
+            for a in self.alloys:
+                if a.get("tipo") == "Aleación final" and a.get("ajuste", False):
+                    fn = a.get("nombre", "")
+                    bases = (a.get("calidad_meta") or {}).get("bases") or []
+                    for b in bases:
+                        b = str(b).strip()
+                        if b and fn:
+                            valid_adjusters.append(f"{fn} / {b}")
             name = self._select_alloy_name(
                 title="Agregar material de ajuste (desde catálogo)",
                 names=valid_adjusters,

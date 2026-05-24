@@ -755,42 +755,56 @@ class TabCatalogo(ttk.Frame):
             if u not in units_present:
                 units_present.append(u)
 
-        hdr = ttk.Frame(inoc_scroll_frame.inner)
-        hdr.pack(fill="x", padx=4, pady=(0, 2))
-        ttk.Label(hdr, text="Material", width=22, font=("Segoe UI", 9, "bold")).pack(side="left")
-        for mom in momentos_keys:
-            ttk.Label(hdr, text=momentos_labels.get(mom, mom), width=10,
-                      font=("Segoe UI", 9, "bold"), anchor="center").pack(side="left")
-        for u in units_present:
-            ttk.Label(hdr, text=f"g/{u}", width=10,
-                      font=("Segoe UI", 9, "bold"), anchor="center").pack(side="left")
+        inner = inoc_scroll_frame.inner
+        bold = ("Segoe UI", 9, "bold")
+        n_mom = len(momentos_keys)
+        n_unit = len(units_present)
+        total_cols = 1 + n_mom + n_unit
 
-        ttk.Separator(inoc_scroll_frame.inner, orient="horizontal").pack(fill="x", pady=(0, 4))
+        inner.columnconfigure(0, minsize=180, weight=0)
+        for ci in range(1, 1 + n_mom):
+            inner.columnconfigure(ci, minsize=72, weight=0)
+        for ci in range(1 + n_mom, total_cols):
+            inner.columnconfigure(ci, minsize=80, weight=0)
 
-        for name in nombres_sorted:
+        # Fila 0 — cabecera
+        ttk.Label(inner, text="Material", font=bold, anchor="w").grid(
+            row=0, column=0, sticky="w", padx=(4, 8), pady=(0, 2))
+        for ci, mom in enumerate(momentos_keys, 1):
+            ttk.Label(inner, text=momentos_labels.get(mom, mom), font=bold, anchor="center").grid(
+                row=0, column=ci, sticky="ew", padx=4, pady=(0, 2))
+        for ci, u in enumerate(units_present, 1 + n_mom):
+            ttk.Label(inner, text=f"g/{u}", font=bold, anchor="center").grid(
+                row=0, column=ci, sticky="ew", padx=4, pady=(0, 2))
+
+        # Fila 1 — separador
+        ttk.Separator(inner, orient="horizontal").grid(
+            row=1, column=0, columnspan=total_cols, sticky="ew", pady=(0, 4))
+
+        # Filas de datos
+        for ri, name in enumerate(nombres_sorted, 2):
             if not name:
                 continue
             g = self._gramos_cucharin1(name)
             mat_unit = unit_of.get(name, "cucharín")
-            row = ttk.Frame(inoc_scroll_frame.inner)
-            row.pack(fill="x", padx=4, pady=1)
-            ttk.Label(row, text=name, width=22, anchor="w").pack(side="left")
-            for mom in momentos_keys:
+            ttk.Label(inner, text=name, anchor="w").grid(
+                row=ri, column=0, sticky="w", padx=(4, 8), pady=1)
+            for ci, mom in enumerate(momentos_keys, 1):
                 cant = saved_inoc_map.get((name, mom), 0)
                 var = tk.IntVar(value=cant if cant else 0)
                 inoc_vars[(name, mom)] = var
                 sb = tk.Spinbox(
-                    row, from_=0, to=99, textvariable=var,
-                    width=6, justify="center",
+                    inner, from_=0, to=99, textvariable=var,
+                    width=5, justify="center",
                     bg=BG_ENTRY, fg=FG, insertbackground=FG,
                     buttonbackground=BG_ENTRY,
                     increment=1, wrap=False,
                 )
-                sb.pack(side="left", padx=(0, 4))
-            for u in units_present:
+                sb.grid(row=ri, column=ci, padx=4, pady=1)
+            for ci, u in enumerate(units_present, 1 + n_mom):
                 text = (f"{g} g" if g else "—") if mat_unit == u else "—"
-                ttk.Label(row, text=text, width=10,
-                          anchor="center", foreground="#888888").pack(side="left")
+                ttk.Label(inner, text=text, anchor="center", foreground="#888888").grid(
+                    row=ri, column=ci, sticky="ew", padx=4, pady=1)
 
         def _get_inoc_converters():
             return [

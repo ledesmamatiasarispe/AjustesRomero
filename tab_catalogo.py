@@ -435,12 +435,6 @@ class TabCatalogo(ttk.Frame):
         ttk.Entry(row2, textvariable=rend, width=12).pack(side="left", padx=6)
         ttk.Label(row2, text="Costo (opcional)", width=16).pack(side="left", padx=(20, 0))
         ttk.Entry(row2, textvariable=costo, width=12).pack(side="left", padx=6)
-        ttk.Label(row2, text="g/cucharin1", width=12).pack(side="left", padx=(20, 0))
-        ttk.Entry(row2, textvariable=v_gramos_cucharin1, width=10).pack(side="left", padx=6)
-        ttk.Label(row2, text="Unidad", width=8).pack(side="left", padx=(12, 0))
-        ttk.Combobox(row2, textvariable=v_unidad_inoc,
-                     values=["cucharín", "porción", "sobre", "g", "kg"],
-                     width=10).pack(side="left", padx=6)
 
         inoc_meta = (item or {}).get("inoculante_meta", {}) if isinstance((item or {}).get("inoculante_meta", {}), dict) else {}
         material_names = []
@@ -466,6 +460,15 @@ class TabCatalogo(ttk.Frame):
         cb_inoc_base = ttk.Combobox(rowi0, textvariable=inoc_base, values=material_names, state="readonly", width=38)
         cb_inoc_base.pack(side="left", padx=6)
         ttk.Label(rowi0, text="Copia solo la composición del material base.").pack(side="left", padx=(12, 0))
+
+        dosif_box = ttk.LabelFrame(inoc_frame, text="Dosificación", padding=6)
+        dosif_box.pack(fill="x", pady=(8, 0))
+        ttk.Label(dosif_box, text="Unidad", width=8).pack(side="left")
+        ttk.Combobox(dosif_box, textvariable=v_unidad_inoc,
+                     values=["cucharín", "porción", "sobre", "g", "kg"],
+                     width=10).pack(side="left", padx=6)
+        ttk.Label(dosif_box, text="g/cucharin1", width=12).pack(side="left", padx=(20, 0))
+        ttk.Entry(dosif_box, textvariable=v_gramos_cucharin1, width=10).pack(side="left", padx=6)
 
         medidas_box = ttk.LabelFrame(inoc_frame, text="Medidas", padding=6)
         medidas_box.pack(fill="both", expand=True, pady=(8, 0))

@@ -620,26 +620,42 @@ class TabCatalogo(ttk.Frame):
         inoc_scroll_frame = ScrollFrame(inoc_panel)
         inoc_scroll_frame.pack(fill="both", expand=True)
 
-        hdr = ttk.Frame(inoc_scroll_frame.inner)
-        hdr.pack(fill="x", padx=4, pady=(0, 2))
-        ttk.Label(hdr, text="Material",    width=22, font=("Segoe UI", 9, "bold")).pack(side="left")
-        for mom in INOC_MOMENTOS:
-            ttk.Label(hdr, text=INOC_MOMENTO_LABELS[mom], width=10,
-                      font=("Segoe UI", 9, "bold"), anchor="center").pack(side="left")
-        ttk.Label(hdr, text="g/cucharin1", width=10, font=("Segoe UI", 9, "bold"), anchor="center").pack(side="left")
-
-        ttk.Separator(inoc_scroll_frame.inner, orient="horizontal").pack(fill="x", pady=(0, 4))
-
         inoc_vars = {}  # (nombre, momento) → IntVar
         nombres_sorted = sorted(
             {a.get("nombre", "") for a in self.model
              if a.get("nombre", "") and a.get("inoculante", False)},
             key=lambda v: (0, int(v)) if v.isdigit() else (1, v.lower())
         )
+
+        # unidad por material y columnas presentes (en orden de aparicion)
+        unit_of = {
+            str(a.get("nombre", "")).strip(): str(a.get("unidad_inoculacion", "") or "cucharín")
+            for a in self.model
+            if str(a.get("nombre", "")).strip() in set(nombres_sorted)
+        }
+        units_present = []
+        for n in nombres_sorted:
+            u = unit_of.get(n, "cucharín")
+            if u not in units_present:
+                units_present.append(u)
+
+        hdr = ttk.Frame(inoc_scroll_frame.inner)
+        hdr.pack(fill="x", padx=4, pady=(0, 2))
+        ttk.Label(hdr, text="Material", width=22, font=("Segoe UI", 9, "bold")).pack(side="left")
+        for mom in INOC_MOMENTOS:
+            ttk.Label(hdr, text=INOC_MOMENTO_LABELS[mom], width=10,
+                      font=("Segoe UI", 9, "bold"), anchor="center").pack(side="left")
+        for u in units_present:
+            ttk.Label(hdr, text=f"g/{u}", width=10,
+                      font=("Segoe UI", 9, "bold"), anchor="center").pack(side="left")
+
+        ttk.Separator(inoc_scroll_frame.inner, orient="horizontal").pack(fill="x", pady=(0, 4))
+
         for name in nombres_sorted:
             if not name:
                 continue
             g = self._gramos_cucharin1(name)
+            mat_unit = unit_of.get(name, "cucharín")
             row = ttk.Frame(inoc_scroll_frame.inner)
             row.pack(fill="x", padx=4, pady=1)
             ttk.Label(row, text=name, width=22, anchor="w").pack(side="left")
@@ -655,8 +671,10 @@ class TabCatalogo(ttk.Frame):
                     increment=1, wrap=False,
                 )
                 sb.pack(side="left", padx=(0, 4))
-            ttk.Label(row, text=f"{g} g" if g else "—",
-                      width=10, anchor="center", foreground="#888888").pack(side="left")
+            for u in units_present:
+                text = (f"{g} g" if g else "—") if mat_unit == u else "—"
+                ttk.Label(row, text=text, width=10,
+                          anchor="center", foreground="#888888").pack(side="left")
 
         def _get_inoc_converters():
             return [

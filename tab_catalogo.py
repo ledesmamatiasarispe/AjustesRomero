@@ -632,7 +632,8 @@ class TabCatalogo(ttk.Frame):
 
         inoc_vars = {}  # (nombre, momento) → IntVar
         nombres_sorted = sorted(
-            {a.get("nombre", "") for a in self.model if a.get("nombre", "")},
+            {a.get("nombre", "") for a in self.model
+             if a.get("nombre", "") and a.get("inoculante", False)},
             key=lambda v: (0, int(v)) if v.isdigit() else (1, v.lower())
         )
         for name in nombres_sorted:

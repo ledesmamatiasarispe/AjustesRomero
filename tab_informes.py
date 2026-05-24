@@ -73,6 +73,7 @@ class TabInformes(ttk.Frame):
         self._add_sidebar_toggle("durations", "Duracion de sesiones")
         self._add_sidebar_toggle("cucharas", "Cucharas")
         self._add_sidebar_toggle("quality_reports", "Informes de calidad")
+        self._add_sidebar_toggle("inoculantes", "Uso de inoculantes")
 
         box = ttk.LabelFrame(self.content, text="Resumen general", padding=8)
         self.lbl_summary = ttk.Label(box, text="", justify="left")
@@ -282,6 +283,53 @@ class TabInformes(ttk.Frame):
         )
         self.section_frames["quality_reports"] = box
 
+        box = ttk.LabelFrame(self.content, text="Uso de inoculantes", padding=8)
+
+        cfg_box = ttk.LabelFrame(box, text="Configuracion actual", padding=6)
+        cfg_box.pack(fill="both", expand=True, pady=(0, 8))
+        self.tree_inoc_config = self._make_tree(
+            cfg_box,
+            columns=(
+                ("inoc", "Inoculante", 180, "w"),
+                ("unidad", "Unidad", 90, "w"),
+                ("gramos", "g/unidad", 90, "e"),
+                ("materiales", "Materiales que lo usan", 260, "w"),
+                ("etapas", "Etapas", 200, "w"),
+            ),
+            height=6,
+        )
+
+        recent_box = ttk.LabelFrame(box, text="Colada mas reciente", padding=6)
+        recent_box.pack(fill="both", expand=True, pady=(0, 8))
+        self.lbl_inoc_recent_colada = ttk.Label(recent_box, text="")
+        self.lbl_inoc_recent_colada.pack(anchor="w", pady=(0, 4))
+        self.tree_inoc_recent = self._make_tree(
+            recent_box,
+            columns=(
+                ("inoc", "Inoculante", 180, "w"),
+                ("dosis", "Total dosis", 100, "e"),
+                ("gramos_u", "g/unidad", 90, "e"),
+                ("total_g", "Total g estimado", 130, "e"),
+            ),
+            height=6,
+        )
+
+        hist_box = ttk.LabelFrame(box, text="Consumo historico acumulado", padding=6)
+        hist_box.pack(fill="both", expand=True)
+        self.tree_inoc_hist = self._make_tree(
+            hist_box,
+            columns=(
+                ("inoc", "Inoculante", 180, "w"),
+                ("coladas", "Coladas", 80, "e"),
+                ("dosis", "Total dosis", 110, "e"),
+                ("total_g", "Total g estimado", 140, "e"),
+                ("prom_g", "Prom g/colada", 130, "e"),
+            ),
+            height=8,
+        )
+
+        self.section_frames["inoculantes"] = box
+
         self._render_sections()
 
     def _make_tree(self, parent, columns, height=8):
@@ -305,6 +353,7 @@ class TabInformes(ttk.Frame):
             "durations",
             "cucharas",
             "quality_reports",
+            "inoculantes",
         ]
         for frame in self.section_frames.values():
             frame.pack_forget()
@@ -328,6 +377,7 @@ class TabInformes(ttk.Frame):
         self._fill_durations()
         self._fill_cucharas()
         self._fill_quality_reports()
+        self._fill_inoculantes()
 
     def _fill_summary(self):
         total_sessions = len(self.hist)
@@ -1105,3 +1155,110 @@ class TabInformes(ttk.Frame):
                     ", ".join(sorted(data["materials"])[:8]),
                 ),
             )
+
+    def _fill_inoculantes(self):
+        # Mapa nombre_inoc -> {unidad, gramos}
+        inoc_info = {}
+        for a in self.alloys:
+            if a.get("inoculante") or a.get("subtipo") == "Inoculante" or a.get("tipo") == "Inoculante":
+                nombre = str(a.get("nombre", "") or "").strip()
+                if nombre:
+                    inoc_info[nombre] = {
+                        "unidad": a.get("unidad_inoculacion") or "cucharín",
+                        "gramos": to_float(a.get("gramos_cucharin1", 0)),
+                    }
+
+        # Mapa nombre_final -> [{nombre, cantidad_dosis, momento}]
+        final_inoc_map = {}
+        for a in self.alloys:
+            if a.get("tipo") != "Aleación final":
+                continue
+            nombre_final = str(a.get("nombre", "") or "").strip()
+            inoc_list = (a.get("inoculacion_meta") or {}).get("inoculacion", [])
+            entries = []
+            for e in inoc_list:
+                if isinstance(e, str):
+                    entries.append({"nombre": e, "cantidad_dosis": 1, "momento": "horno"})
+                elif isinstance(e, dict):
+                    entries.append({
+                        "nombre": str(e.get("nombre", "") or ""),
+                        "cantidad_dosis": max(1, int(e.get("cantidad_dosis", 1) or 1)),
+                        "momento": str(e.get("momento", "horno") or "horno"),
+                    })
+            if entries and nombre_final:
+                final_inoc_map[nombre_final] = entries
+
+        # Sub-caja 1: configuración
+        self._clear_tree(self.tree_inoc_config)
+        config_data = {}
+        for mat, entries in final_inoc_map.items():
+            for e in entries:
+                inoc = e["nombre"]
+                if inoc not in config_data:
+                    config_data[inoc] = {"materiales": set(), "etapas": set()}
+                config_data[inoc]["materiales"].add(mat)
+                config_data[inoc]["etapas"].add(e["momento"])
+        for inoc, data in sorted(config_data.items()):
+            info = inoc_info.get(inoc, {})
+            g = info.get("gramos", 0)
+            self.tree_inoc_config.insert("", "end", values=(
+                inoc,
+                info.get("unidad", "—"),
+                fmt(g, 4) if g else "—",
+                ", ".join(sorted(data["materiales"])),
+                ", ".join(sorted(data["etapas"])),
+            ))
+
+        # Sub-caja 2: colada más reciente
+        self._clear_tree(self.tree_inoc_recent)
+        records = self._ladle_records()
+        if records:
+            recent = max(records, key=lambda r: r.get("updated_at", "") or "")
+            self.lbl_inoc_recent_colada.config(text=f"Colada: {recent['colada']}")
+            acc = {}
+            for mat, qty in recent.get("counts", {}).items():
+                qty = max(0, int(qty or 0))
+                for e in final_inoc_map.get(mat, []):
+                    inoc = e["nombre"]
+                    dosis = qty * e["cantidad_dosis"]
+                    g = inoc_info.get(inoc, {}).get("gramos", 0)
+                    if inoc not in acc:
+                        acc[inoc] = {"dosis": 0, "total_g": 0.0}
+                    acc[inoc]["dosis"] += dosis
+                    acc[inoc]["total_g"] += dosis * g
+            for inoc, data in sorted(acc.items()):
+                g = inoc_info.get(inoc, {}).get("gramos", 0)
+                self.tree_inoc_recent.insert("", "end", values=(
+                    inoc,
+                    data["dosis"],
+                    fmt(g, 4) if g else "—",
+                    fmt(data["total_g"], 2),
+                ))
+        else:
+            self.lbl_inoc_recent_colada.config(text="Sin datos de cucharas")
+
+        # Sub-caja 3: histórico acumulado
+        self._clear_tree(self.tree_inoc_hist)
+        hist_acc = {}
+        for record in records:
+            for mat, qty in record.get("counts", {}).items():
+                qty = max(0, int(qty or 0))
+                for e in final_inoc_map.get(mat, []):
+                    inoc = e["nombre"]
+                    dosis = qty * e["cantidad_dosis"]
+                    g = inoc_info.get(inoc, {}).get("gramos", 0)
+                    if inoc not in hist_acc:
+                        hist_acc[inoc] = {"dosis": 0, "total_g": 0.0, "coladas": set()}
+                    hist_acc[inoc]["dosis"] += dosis
+                    hist_acc[inoc]["total_g"] += dosis * g
+                    hist_acc[inoc]["coladas"].add(record["colada"])
+        for inoc, data in sorted(hist_acc.items(), key=lambda x: x[1]["total_g"], reverse=True):
+            n_coladas = len(data["coladas"])
+            prom = data["total_g"] / n_coladas if n_coladas else 0.0
+            self.tree_inoc_hist.insert("", "end", values=(
+                inoc,
+                n_coladas,
+                data["dosis"],
+                fmt(data["total_g"], 2),
+                fmt(prom, 2),
+            ))

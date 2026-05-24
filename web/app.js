@@ -1102,12 +1102,15 @@ function showInocDetail(idx) {
         td.className = "inoc-etapa-cell";
         tr.appendChild(td);
       }
+      const esCucharin = !e.unidad || e.unidad === "cucharín";
       const rest = document.createElement("template");
       rest.innerHTML = `
         <td>${e.nombre}</td>
-        <td class="inoc-col-compact">${e.cant}</td>
+        <td class="inoc-col-compact inoc-col-cucharin">${esCucharin ? e.cant : "—"}</td>
+        <td class="inoc-col-compact inoc-col-porcion">${esCucharin ? "—" : e.cant}</td>
         <td class="inoc-col-detail">${e.cant}</td>
-        <td class="inoc-col-detail">${e.gramos ? e.gramos + " g" : "—"}</td>
+        <td class="inoc-col-detail inoc-col-cucharin">${esCucharin && e.gramos ? e.gramos + " g" : "—"}</td>
+        <td class="inoc-col-detail inoc-col-porcion">${!esCucharin && e.gramos ? e.gramos + " g" : "—"}</td>
         <td>${e.total != null ? e.total + " g" : "—"}</td>
       `;
       tr.append(...rest.content.childNodes);

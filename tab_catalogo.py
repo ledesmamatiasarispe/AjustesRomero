@@ -401,6 +401,7 @@ class TabCatalogo(ttk.Frame):
         rend             = tk.StringVar(value=fmt(to_float((item or {}).get("rendimiento", 90)), 6))
         costo            = tk.StringVar(value=fmt(to_float((item or {}).get("costo", 0)), 6))
         v_gramos_cucharin1 = tk.StringVar(value=fmt(to_float((item or {}).get("gramos_cucharin1", 0)), 6))
+        v_unidad_inoc = tk.StringVar(value=str((item or {}).get("unidad_inoculacion", "") or "cucharín"))
         v_ajuste = tk.BooleanVar(value=bool((item or {}).get("ajuste", False)))
         calidad_meta = (item or {}).get("calidad_meta", {}) or {}
         q_defaults = calidad_meta.get("defaults", {}) if isinstance(calidad_meta.get("defaults", {}), dict) else {}
@@ -436,6 +437,10 @@ class TabCatalogo(ttk.Frame):
         ttk.Entry(row2, textvariable=costo, width=12).pack(side="left", padx=6)
         ttk.Label(row2, text="g/cucharin1", width=12).pack(side="left", padx=(20, 0))
         ttk.Entry(row2, textvariable=v_gramos_cucharin1, width=10).pack(side="left", padx=6)
+        ttk.Label(row2, text="Unidad", width=8).pack(side="left", padx=(12, 0))
+        ttk.Combobox(row2, textvariable=v_unidad_inoc,
+                     values=["cucharín", "porción", "sobre", "g", "kg"],
+                     width=10).pack(side="left", padx=6)
 
         inoc_meta = (item or {}).get("inoculante_meta", {}) if isinstance((item or {}).get("inoculante_meta", {}), dict) else {}
         material_names = []
@@ -893,6 +898,7 @@ class TabCatalogo(ttk.Frame):
                 "especiales": {},
                 "ajuste": bool(v_ajuste.get()),
                 "gramos_cucharin1": to_float(v_gramos_cucharin1.get()),
+                "unidad_inoculacion": v_unidad_inoc.get().strip() or "cucharín",
             }
             for k, v in (item or {}).items():
                 if k not in a:

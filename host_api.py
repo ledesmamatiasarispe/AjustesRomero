@@ -834,6 +834,7 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
             return
         alloys = load_alloys()
         gramos_map = {al.get("nombre", ""): al.get("gramos_cucharin1", 0) or 0 for al in alloys}
+        unidad_map = {al.get("nombre", ""): str(al.get("unidad_inoculacion", "") or "cucharín") for al in alloys}
         result = []
         for a in alloys:
             meta = a.get("inoculacion_meta", {})
@@ -859,6 +860,7 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
                     "gramos": g,
                     "total": round(g * cant, 2) if g and cant else None,
                     "momento": momento,
+                    "unidad": unidad_map.get(nombre, "cucharín"),
                 })
             result.append({"nombre": a.get("nombre", ""), "procedimiento": procedimiento})
         self._send_json({"ok": True, "inoculaciones": result})

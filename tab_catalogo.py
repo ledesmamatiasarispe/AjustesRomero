@@ -194,11 +194,14 @@ class TabCatalogo(ttk.Frame):
         for i in self.tree.get_children(): self.tree.delete(i)
         for idx in self.filtered_idx:
             a = self.model[idx]
-            display_tipo = a.get("tipo","")
-            if a.get("tipo", "") == "Inoculante":
-                display_tipo = "Inoculante"
-            elif bool(a.get("inoculante", False)) or a.get("subtipo", "") == "Inoculante":
-                display_tipo = "Ferroaleación / Inoculante"
+            display_tipo = a.get("tipo","") or "Ferroaleación"
+            tags = []
+            if bool(a.get("inoculante", False)) or a.get("subtipo", "") == "Inoculante" or a.get("tipo", "") == "Inoculante":
+                tags.append("inoculante")
+            if bool(a.get("ajuste", False)):
+                tags.append("m.ajuste")
+            if tags:
+                display_tipo = display_tipo + "  [" + ", ".join(tags) + "]"
             row = [
                 a.get("nombre",""),
                 display_tipo,

@@ -1086,6 +1086,12 @@ function showInocDetail(idx) {
     MOMENTO_ORDER.indexOf(a.momento || "horno") - MOMENTO_ORDER.indexOf(b.momento || "horno")
   );
 
+  const table = document.getElementById("inoc-detail-table");
+  const hasCucharin = sorted.some(e => !e.unidad || e.unidad === "cucharín");
+  const hasPorcion  = sorted.some(e => e.unidad && e.unidad !== "cucharín");
+  table.classList.toggle("has-cucharin", hasCucharin);
+  table.classList.toggle("has-porcion",  hasPorcion);
+
   let i = 0;
   while (i < sorted.length) {
     const mom = sorted[i].momento || "horno";

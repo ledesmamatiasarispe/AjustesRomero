@@ -1063,7 +1063,6 @@ function showInocDetail(idx) {
   const item = inocData[idx];
   if (!item) return;
 
-  // Marcar activo
   document.querySelectorAll(".inoc-item").forEach((el, i) =>
     el.classList.toggle("is-active", i === idx)
   );
@@ -1072,11 +1071,13 @@ function showInocDetail(idx) {
 
   const body  = document.getElementById("inoc-detail-body");
   const empty = document.getElementById("inoc-detail-empty");
+  const theadRow = document.querySelector("#inoc-detail-table thead tr");
   body.innerHTML = "";
 
   const proc = item.procedimiento || [];
   if (!proc.length) {
     empty.hidden = false;
+    theadRow.innerHTML = "<th>Etapa</th><th>Inoculante</th><th>Total g</th>";
     return;
   }
   empty.hidden = true;
@@ -1086,12 +1087,25 @@ function showInocDetail(idx) {
     MOMENTO_ORDER.indexOf(a.momento || "horno") - MOMENTO_ORDER.indexOf(b.momento || "horno")
   );
 
-  const table = document.getElementById("inoc-detail-table");
-  const hasCucharin = sorted.some(e => !e.unidad || e.unidad === "cucharín");
-  const hasPorcion  = sorted.some(e => e.unidad && e.unidad !== "cucharín");
-  table.classList.toggle("has-cucharin", hasCucharin);
-  table.classList.toggle("has-porcion",  hasPorcion);
+  // Unidades presentes en orden de aparición
+  const unitsPresent = [];
+  for (const e of sorted) {
+    const u = e.unidad || "cucharín";
+    if (!unitsPresent.includes(u)) unitsPresent.push(u);
+  }
 
+  // Reconstruir thead
+  let theadHtml = "<th>Etapa</th><th>Inoculante</th>";
+  for (const u of unitsPresent)
+    theadHtml += `<th class="inoc-col-compact">${u}</th>`;
+  for (const u of unitsPresent) {
+    theadHtml += `<th class="inoc-col-detail inoc-group-start">cant.</th>`;
+    theadHtml += `<th class="inoc-col-detail">g/${u}</th>`;
+  }
+  theadHtml += "<th>Total g</th>";
+  theadRow.innerHTML = theadHtml;
+
+  // Reconstruir tbody
   let i = 0;
   while (i < sorted.length) {
     const mom = sorted[i].momento || "horno";
@@ -1100,6 +1114,7 @@ function showInocDetail(idx) {
 
     for (let j = 0; j < count; j++) {
       const e = sorted[i + j];
+      const eUnit = e.unidad || "cucharín";
       const tr = document.createElement("tr");
       if (j === 0) {
         const td = document.createElement("td");
@@ -1108,17 +1123,17 @@ function showInocDetail(idx) {
         td.className = "inoc-etapa-cell";
         tr.appendChild(td);
       }
-      const esCucharin = !e.unidad || e.unidad === "cucharín";
+      let rowHtml = `<td>${e.nombre}</td>`;
+      for (const u of unitsPresent)
+        rowHtml += `<td class="inoc-col-compact">${eUnit === u ? e.cant : "—"}</td>`;
+      for (const u of unitsPresent) {
+        const match = eUnit === u;
+        rowHtml += `<td class="inoc-col-detail inoc-group-start">${match ? e.cant : "—"}</td>`;
+        rowHtml += `<td class="inoc-col-detail">${match && e.gramos ? e.gramos + " g" : "—"}</td>`;
+      }
+      rowHtml += `<td>${e.total != null ? e.total + " g" : "—"}</td>`;
       const rest = document.createElement("template");
-      rest.innerHTML = `
-        <td>${e.nombre}</td>
-        <td class="inoc-col-compact inoc-col-cucharin">${esCucharin ? e.cant : "—"}</td>
-        <td class="inoc-col-compact inoc-col-porcion">${esCucharin ? "—" : e.cant}</td>
-        <td class="inoc-col-detail">${e.cant}</td>
-        <td class="inoc-col-detail inoc-col-cucharin">${esCucharin && e.gramos ? e.gramos + " g" : "—"}</td>
-        <td class="inoc-col-detail inoc-col-porcion">${!esCucharin && e.gramos ? e.gramos + " g" : "—"}</td>
-        <td>${e.total != null ? e.total + " g" : "—"}</td>
-      `;
+      rest.innerHTML = rowHtml;
       tr.append(...rest.content.childNodes);
       body.appendChild(tr);
     }

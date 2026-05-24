@@ -15,6 +15,7 @@ from storage import (
     load_devices_state,
     load_furnace_state,
     load_ladles_state,
+    load_inoc_momentos,
     save_furnace_state,
     save_devices_state,
     save_ladles_state,
@@ -835,6 +836,9 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
         alloys = load_alloys()
         gramos_map = {al.get("nombre", ""): al.get("gramos_cucharin1", 0) or 0 for al in alloys}
         unidad_map = {al.get("nombre", ""): str(al.get("unidad_inoculacion", "") or "cucharín") for al in alloys}
+        momentos_cfg = load_inoc_momentos()
+        momento_label_map = {m["key"]: m["label"] for m in momentos_cfg}
+        momento_idx_map   = {m["key"]: i for i, m in enumerate(momentos_cfg)}
         result = []
         for a in alloys:
             meta = a.get("inoculacion_meta", {})
@@ -860,6 +864,8 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
                     "gramos": g,
                     "total": round(g * cant, 2) if g and cant else None,
                     "momento": momento,
+                    "momento_label": momento_label_map.get(momento, momento),
+                    "momento_idx": momento_idx_map.get(momento, 999),
                     "unidad": unidad_map.get(nombre, "cucharín"),
                 })
             result.append({"nombre": a.get("nombre", ""), "procedimiento": procedimiento})

@@ -1082,10 +1082,14 @@ function showInocDetail(idx) {
   }
   empty.hidden = true;
 
-  const MOMENTO_ORDER = ["horno", "cuchara_transp", "cuchara_colar"];
   const sorted = [...proc].sort((a, b) =>
-    MOMENTO_ORDER.indexOf(a.momento || "horno") - MOMENTO_ORDER.indexOf(b.momento || "horno")
+    (a.momento_idx ?? 999) - (b.momento_idx ?? 999)
   );
+
+  // Mapa de labels de etapa desde los datos
+  const momentoLabelMap = {};
+  for (const e of sorted)
+    momentoLabelMap[e.momento || "horno"] = e.momento_label || MOMENTO_LABEL[e.momento] || e.momento || "horno";
 
   // Unidades presentes en orden de aparición
   const unitsPresent = [];
@@ -1120,7 +1124,7 @@ function showInocDetail(idx) {
         tr.classList.add("inoc-etapa-first-row");
         const td = document.createElement("td");
         td.rowSpan = count;
-        td.textContent = MOMENTO_LABEL[mom] || mom;
+        td.textContent = momentoLabelMap[mom] || mom;
         td.className = "inoc-etapa-cell";
         tr.appendChild(td);
       }

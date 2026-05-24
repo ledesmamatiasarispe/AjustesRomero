@@ -960,6 +960,37 @@ def save_devices_state(state):
             conn.close()
 
 
+_INOC_MOMENTOS_FILE = os.path.join(os.path.expanduser("~"), "ajuste_comp_inoc_momentos.json")
+_DEFAULT_INOC_MOMENTOS = [
+    {"key": "horno",          "label": "Horno"},
+    {"key": "cuchara_transp", "label": "C. transp."},
+    {"key": "cuchara_colar",  "label": "C. colar"},
+]
+
+def load_inoc_momentos():
+    if os.path.exists(_INOC_MOMENTOS_FILE):
+        try:
+            with open(_INOC_MOMENTOS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                result = [
+                    {"key": str(m["key"]), "label": str(m["label"])}
+                    for m in data
+                    if isinstance(m, dict) and m.get("key") and m.get("label")
+                ]
+                if result:
+                    return result
+        except Exception:
+            pass
+    return [dict(m) for m in _DEFAULT_INOC_MOMENTOS]
+
+def save_inoc_momentos(momentos):
+    tmp = _INOC_MOMENTOS_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(momentos, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, _INOC_MOMENTOS_FILE)
+
+
 _INOC_UNITS_FILE = os.path.join(os.path.expanduser("~"), "ajuste_comp_inoc_units.json")
 _DEFAULT_INOC_UNITS = ["cucharín", "porción", "sobre", "g", "kg"]
 

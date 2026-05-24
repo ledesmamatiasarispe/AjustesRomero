@@ -6,7 +6,7 @@ import json, csv
 # Módulos del proyecto
 from widgets import ScrollFrame
 from config import ELEMENTS
-from storage import save_alloys, load_history, load_inoc_units, save_inoc_units
+from storage import save_alloys, load_history, load_inoc_units, save_inoc_units, load_inoc_momentos, save_inoc_momentos
 from utils import to_float, to_float_or_none, fmt, fmt_opt, _norm, simulate_with_plan
 from config import ELEMENTS, BG_ENTRY, FG, ACCENT
 from ce import ce_from_percent
@@ -71,9 +71,7 @@ def _meta_inoculacion_full(meta):
         if isinstance(v, str) and v.strip():
             result.append({"nombre": v.strip(), "cantidad_dosis": 1, "momento": "horno"})
         elif isinstance(v, dict) and str(v.get("nombre", "")).strip():
-            mom = str(v.get("momento", "horno") or "horno")
-            if mom not in INOC_MOMENTOS:
-                mom = "horno"
+            mom = str(v.get("momento", "horno") or "horno") or "horno"
             result.append({
                 "nombre": str(v["nombre"]).strip(),
                 "cantidad_dosis": int(v.get("cantidad_dosis", 1) or 1),
@@ -666,7 +664,75 @@ class TabCatalogo(ttk.Frame):
             for e in _meta_inoculacion_full(inoc_meta_saved)
         }
 
-        # Grilla: filas = material, columnas = Horno / C. transp. / C. colar
+        momentos_cfg = load_inoc_momentos()
+        momentos_keys   = [m["key"]   for m in momentos_cfg]
+        momentos_labels = {m["key"]: m["label"] for m in momentos_cfg}
+
+        def _edit_inoc_momentos():
+            d = tk.Toplevel(win)
+            d.title("Etapas de inoculación")
+            d.transient(win)
+            d.grab_set()
+            d.resizable(False, False)
+            frm = ttk.Frame(d, padding=12); frm.pack(fill="both", expand=True)
+            ttk.Label(frm, text="Lista de etapas (orden de aplicación):").pack(anchor="w")
+            lb = tk.Listbox(frm, height=8, selectmode="single",
+                            bg=BG_ENTRY, fg=FG, selectbackground=ACCENT)
+            lb.pack(fill="both", expand=True, pady=(4, 0))
+            cur_moms = load_inoc_momentos()
+            for m in cur_moms:
+                lb.insert(tk.END, m["label"])
+            add_row = ttk.Frame(frm); add_row.pack(fill="x", pady=(6, 0))
+            new_var = tk.StringVar()
+            ttk.Entry(add_row, textvariable=new_var, width=18).pack(side="left")
+            def _add():
+                label = new_var.get().strip()
+                if not label or label in lb.get(0, tk.END): return
+                lb.insert(tk.END, label)
+                new_var.set("")
+            ttk.Button(add_row, text="Agregar", command=_add).pack(side="left", padx=(6, 0))
+            def _delete():
+                sel = lb.curselection()
+                if sel: lb.delete(sel[0])
+            ttk.Button(frm, text="Eliminar seleccionado", command=_delete).pack(anchor="w", pady=(4, 0))
+            def _save_moms():
+                new_labels = list(lb.get(0, tk.END))
+                if not new_labels:
+                    messagebox.showwarning("Etapas", "La lista no puede quedar vacía.", parent=d)
+                    return
+                old_key_for_label = {m["label"]: m["key"] for m in cur_moms}
+                new_moms = []
+                for label in new_labels:
+                    if label in old_key_for_label:
+                        new_moms.append({"key": old_key_for_label[label], "label": label})
+                    else:
+                        key = label.lower().replace(" ", "_").replace("/", "_")
+                        new_moms.append({"key": key, "label": label})
+                removed_keys = {m["key"] for m in cur_moms} - {m["key"] for m in new_moms}
+                if removed_keys:
+                    for a in self.model:
+                        meta = a.get("inoculacion_meta", {})
+                        if not isinstance(meta, dict): continue
+                        lst = meta.get("inoculacion", [])
+                        if not isinstance(lst, list): continue
+                        a["inoculacion_meta"]["inoculacion"] = [
+                            e for e in lst
+                            if not (isinstance(e, dict) and e.get("momento") in removed_keys)
+                        ]
+                    save_alloys(self.model)
+                save_inoc_momentos(new_moms)
+                messagebox.showinfo("Etapas",
+                    "Guardado. Cerrá y volvé a abrir el editor para ver los cambios.", parent=d)
+                d.destroy()
+            btn_row = ttk.Frame(frm); btn_row.pack(fill="x", pady=(10, 0))
+            ttk.Button(btn_row, text="Guardar", command=_save_moms).pack(side="right")
+            ttk.Button(btn_row, text="Cancelar", command=d.destroy).pack(side="right", padx=(0, 6))
+
+        inoc_top = ttk.Frame(inoc_panel)
+        inoc_top.pack(fill="x", pady=(0, 4))
+        ttk.Button(inoc_top, text="Editar etapas", command=_edit_inoc_momentos).pack(side="right")
+
+        # Grilla: filas = material, columnas dinámicas por etapa
         inoc_scroll_frame = ScrollFrame(inoc_panel)
         inoc_scroll_frame.pack(fill="both", expand=True)
 
@@ -692,8 +758,8 @@ class TabCatalogo(ttk.Frame):
         hdr = ttk.Frame(inoc_scroll_frame.inner)
         hdr.pack(fill="x", padx=4, pady=(0, 2))
         ttk.Label(hdr, text="Material", width=22, font=("Segoe UI", 9, "bold")).pack(side="left")
-        for mom in INOC_MOMENTOS:
-            ttk.Label(hdr, text=INOC_MOMENTO_LABELS[mom], width=10,
+        for mom in momentos_keys:
+            ttk.Label(hdr, text=momentos_labels.get(mom, mom), width=10,
                       font=("Segoe UI", 9, "bold"), anchor="center").pack(side="left")
         for u in units_present:
             ttk.Label(hdr, text=f"g/{u}", width=10,
@@ -709,7 +775,7 @@ class TabCatalogo(ttk.Frame):
             row = ttk.Frame(inoc_scroll_frame.inner)
             row.pack(fill="x", padx=4, pady=1)
             ttk.Label(row, text=name, width=22, anchor="w").pack(side="left")
-            for mom in INOC_MOMENTOS:
+            for mom in momentos_keys:
                 cant = saved_inoc_map.get((name, mom), 0)
                 var = tk.IntVar(value=cant if cant else 0)
                 inoc_vars[(name, mom)] = var

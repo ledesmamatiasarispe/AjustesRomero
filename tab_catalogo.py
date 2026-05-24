@@ -1181,7 +1181,7 @@ class TabCatalogo(ttk.Frame):
                 raise ValueError("Seleccioná una familia válida.")
             prev_meta = src.get("calidad_meta", {}) if isinstance(src.get("calidad_meta", {}), dict) else {}
             a.update({
-                "ajuste": False,
+                "ajuste": bool(v_ajuste.get()),
                 "composicion": src.get("composicion", {}),
                 "limites": src.get("limites", {}),
                 "especiales": src.get("especiales", {}),

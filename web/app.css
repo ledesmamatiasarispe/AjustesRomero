@@ -930,6 +930,9 @@ tbody tr:nth-child(even) {
   color: #fff;
 }
 
+#inoc-detail-table.is-compact .inoc-col-detail { display: none; }
+#inoc-detail-table:not(.is-compact) .inoc-col-compact { display: none; }
+
 .inoc-etapa-cell {
   text-align: center;
   vertical-align: middle;

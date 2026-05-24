@@ -1105,8 +1105,9 @@ function showInocDetail(idx) {
       const rest = document.createElement("template");
       rest.innerHTML = `
         <td>${e.nombre}</td>
-        <td>${e.cant}</td>
-        <td>${e.gramos ? e.gramos + " g" : "—"}</td>
+        <td class="inoc-col-compact">${e.cant}</td>
+        <td class="inoc-col-detail">${e.cant}</td>
+        <td class="inoc-col-detail">${e.gramos ? e.gramos + " g" : "—"}</td>
         <td>${e.total != null ? e.total + " g" : "—"}</td>
       `;
       tr.append(...rest.content.childNodes);
@@ -1115,6 +1116,13 @@ function showInocDetail(idx) {
     i += count;
   }
 }
+
+document.getElementById("inoc-mode-btn").addEventListener("click", () => {
+  const table = document.getElementById("inoc-detail-table");
+  const nowCompact = table.classList.toggle("is-compact");
+  document.getElementById("inoc-mode-btn").textContent =
+    nowCompact ? "Ver detalle" : "Vista rápida";
+});
 
 // Cargar al entrar a la pestaña
 document.querySelectorAll("[data-tab-target]").forEach(btn => {

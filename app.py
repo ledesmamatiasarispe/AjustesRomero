@@ -21,6 +21,7 @@ from tab_pie_horno import TabPieHorno
 from storage import load_alloys, save_alloys
 from config import THEME, BG, FG, BG_ENTRY, ACCENT
 from host_api import HOST_API_PORT, HostAPIServer, get_host_api_port
+from widgets import ScrollFrame
 
 APP_TITLE = "Ajuste de Composición"
 STATE_FILENAME = "ajuste_comp_ui.json"
@@ -522,8 +523,9 @@ class App(tk.Frame):
         self.schedule_save()
 
     def _build_options_tab(self):
-        box = ttk.Frame(self.tab_options)
-        box.pack(fill="both", expand=True)
+        scroll = ScrollFrame(self.tab_options)
+        scroll.pack(fill="both", expand=True)
+        box = scroll.inner
 
         intro = ttk.LabelFrame(box, text="Apariencia", padding=12)
         intro.pack(fill="x", pady=(0, 12))

@@ -244,6 +244,15 @@ def main():
             if local == remote:
                 finish("Ya tenés la versión más reciente.", close_ms=1800, do_relaunch=relaunch_mode)
                 return
+            try:
+                log_r = subprocess.run(
+                    ["git", "-C", str(APP_DIR), "log", "--format=%H"],
+                    capture_output=True, text=True, timeout=10)
+                if remote in log_r.stdout.split():
+                    finish("Ya tenés la versión más reciente.", close_ms=1800, do_relaunch=relaunch_mode)
+                    return
+            except Exception:
+                pass
             status("Actualizando...", f"{local[:8]}  →  {remote[:8]}")
             ok, msg = do_git_pull()
             if ok:

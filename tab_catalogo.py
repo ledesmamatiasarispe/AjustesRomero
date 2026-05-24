@@ -476,6 +476,13 @@ class TabCatalogo(ttk.Frame):
                 if not units:
                     messagebox.showwarning("Unidades", "La lista no puede quedar vacía.", parent=d)
                     return
+                removed = set(current_units) - set(units)
+                if removed:
+                    fallback = units[0]
+                    for a in self.model:
+                        if a.get("inoculante") and a.get("unidad_inoculacion") in removed:
+                            a["unidad_inoculacion"] = fallback
+                    save_alloys(self.model)
                 save_inoc_units(units)
                 cb_unidad.configure(values=units)
                 d.destroy()

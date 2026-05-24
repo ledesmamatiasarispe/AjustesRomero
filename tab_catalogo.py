@@ -428,13 +428,21 @@ class TabCatalogo(ttk.Frame):
         cb_tipo = ttk.Combobox(row1, textvariable=tipo, values=self.TYPES, state="readonly", width=37)
         cb_tipo.pack(side="left", padx=6)
         ttk.Checkbutton(row1, text="Material de ajuste", variable=v_ajuste).pack(side="left", padx=(12, 0))
-        chk_inoc = ttk.Checkbutton(row1, text="Inoculante", variable=v_inoculante)
+        ttk.Checkbutton(row1, text="Es inoculante", variable=v_inoculante).pack(side="left", padx=(12, 0))
 
         row2 = ttk.Frame(form); row2.pack(fill="x", pady=4)
         ttk.Label(row2, text="Rendimiento (%)", width=16).pack(side="left")
         ttk.Entry(row2, textvariable=rend, width=12).pack(side="left", padx=6)
         ttk.Label(row2, text="Costo (opcional)", width=16).pack(side="left", padx=(20, 0))
         ttk.Entry(row2, textvariable=costo, width=12).pack(side="left", padx=6)
+
+        dosif_box = ttk.LabelFrame(form, text="Dosificación", padding=6)
+        ttk.Label(dosif_box, text="Unidad", width=8).pack(side="left")
+        ttk.Combobox(dosif_box, textvariable=v_unidad_inoc,
+                     values=["cucharín", "porción", "sobre", "g", "kg"],
+                     width=10).pack(side="left", padx=6)
+        ttk.Label(dosif_box, text="g/cucharin1", width=12).pack(side="left", padx=(20, 0))
+        ttk.Entry(dosif_box, textvariable=v_gramos_cucharin1, width=10).pack(side="left", padx=6)
 
         inoc_meta = (item or {}).get("inoculante_meta", {}) if isinstance((item or {}).get("inoculante_meta", {}), dict) else {}
         material_names = []
@@ -460,15 +468,6 @@ class TabCatalogo(ttk.Frame):
         cb_inoc_base = ttk.Combobox(rowi0, textvariable=inoc_base, values=material_names, state="readonly", width=38)
         cb_inoc_base.pack(side="left", padx=6)
         ttk.Label(rowi0, text="Copia solo la composición del material base.").pack(side="left", padx=(12, 0))
-
-        dosif_box = ttk.LabelFrame(inoc_frame, text="Dosificación", padding=6)
-        dosif_box.pack(fill="x", pady=(8, 0))
-        ttk.Label(dosif_box, text="Unidad", width=8).pack(side="left")
-        ttk.Combobox(dosif_box, textvariable=v_unidad_inoc,
-                     values=["cucharín", "porción", "sobre", "g", "kg"],
-                     width=10).pack(side="left", padx=6)
-        ttk.Label(dosif_box, text="g/cucharin1", width=12).pack(side="left", padx=(20, 0))
-        ttk.Entry(dosif_box, textvariable=v_gramos_cucharin1, width=10).pack(side="left", padx=6)
 
         medidas_box = ttk.LabelFrame(inoc_frame, text="Medidas", padding=6)
         medidas_box.pack(fill="both", expand=True, pady=(8, 0))
@@ -846,13 +845,19 @@ class TabCatalogo(ttk.Frame):
 
         final_frame.pack(fill="x", pady=(12, 0))
 
+        def _toggle_dosif_box(*_):
+            if v_inoculante.get():
+                if not dosif_box.winfo_manager():
+                    dosif_box.pack(fill="x", pady=(6, 0), after=row2)
+            else:
+                dosif_box.pack_forget()
+
+        v_inoculante.trace_add("write", _toggle_dosif_box)
+
         def _toggle_dialog_mode(*_):
             is_final = (tipo.get().strip() == "Aleación final")
             is_inoc = (tipo.get().strip() == "Inoculante")
-            is_ferro = (tipo.get().strip() == "Ferroaleación")
-            if not is_ferro:
-                v_inoculante.set(False)
-            chk_inoc.configure(state="normal" if is_ferro else "disabled")
+            _toggle_dosif_box()
             if is_final:
                 comp_title.pack_forget()
                 grid.pack_forget()

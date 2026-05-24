@@ -833,6 +833,69 @@ class TabCatalogo(ttk.Frame):
             except Exception as ex:
                 messagebox.showerror("Recalcular Fe", str(ex))
         ttk.Button(btns, text="Recalcular Fe", command=recalc_fe).pack(side="left")
+
+        def _calc_from_base_inoc():
+            first_base = next(
+                (b for b in base_candidates if base_vars.get(b, tk.BooleanVar()).get()),
+                base_candidates[0] if base_candidates else None
+            )
+            if not first_base:
+                messagebox.showwarning("Calcular", "No hay base válida configurada.", parent=win)
+                return
+            base_alloy = next(
+                (a for a in self.model if str(a.get("nombre", "")).strip() == first_base), None)
+            if not base_alloy:
+                messagebox.showwarning("Calcular",
+                    f"No se encontró '{first_base}' en el catálogo.", parent=win)
+                return
+            # Pedir masa del baño
+            d = tk.Toplevel(win); d.title("Masa del baño")
+            d.transient(win); d.grab_set(); d.resizable(False, False)
+            frm_d = ttk.Frame(d, padding=12); frm_d.pack(fill="both", expand=True)
+            ttk.Label(frm_d, text="Masa del baño (kg):").pack(anchor="w")
+            masa_var = tk.StringVar(value="1000")
+            ent_masa = ttk.Entry(frm_d, textvariable=masa_var, width=12)
+            ent_masa.pack(anchor="w", pady=(4, 0))
+            ent_masa.focus_set(); ent_masa.select_range(0, tk.END)
+            res = {"ok": False}
+            def _ok(*_): res["ok"] = True; d.destroy()
+            ent_masa.bind("<Return>", _ok)
+            br = ttk.Frame(frm_d); br.pack(fill="x", pady=(10, 0))
+            ttk.Button(br, text="Calcular", command=_ok).pack(side="right")
+            ttk.Button(br, text="Cancelar", command=d.destroy).pack(side="right", padx=(0, 6))
+            win.wait_window(d)
+            if not res["ok"]: return
+            bath_kg = to_float(masa_var.get()) or 1000.0
+            base_comp = base_alloy.get("composicion", {})
+            # Sumar gramos por inoculante
+            inoc_grams = {}
+            for (iname, _mom), var in inoc_vars.items():
+                dosis = var.get()
+                if dosis > 0:
+                    gx = self._gramos_cucharin1(iname)
+                    if gx:
+                        inoc_grams[iname] = inoc_grams.get(iname, 0.0) + dosis * gx
+            total_inoc_kg = sum(v / 1000 for v in inoc_grams.values())
+            base_kg = max(0.0, bath_kg - total_inoc_kg)
+            for el in ELEMENTS:
+                contrib = base_kg * to_float(base_comp.get(el, 0)) / 100
+                for iname, grams in inoc_grams.items():
+                    ia = next((a for a in self.model
+                               if str(a.get("nombre", "")).strip() == iname), None)
+                    if ia:
+                        contrib += (grams / 1000) * to_float(
+                            ia.get("composicion", {}).get(el, 0)) / 100
+                comp_vars[el].set(fmt(contrib / bath_kg * 100 if bath_kg else 0.0, 6))
+            recalc_fe()
+            n = len(inoc_grams)
+            messagebox.showinfo("Calcular",
+                f"Composición calculada desde '{first_base}'"
+                + (f" + {n} inoculante(s)" if n else "")
+                + f"\nMasa: {bath_kg} kg.", parent=win)
+
+        btn_calc = ttk.Button(btns, text="Calcular desde base + inoculantes",
+                              command=_calc_from_base_inoc)
+
         def auto_limits():
             win = tk.Toplevel(self)
             win.title("Auto-límites")
@@ -1008,19 +1071,25 @@ class TabCatalogo(ttk.Frame):
             is_inoc = (tipo.get().strip() == "Inoculante")
             _toggle_dosif_box()
             if is_final:
-                comp_title.pack_forget()
-                grid.pack_forget()
-                btns.pack_forget()
                 limits_frame.pack_forget()
                 esp_frame.pack_forget()
                 inoc_frame.pack_forget()
                 final_frame.pack(fill="x", pady=(12, 0))
+                if not comp_title.winfo_manager():
+                    comp_title.pack(anchor="w", pady=(8, 2))
+                if not grid.winfo_manager():
+                    grid.pack(fill="x")
+                if not btns.winfo_manager():
+                    btns.pack(fill="x", pady=(8, 0))
+                if not btn_calc.winfo_manager():
+                    btn_calc.pack(side="left", padx=(12, 0))
                 v_ajuste.set(False)
             elif is_inoc:
                 final_frame.pack_forget()
                 comp_title.pack_forget()
                 grid.pack_forget()
                 btns.pack_forget()
+                btn_calc.pack_forget()
                 limits_frame.pack_forget()
                 esp_frame.pack_forget()
                 inoc_frame.pack(fill="both", expand=True, pady=(12, 0))
@@ -1028,6 +1097,7 @@ class TabCatalogo(ttk.Frame):
             else:
                 final_frame.pack_forget()
                 inoc_frame.pack_forget()
+                btn_calc.pack_forget()
                 if not comp_title.winfo_manager():
                     comp_title.pack(anchor="w", pady=(8,2))
                 if not grid.winfo_manager():

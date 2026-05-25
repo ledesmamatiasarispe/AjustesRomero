@@ -3,6 +3,20 @@ from tkinter import ttk
 from datetime import datetime
 import re
 
+import matplotlib
+matplotlib.use("Agg")
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+matplotlib.rcParams.update({
+    "axes.spines.top": False,
+    "axes.spines.right": False,
+    "font.size": 8,
+    "axes.labelsize": 8,
+    "xtick.labelsize": 7,
+    "ytick.labelsize": 7,
+})
+
 from storage import load_history, load_ladles_state, load_quality_reports, prune_ladles_history_for_sessions
 from utils import to_float, fmt
 from widgets import ScrollFrame
@@ -20,10 +34,8 @@ class TabInformes(ttk.Frame):
         self.quality_reports = []
         self.section_vars = {}
         self.section_frames = {}
-        self.monthly_furnace_canvas = None
         self.monthly_furnace_summary_var = tk.StringVar(value="")
         self._monthly_furnace_data = []
-        self.monthly_hornos_canvas = None
         self.monthly_hornos_summary_var = tk.StringVar(value="")
         self._monthly_hornos_data = []
 
@@ -78,6 +90,7 @@ class TabInformes(ttk.Frame):
         box = ttk.LabelFrame(self.content, text="Resumen general", padding=8)
         self.lbl_summary = ttk.Label(box, text="", justify="left")
         self.lbl_summary.pack(anchor="w")
+        self.fig_summary, self.mpl_summary = self._make_mpl_canvas(box, figsize=(7, 1.6))
         self.section_frames["summary"] = box
 
         box = ttk.LabelFrame(self.content, text="Materiales mas usados", padding=6)
@@ -86,6 +99,7 @@ class TabInformes(ttk.Frame):
             columns=(("material", "Material", 240, "w"), ("kg", "kg total", 110, "e")),
             height=10,
         )
+        self.fig_materials, self.mpl_materials = self._make_mpl_canvas(box, figsize=(7, 3.0))
         self.section_frames["materials"] = box
 
         box = ttk.LabelFrame(self.content, text="Hierro fundido mensual por material", padding=8)
@@ -94,9 +108,7 @@ class TabInformes(ttk.Frame):
             textvariable=self.monthly_furnace_summary_var,
             justify="left",
         ).pack(anchor="w", pady=(0, 8))
-        self.monthly_furnace_canvas = tk.Canvas(box, height=360, bg="white", highlightthickness=1, highlightbackground="#c8c8c8")
-        self.monthly_furnace_canvas.pack(fill="both", expand=True)
-        self.monthly_furnace_canvas.bind("<Configure>", lambda _event: self._draw_monthly_furnace_chart())
+        self.fig_monthly_furnace, self.mpl_monthly_furnace = self._make_mpl_canvas(box, figsize=(7, 3.2))
         self.section_frames["monthly_furnace"] = box
 
         box = ttk.LabelFrame(self.content, text="Hierro fundido mensual por hornos", padding=8)
@@ -105,9 +117,7 @@ class TabInformes(ttk.Frame):
             textvariable=self.monthly_hornos_summary_var,
             justify="left",
         ).pack(anchor="w", pady=(0, 8))
-        self.monthly_hornos_canvas = tk.Canvas(box, height=360, bg="white", highlightthickness=1, highlightbackground="#c8c8c8")
-        self.monthly_hornos_canvas.pack(fill="both", expand=True)
-        self.monthly_hornos_canvas.bind("<Configure>", lambda _event: self._draw_monthly_hornos_chart())
+        self.fig_monthly_hornos, self.mpl_monthly_hornos = self._make_mpl_canvas(box, figsize=(7, 3.2))
         self.section_frames["monthly_hornos"] = box
 
         box = ttk.LabelFrame(self.content, text="Objetivos mas usados", padding=6)
@@ -116,6 +126,7 @@ class TabInformes(ttk.Frame):
             columns=(("objetivo", "Objetivo", 240, "w"), ("cant", "Ajustes", 90, "e")),
             height=8,
         )
+        self.fig_targets, self.mpl_targets = self._make_mpl_canvas(box, figsize=(7, 2.4))
         self.section_frames["targets"] = box
 
         box = ttk.LabelFrame(self.content, text="Elementos mas ajustados", padding=6)
@@ -128,6 +139,7 @@ class TabInformes(ttk.Frame):
             ),
             height=10,
         )
+        self.fig_elements, self.mpl_elements = self._make_mpl_canvas(box, figsize=(7, 2.4))
         self.section_frames["elements"] = box
 
         box = ttk.LabelFrame(self.content, text="CE y formulas", padding=6)
@@ -141,6 +153,7 @@ class TabInformes(ttk.Frame):
             ),
             height=8,
         )
+        self.fig_ce, self.mpl_ce = self._make_mpl_canvas(box, figsize=(7, 2.4))
         self.section_frames["ce"] = box
 
         box = ttk.LabelFrame(self.content, text="Produccion por fecha", padding=6)
@@ -154,11 +167,13 @@ class TabInformes(ttk.Frame):
             ),
             height=8,
         )
+        self.fig_days, self.mpl_days = self._make_mpl_canvas(box, figsize=(7, 2.8))
         self.section_frames["days"] = box
 
         box = ttk.LabelFrame(self.content, text="Duracion de sesiones", padding=8)
         self.lbl_durations = ttk.Label(box, text="", justify="left")
         self.lbl_durations.pack(anchor="w")
+        self.fig_durations, self.mpl_durations = self._make_mpl_canvas(box, figsize=(7, 2.4))
         self.section_frames["durations"] = box
 
         box = ttk.LabelFrame(self.content, text="Cucharas", padding=8)
@@ -178,6 +193,7 @@ class TabInformes(ttk.Frame):
             ),
             height=8,
         )
+        self.fig_cucharas_pie, self.mpl_cucharas_pie = self._make_mpl_canvas(mats_box, figsize=(5, 2.4))
 
         coladas_box = ttk.LabelFrame(box, text="Resumen por colada", padding=6)
         coladas_box.pack(fill="both", expand=True, pady=(0, 8))
@@ -207,6 +223,7 @@ class TabInformes(ttk.Frame):
             ),
             height=8,
         )
+        self.fig_cucharas_hours, self.mpl_cucharas_hours = self._make_mpl_canvas(hours_box, figsize=(7, 2.4))
         self.section_frames["cucharas"] = box
 
         box = ttk.LabelFrame(self.content, text="Informes de calidad", padding=8)
@@ -226,6 +243,7 @@ class TabInformes(ttk.Frame):
             ),
             height=9,
         )
+        self.fig_quality, self.mpl_quality = self._make_mpl_canvas(props_box, figsize=(7, 2.8))
 
         mats_box = ttk.LabelFrame(box, text="Informes por material", padding=6)
         mats_box.pack(fill="both", expand=True, pady=(0, 8))
@@ -327,6 +345,7 @@ class TabInformes(ttk.Frame):
             ),
             height=8,
         )
+        self.fig_inoc, self.mpl_inoc = self._make_mpl_canvas(hist_box, figsize=(7, 2.4))
 
         self.section_frames["inoculantes"] = box
 
@@ -339,6 +358,17 @@ class TabInformes(ttk.Frame):
             tree.column(cid, width=width, anchor=anchor)
         tree.pack(fill="both", expand=True)
         return tree
+
+    def _make_mpl_canvas(self, parent, figsize=(7, 2.8)):
+        fig = Figure(figsize=figsize, dpi=88, tight_layout=True)
+        fig.patch.set_facecolor("#f0f0f0")
+        mpl = FigureCanvasTkAgg(fig, master=parent)
+        mpl.get_tk_widget().pack(fill="both", expand=True)
+        return fig, mpl
+
+    def _mpl_colors(self, n):
+        cmap = matplotlib.colormaps.get_cmap("tab20")
+        return [cmap(i / max(n, 1)) for i in range(n)]
 
     def _render_sections(self):
         order = [
@@ -402,6 +432,22 @@ class TabInformes(ttk.Frame):
             f"kg agregados acumulados: {fmt(total_kg, 3)}"
         )
         self.lbl_summary.config(text=text)
+        # Gráfico resumen
+        self.fig_summary.clear()
+        ax = self.fig_summary.add_subplot(111)
+        ax.set_facecolor("#f0f0f0")
+        labels = ["Sesiones", "Ajustes", "Calculos", "Calc. sin guardar"]
+        values = [total_sessions, total_ajustes, total_calculos, total_calculos - total_ajustes]
+        values = [max(0, v) for v in values]
+        colors = self._mpl_colors(4)
+        bars = ax.barh(labels, values, color=colors)
+        for bar, val in zip(bars, values):
+            if val > 0:
+                ax.text(bar.get_width() + max(values) * 0.01, bar.get_y() + bar.get_height() / 2,
+                        str(int(val)), va="center", fontsize=7)
+        ax.set_xlabel("Cantidad")
+        ax.set_title("Totales generales", fontsize=9)
+        self.mpl_summary.draw()
 
     def _clear_tree(self, tree):
         for item in tree.get_children():
@@ -416,6 +462,18 @@ class TabInformes(ttk.Frame):
                     totals[name] = totals.get(name, 0.0) + to_float(kg)
         for name, kg in sorted(totals.items(), key=lambda x: x[1], reverse=True)[:25]:
             self.tree_materials.insert("", "end", values=(name, fmt(kg, 3)))
+        # Gráfico materiales
+        self.fig_materials.clear()
+        ax = self.fig_materials.add_subplot(111)
+        ax.set_facecolor("#f0f0f0")
+        top = sorted(totals.items(), key=lambda x: x[1], reverse=True)[:15]
+        if top:
+            mats, kgs = zip(*reversed(top))
+            colors = self._mpl_colors(len(mats))
+            ax.barh(list(mats), list(kgs), color=colors)
+            ax.set_xlabel("kg total")
+            ax.set_title("Materiales mas usados", fontsize=9)
+        self.mpl_materials.draw()
 
     def _ladle_record_month(self, record):
         text = str(record.get("updated_at", "") or "").strip()
@@ -442,27 +500,6 @@ class TabInformes(ttk.Frame):
             if match:
                 text = match.group(1)
         return text or "Sin material"
-
-    def _monthly_material_color(self, material, index=0):
-        palette = (
-            "#1f77b4",
-            "#ff7f0e",
-            "#2ca02c",
-            "#d62728",
-            "#9467bd",
-            "#8c564b",
-            "#e377c2",
-            "#7f7f7f",
-            "#bcbd22",
-            "#17becf",
-            "#4c78a8",
-            "#f58518",
-            "#54a24b",
-            "#e45756",
-            "#72b7b2",
-            "#b279a2",
-        )
-        return palette[index % len(palette)]
 
     def _fill_monthly_furnace(self):
         months = {}
@@ -515,7 +552,26 @@ class TabInformes(ttk.Frame):
             f"Materiales: {len(ordered_materials)} | Material principal: {top_material or 'N/D'}"
             f" | Coladas con cucharas: {ladle_coladas}"
         )
-        self._draw_monthly_furnace_chart()
+        # Gráfico barras apiladas mensual
+        self.fig_monthly_furnace.clear()
+        ax = self.fig_monthly_furnace.add_subplot(111)
+        ax.set_facecolor("#f0f0f0")
+        data = self._monthly_furnace_data
+        if data:
+            months_labels = [d["month"][5:] + "/" + d["month"][:4] for d in data]
+            all_mats = list({m for d in data for m in d["materials"] if d["materials"][m] > 0})
+            colors = {m: c for m, c in zip(all_mats, self._mpl_colors(len(all_mats)))}
+            bottoms = [0.0] * len(data)
+            for mat in all_mats:
+                vals = [d["materials"].get(mat, 0.0) for d in data]
+                ax.bar(months_labels, vals, bottom=bottoms, label=mat, color=colors[mat])
+                bottoms = [b + v for b, v in zip(bottoms, vals)]
+            ax.set_ylabel("kg")
+            ax.set_title("Hierro fundido mensual", fontsize=9)
+            if len(all_mats) <= 10:
+                ax.legend(fontsize=6, loc="upper left")
+            ax.tick_params(axis="x", rotation=45)
+        self.mpl_monthly_furnace.draw()
 
     def _fill_monthly_hornos(self):
         months = {}
@@ -557,91 +613,26 @@ class TabInformes(ttk.Frame):
             f"Meses: {len(ordered_months)} | Materiales: {len(ordered_materials)} | "
             f"Material principal: {top_material or 'N/D'}"
         )
-        self._draw_monthly_hornos_chart()
-
-    def _draw_monthly_furnace_chart(self):
-        self._draw_monthly_stacked_chart(
-            self.monthly_furnace_canvas,
-            self._monthly_furnace_data,
-            "No hay datos de cucharas para graficar.",
-            lambda item: f"{fmt(item['total'] / LADLE_KG_PER_COUNT if LADLE_KG_PER_COUNT else 0, 0)} cuch. = {fmt(item['total'], 0)} kg",
-        )
-
-    def _draw_monthly_hornos_chart(self):
-        self._draw_monthly_stacked_chart(
-            self.monthly_hornos_canvas,
-            self._monthly_hornos_data,
-            "No hay hornos registrados para graficar.",
-            lambda item: f"{int(item.get('hornos', 0) or 0)} hornos = {fmt(item['total'], 0)} kg",
-        )
-
-    def _draw_monthly_stacked_chart(self, canvas, data, empty_text, total_label):
-        if canvas is None:
-            return
-        canvas.delete("all")
-        width = max(canvas.winfo_width(), 760)
-        height = max(canvas.winfo_height(), 320)
-        data = list(data or [])
-        if not data:
-            canvas.create_text(width / 2, height / 2, text=empty_text, fill="#555555")
-            return
-
-        left = 62
-        right = 190
-        top = 34
-        bottom = 64
-        chart_w = max(1, width - left - right)
-        chart_h = max(1, height - top - bottom)
-        max_total = max(item["total"] for item in data) or 1.0
-        scale_max = max_total * 1.12
-
-        materials = []
-        seen = set()
-        for item in data:
-            for material, kg in item["materials"].items():
-                if kg > 0 and material not in seen:
-                    seen.add(material)
-                    materials.append(material)
-        colors = {material: self._monthly_material_color(material, idx) for idx, material in enumerate(materials)}
-
-        canvas.create_line(left, top, left, top + chart_h, fill="#888888")
-        canvas.create_line(left, top + chart_h, left + chart_w, top + chart_h, fill="#888888")
-        for i in range(5):
-            value = scale_max * i / 4
-            y = top + chart_h - (value / scale_max) * chart_h
-            canvas.create_line(left - 4, y, left + chart_w, y, fill="#e8e8e8" if i else "#888888")
-            canvas.create_text(left - 8, y, text=fmt(value, 0), anchor="e", fill="#555555", font=("TkDefaultFont", 8))
-
-        n = len(data)
-        slot = chart_w / max(n, 1)
-        bar_w = min(54, max(18, slot * 0.62))
-        for idx, item in enumerate(data):
-            x0 = left + idx * slot + (slot - bar_w) / 2
-            x1 = x0 + bar_w
-            y_base = top + chart_h
-            for material in materials:
-                kg = item["materials"].get(material, 0.0)
-                if kg <= 0:
-                    continue
-                seg_h = (kg / scale_max) * chart_h
-                y0 = y_base - seg_h
-                canvas.create_rectangle(x0, y0, x1, y_base, fill=colors[material], outline="white")
-                if seg_h >= 18:
-                    canvas.create_text((x0 + x1) / 2, (y0 + y_base) / 2, text=fmt(kg, 0), fill="white", font=("TkDefaultFont", 8, "bold"))
-                y_base = y0
-            canvas.create_text((x0 + x1) / 2, max(top + 8, y_base - 12), text=total_label(item), fill="#111111", font=("TkDefaultFont", 9, "bold"))
-            canvas.create_text((x0 + x1) / 2, top + chart_h + 18, text=item["month"][5:] + "/" + item["month"][:4], anchor="n", fill="#333333", font=("TkDefaultFont", 8))
-
-        legend_x = left + chart_w + 22
-        legend_y = top
-        canvas.create_text(legend_x, legend_y, text="Material", anchor="nw", fill="#111111", font=("TkDefaultFont", 9, "bold"))
-        legend_y += 20
-        for idx, material in enumerate(materials[:14]):
-            y = legend_y + idx * 18
-            canvas.create_rectangle(legend_x, y + 2, legend_x + 12, y + 14, fill=colors[material], outline="")
-            canvas.create_text(legend_x + 18, y + 8, text=str(material), anchor="w", fill="#333333", font=("TkDefaultFont", 8))
-        if len(materials) > 14:
-            canvas.create_text(legend_x, legend_y + 14 * 18 + 8, text=f"+ {len(materials) - 14} materiales", anchor="nw", fill="#555555", font=("TkDefaultFont", 8))
+        # Gráfico barras apiladas mensual por hornos
+        self.fig_monthly_hornos.clear()
+        ax = self.fig_monthly_hornos.add_subplot(111)
+        ax.set_facecolor("#f0f0f0")
+        data = self._monthly_hornos_data
+        if data:
+            months_labels = [d["month"][5:] + "/" + d["month"][:4] for d in data]
+            all_mats = list({m for d in data for m in d["materials"] if d["materials"][m] > 0})
+            colors = {m: c for m, c in zip(all_mats, self._mpl_colors(len(all_mats)))}
+            bottoms = [0.0] * len(data)
+            for mat in all_mats:
+                vals = [d["materials"].get(mat, 0.0) for d in data]
+                ax.bar(months_labels, vals, bottom=bottoms, label=mat, color=colors[mat])
+                bottoms = [b + v for b, v in zip(bottoms, vals)]
+            ax.set_ylabel("kg")
+            ax.set_title("Hierro mensual por hornos", fontsize=9)
+            if len(all_mats) <= 10:
+                ax.legend(fontsize=6, loc="upper left")
+            ax.tick_params(axis="x", rotation=45)
+        self.mpl_monthly_hornos.draw()
 
     def _fill_targets(self):
         self._clear_tree(self.tree_targets)
@@ -654,6 +645,16 @@ class TabInformes(ttk.Frame):
                 counts[name] = counts.get(name, 0) + 1
         for name, qty in sorted(counts.items(), key=lambda x: x[1], reverse=True)[:25]:
             self.tree_targets.insert("", "end", values=(name, qty))
+        self.fig_targets.clear()
+        ax = self.fig_targets.add_subplot(111)
+        ax.set_facecolor("#f0f0f0")
+        if counts:
+            top = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:10]
+            labels, vals = zip(*reversed(top))
+            ax.barh(list(labels), list(vals), color=self._mpl_colors(len(vals)))
+            ax.set_xlabel("Ajustes")
+            ax.set_title("Objetivos mas usados", fontsize=9)
+        self.mpl_targets.draw()
 
     def _fill_elements(self):
         self._clear_tree(self.tree_elements)
@@ -671,6 +672,17 @@ class TabInformes(ttk.Frame):
         ordered = sorted(stats.items(), key=lambda x: (x[1]["delta"], x[1]["veces"]), reverse=True)
         for element, data in ordered[:25]:
             self.tree_elements.insert("", "end", values=(element, data["veces"], fmt(data["delta"], 4)))
+        self.fig_elements.clear()
+        ax = self.fig_elements.add_subplot(111)
+        ax.set_facecolor("#f0f0f0")
+        if stats:
+            top = sorted(stats.items(), key=lambda x: x[1].get("delta", 0), reverse=True)[:12]
+            labels = [e for e, _ in reversed(top)]
+            deltas = [d.get("delta", 0) for _, d in reversed(top)]
+            ax.barh(labels, deltas, color=self._mpl_colors(len(labels)))
+            ax.set_xlabel("Delta absoluto total")
+            ax.set_title("Elementos mas ajustados", fontsize=9)
+        self.mpl_elements.draw()
 
     def _fill_ce(self):
         self._clear_tree(self.tree_ce)
@@ -690,6 +702,24 @@ class TabInformes(ttk.Frame):
                 "end",
                 values=(formula, data["veces"], fmt(data["ce_ini"] / veces, 4), fmt(data["ce_est"] / veces, 4)),
             )
+        self.fig_ce.clear()
+        ax = self.fig_ce.add_subplot(111)
+        ax.set_facecolor("#f0f0f0")
+        if stats:
+            ce_data = {f: {"ce_ini": d["ce_ini"] / max(d["veces"], 1), "ce_fin": d["ce_est"] / max(d["veces"], 1)} for f, d in stats.items()}
+            formulas = list(ce_data.keys())
+            ini = [ce_data[f].get("ce_ini", 0) for f in formulas]
+            fin = [ce_data[f].get("ce_fin", 0) for f in formulas]
+            x = range(len(formulas))
+            w = 0.35
+            ax.bar([i - w / 2 for i in x], ini, width=w, label="CE inicial", color="#5B9BD5")
+            ax.bar([i + w / 2 for i in x], fin, width=w, label="CE final", color="#ED7D31")
+            ax.set_xticks(list(x))
+            ax.set_xticklabels(formulas, rotation=20, ha="right")
+            ax.set_ylabel("CE promedio")
+            ax.set_title("CE por formula", fontsize=9)
+            ax.legend(fontsize=7)
+        self.mpl_ce.draw()
 
     def _fill_days(self):
         self._clear_tree(self.tree_days)
@@ -704,6 +734,23 @@ class TabInformes(ttk.Frame):
                 entry["kg"] += sum(to_float(kg) for kg in (ajuste.get("materiales") or {}).values())
         for day, data in sorted(per_day.items(), key=lambda x: x[0], reverse=True)[:25]:
             self.tree_days.insert("", "end", values=(day, data["sesiones"], data["ajustes"], fmt(data["kg"], 3)))
+        self.fig_days.clear()
+        ax = self.fig_days.add_subplot(111)
+        ax.set_facecolor("#f0f0f0")
+        valid_days = {f: d for f, d in per_day.items() if f != "Sin fecha"}
+        if valid_days:
+            fechas = sorted(valid_days.keys())[-30:]
+            kgs = [valid_days[f].get("kg", 0) for f in fechas]
+            sesiones = [valid_days[f].get("sesiones", 0) for f in fechas]
+            ax2 = ax.twinx()
+            ax.plot(fechas, kgs, color="#5B9BD5", linewidth=1.5, label="kg")
+            ax.fill_between(fechas, kgs, alpha=0.15, color="#5B9BD5")
+            ax2.bar(fechas, sesiones, alpha=0.35, color="#ED7D31", label="sesiones")
+            ax.set_ylabel("kg", color="#5B9BD5")
+            ax2.set_ylabel("sesiones", color="#ED7D31")
+            ax.set_title("Produccion por fecha (ultimas 30)", fontsize=9)
+            ax.tick_params(axis="x", rotation=45, labelsize=6)
+        self.mpl_days.draw()
 
     def _fill_durations(self):
         durations = []
@@ -720,6 +767,8 @@ class TabInformes(ttk.Frame):
 
         if not durations:
             self.lbl_durations.config(text="No hay suficientes fechas validas para calcular duraciones.")
+            self.fig_durations.clear()
+            self.mpl_durations.draw()
             return
 
         avg = sum(durations) / len(durations)
@@ -730,6 +779,16 @@ class TabInformes(ttk.Frame):
             f"Sesiones con duracion valida: {len(durations)}"
         )
         self.lbl_durations.config(text=text)
+        self.fig_durations.clear()
+        ax = self.fig_durations.add_subplot(111)
+        ax.set_facecolor("#f0f0f0")
+        ax.hist(durations, bins="auto", color="#5B9BD5", edgecolor="white", alpha=0.85)
+        ax.axvline(avg, color="#ED7D31", linewidth=1.5, linestyle="--", label=f"Prom: {avg:.0f} min")
+        ax.set_xlabel("Minutos")
+        ax.set_ylabel("Sesiones")
+        ax.set_title("Distribucion duracion de sesiones", fontsize=9)
+        ax.legend(fontsize=7)
+        self.mpl_durations.draw()
 
     def _parse_ladle_time(self, value):
         text = str(value or "").strip()
@@ -923,6 +982,34 @@ class TabInformes(ttk.Frame):
             f"Colada mas rapida: {fastest_text or 'N/D'}\n"
             f"Colada mas lenta: {slowest_text or 'N/D'}"
         ))
+        # Torta por material
+        self.fig_cucharas_pie.clear()
+        ax = self.fig_cucharas_pie.add_subplot(111)
+        ax.set_facecolor("#f0f0f0")
+        if total_by_material:
+            sorted_mats = sorted(total_by_material.items(), key=lambda x: x[1], reverse=True)
+            top8 = sorted_mats[:8]
+            otros = sum(v for _, v in sorted_mats[8:])
+            if otros > 0:
+                top8.append(("Otros", otros))
+            labels, vals = zip(*top8)
+            colors = self._mpl_colors(len(labels))
+            ax.pie(vals, labels=labels, colors=colors, autopct="%1.0f%%", textprops={"fontsize": 7})
+            ax.set_title("Cucharas por material", fontsize=9)
+        self.mpl_cucharas_pie.draw()
+        # Barras por hora
+        self.fig_cucharas_hours.clear()
+        ax = self.fig_cucharas_hours.add_subplot(111)
+        ax.set_facecolor("#f0f0f0")
+        if hour_stats:
+            hours_sorted = sorted(hour_stats.keys())
+            counts_hrs = [hour_stats[h]["total"] for h in hours_sorted]
+            ax.bar(hours_sorted, counts_hrs, color="#5B9BD5")
+            ax.set_xlabel("Hora")
+            ax.set_ylabel("Cucharas")
+            ax.set_title("Actividad por hora del dia", fontsize=9)
+            ax.tick_params(axis="x", rotation=45, labelsize=6)
+        self.mpl_cucharas_hours.draw()
 
     def _optional_float(self, value):
         text = str(value or "").strip().replace(",", ".")
@@ -1155,6 +1242,31 @@ class TabInformes(ttk.Frame):
                     ", ".join(sorted(data["materials"])[:8]),
                 ),
             )
+        self.fig_quality.clear()
+        ax = self.fig_quality.add_subplot(111)
+        ax.set_facecolor("#f0f0f0")
+        mat_quality_data = {
+            mat: {
+                "traccion": sum(self._numeric_values(items, "traccion")) / len(self._numeric_values(items, "traccion")) if self._numeric_values(items, "traccion") else 0,
+                "dureza": sum(self._numeric_values(items, "dureza")) / len(self._numeric_values(items, "dureza")) if self._numeric_values(items, "dureza") else 0,
+            }
+            for mat, items in by_material.items()
+        }
+        if mat_quality_data:
+            mats = list(mat_quality_data.keys())[:8]
+            tracciones = [mat_quality_data[m].get("traccion", 0) for m in mats]
+            durezas = [mat_quality_data[m].get("dureza", 0) for m in mats]
+            x = range(len(mats))
+            w = 0.35
+            ax.bar([i - w / 2 for i in x], tracciones, width=w, label="Traccion", color="#5B9BD5")
+            ax2 = ax.twinx()
+            ax2.bar([i + w / 2 for i in x], durezas, width=w, label="Dureza", color="#70AD47")
+            ax.set_xticks(list(x))
+            ax.set_xticklabels(mats, rotation=20, ha="right")
+            ax.set_ylabel("Traccion (MPa)")
+            ax2.set_ylabel("Dureza (HB)")
+            ax.set_title("Calidad por material", fontsize=9)
+        self.mpl_quality.draw()
 
     def _fill_inoculantes(self):
         # Mapa nombre_inoc -> {unidad, gramos}
@@ -1262,3 +1374,15 @@ class TabInformes(ttk.Frame):
                 fmt(data["total_g"], 2),
                 fmt(prom, 2),
             ))
+        self.fig_inoc.clear()
+        ax = self.fig_inoc.add_subplot(111)
+        ax.set_facecolor("#f0f0f0")
+        if hist_acc:
+            top = sorted(hist_acc.items(), key=lambda x: x[1]["total_g"], reverse=True)[:12]
+            if top:
+                labels, data_vals = zip(*reversed(top))
+                vals = [d["total_g"] for d in data_vals]
+                ax.barh(list(labels), vals, color=self._mpl_colors(len(vals)))
+                ax.set_xlabel("Total g estimado")
+                ax.set_title("Consumo historico de inoculantes", fontsize=9)
+        self.mpl_inoc.draw()

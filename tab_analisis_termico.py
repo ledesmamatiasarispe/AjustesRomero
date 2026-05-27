@@ -19,6 +19,7 @@ from tkinter import ttk, messagebox
 from config import BG_ENTRY, FG, ACCENT
 from storage import attach_thermal_analysis, load_history, load_thermal_device_records, save_thermal_device_records
 from widgets import ScrollFrame
+from device_sync import DeviceSyncService, WatchService
 
 THERMAL_ANALYSIS_DIR = Path(r"C:\Users\LABOR01\Desktop\microestructura anialisis carbo2\exels")
 THERMAL_EXTENSIONS = {".xlsx", ".xls", ".csv"}
@@ -147,8 +148,27 @@ class TabAnalisisTermico(ttk.Frame):
         self.selection_var = tk.StringVar(value="Selecciona uno o mas archivos para ver curvas y resultados.")
         self.toggle_list_var = tk.StringVar(value="Ocultar lista")
 
+        # Servicio de sincronización automática en background
+        self._sync_service = DeviceSyncService(
+            ip=DEFAULT_THERMAL_DEVICE_IP,
+            on_done=self._on_sync_done,
+            on_log=self._log_backend,
+        )
+
+        # Servicio de vigilancia para auto ajuste
+        self._watch_service = WatchService(
+            ip=DEFAULT_THERMAL_DEVICE_IP,
+            on_carbon=self._on_watch_carbon,
+            on_status=self._log_backend,
+            interval=20,
+        )
+        self._auto_ajuste_var = tk.BooleanVar(value=False)
+
         self._build_ui()
         self.refresh()
+
+        # Arranca sync al abrir la pestaña (no bloquea la UI)
+        self._sync_service.start_once()
 
     def _log_backend(self, message):
         top = self.winfo_toplevel() if hasattr(self, "winfo_toplevel") else None
@@ -156,6 +176,113 @@ class TabAnalisisTermico(ttk.Frame):
             return
         stamp = datetime.now().strftime("%H:%M:%S")
         print(f"[{stamp}][AnalisisTermico] {message}", flush=True)
+
+    def _on_sync_done(self, result):
+        """Callback del DeviceSyncService — corre en el thread de sync, usa after() para la UI."""
+        if not result.get("ok"):
+            self._log_backend(f"[sync] Error: {result.get('error','?')}")
+            return
+        new = result.get("new", 0)
+        total = result.get("total", 0)
+        self._log_backend(f"[sync] Completado — nuevos={new} total={total}")
+        if new > 0:
+            # Recargar registros desde DB y refrescar la lista en el hilo principal
+            def _apply():
+                try:
+                    self._device_records = self._normalize_device_records(load_thermal_device_records())
+                    self.refresh()
+                    self.status_var.set(
+                        f"{len(self._records)} archivo(s) detectado(s). "
+                        f"Sync automático: {new} nuevo(s) descargado(s)."
+                    )
+                except Exception:
+                    pass
+            try:
+                self.after(0, _apply)
+            except Exception:
+                pass
+
+    # ---------- auto ajuste ----------
+
+    def _toggle_auto_ajuste(self):
+        if self._watch_service.is_running:
+            self._watch_service.stop()
+            self._auto_ajuste_var.set(False)
+            self.status_var.set("Auto Ajuste desactivado.")
+        else:
+            if self._ajuste_target is None:
+                import tkinter.messagebox as _mb
+                _mb.showwarning(
+                    "Auto Ajuste",
+                    "La pestaña Ajuste no está disponible.\nAbrí la pestaña Ajuste primero.",
+                    parent=self,
+                )
+                return
+            # Sembrar IDs actuales para no disparar en registros viejos
+            self._watch_service.reset_seed()
+            self._watch_service.start()
+            self._auto_ajuste_var.set(True)
+            self.status_var.set(f"● Auto Ajuste activo — vigilando {self._watch_service.ip}")
+        self._update_auto_ajuste_btn()
+
+    def _update_auto_ajuste_btn(self):
+        if not hasattr(self, "_auto_ajuste_btn"):
+            return
+        if self._watch_service.is_running:
+            self._auto_ajuste_btn.config(
+                text="● Auto Ajuste ON",
+                background="#2ecc71",
+                foreground="#ffffff",
+                activebackground="#27ae60",
+                activeforeground="#ffffff",
+            )
+        else:
+            self._auto_ajuste_btn.config(
+                text="Auto Ajuste",
+                background="SystemButtonFace",
+                foreground="SystemButtonText",
+                activebackground="SystemButtonFace",
+                activeforeground="SystemButtonText",
+            )
+
+    def _on_watch_carbon(self, info):
+        """
+        Callback del WatchService — corre en el thread de vigilancia.
+        Usa after(0, ...) para interactuar con la UI.
+        """
+        carbon  = info.get("C %")
+        silicon = info.get("Si %")
+        label   = info.get("_label", "Carbomax auto")
+
+        if carbon is None or silicon is None:
+            return
+
+        def _apply():
+            if self._ajuste_target is None:
+                return
+            try:
+                self._ajuste_target.load_carbon_silicon(
+                    carbon, silicon, source_label=label
+                )
+            except Exception as ex:
+                self._log_backend(f"[watch] Error cargando C/Si en Ajuste: {ex}")
+                return
+
+            # Cambiar a la pestaña Ajuste automáticamente
+            try:
+                top = self.winfo_toplevel()
+                top.nb.select(top.tab_ajuste)
+            except Exception:
+                pass
+
+            self.status_var.set(
+                f"● Auto Ajuste — C={carbon:.2f}%  Si={silicon:.2f}%  [{label}]"
+            )
+
+        try:
+            self.after(0, _apply)
+        except Exception:
+            pass
 
     def _build_ui(self):
         top = ttk.Frame(self)
@@ -166,6 +293,16 @@ class TabAnalisisTermico(ttk.Frame):
         ttk.Button(top, text="Descargar dispositivo", command=self._download_from_device).pack(side="right", padx=(0, 6))
         ttk.Button(top, text="Cargar C/Si en Ajuste", command=self._send_carbon_to_ajuste_v2).pack(side="right", padx=(0, 6))
         ttk.Button(top, text="Adjuntar a Historicos", command=self._attach_selected_to_history).pack(side="right", padx=(0, 6))
+        # Botón Auto Ajuste (toggle): verde cuando está activo
+        self._auto_ajuste_btn = tk.Button(
+            top,
+            text="Auto Ajuste",
+            command=self._toggle_auto_ajuste,
+            relief="raised",
+            bd=1,
+        )
+        self._auto_ajuste_btn.pack(side="right", padx=(0, 6))
+        self._update_auto_ajuste_btn()
         ttk.Combobox(
             top,
             textvariable=self.mode_var,
@@ -366,8 +503,13 @@ class TabAnalisisTermico(ttk.Frame):
         selected = [path for path in self._selected_paths if path in self._record_map]
 
         self.files_tree.delete(*self.files_tree.get_children())
+        seen_iids = set()
         for item in self._records:
-            self.files_tree.insert("", "end", iid=item["path"], values=(item["name"], item["modified"]))
+            iid = item["path"]
+            if iid in seen_iids:
+                continue
+            seen_iids.add(iid)
+            self.files_tree.insert("", "end", iid=iid, values=(item["name"], item["modified"]))
 
         self.status_var.set(f"{len(self._records)} archivo(s) detectado(s) en {self.folder}.")
         self._refresh_stats_tab()
@@ -406,6 +548,7 @@ class TabAnalisisTermico(ttk.Frame):
 
     def _normalize_device_records(self, records):
         out = []
+        seen_paths = set()
         for item in records or []:
             if not isinstance(item, dict):
                 continue
@@ -433,6 +576,12 @@ class TabAnalisisTermico(ttk.Frame):
                     if legacy_path:
                         payload["legacy_path"] = legacy_path
                     clean["payload"] = payload
+            # Dedup: skip records whose path already appeared (prevents Treeview iid collision)
+            record_path = str(clean.get("path", "") or "").strip()
+            if record_path and record_path in seen_paths:
+                continue
+            if record_path:
+                seen_paths.add(record_path)
             out.append(clean)
         return sorted(out, key=self._record_sort_datetime, reverse=True)
 

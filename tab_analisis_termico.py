@@ -239,10 +239,10 @@ class TabAnalisisTermico(ttk.Frame):
         else:
             self._auto_ajuste_btn.config(
                 text="Auto Ajuste",
-                background="SystemButtonFace",
-                foreground="SystemButtonText",
-                activebackground="SystemButtonFace",
-                activeforeground="SystemButtonText",
+                background="#d9d9d9",
+                foreground="#1a1a1a",
+                activebackground="#c8c8c8",
+                activeforeground="#1a1a1a",
             )
 
     def _on_watch_carbon(self, info):

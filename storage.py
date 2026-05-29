@@ -16,6 +16,7 @@ _FURNACE_FILE  = os.path.join(os.path.expanduser("~"), "ajuste_comp_pie_horno.js
 _LADLES_FILE   = os.path.join(os.path.expanduser("~"), "ajuste_comp_cucharas.json")
 _DEVICES_FILE  = os.path.join(os.path.expanduser("~"), "ajuste_comp_devices.json")
 _THERMAL_FILE  = os.path.join(os.path.expanduser("~"), "ajuste_comp_thermal_device.json")
+_THERMAL_IPS_FILE = os.path.join(os.path.expanduser("~"), "ajuste_comp_thermal_ips.json")
 
 COLADA_KEY_RE = re.compile(r"^\s*(\d+)\s*/\s*(\d{2})(?:\s*-\s*.*)?\s*$")
 
@@ -651,6 +652,27 @@ def save_thermal_device_records(records):
                     )
         finally:
             conn.close()
+
+
+# ---------- Historial de IPs del dispositivo térmico ----------
+
+def load_thermal_ips():
+    try:
+        with open(_THERMAL_IPS_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            return [str(ip).strip() for ip in data if str(ip).strip()]
+    except Exception:
+        pass
+    return []
+
+
+def save_thermal_ips(ips):
+    try:
+        with open(_THERMAL_IPS_FILE, "w", encoding="utf-8") as f:
+            json.dump(ips, f, ensure_ascii=False)
+    except Exception:
+        pass
 
 
 # ---------- Informes de calidad ----------

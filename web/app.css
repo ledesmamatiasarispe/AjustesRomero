@@ -537,6 +537,115 @@ tbody tr:nth-child(even) {
   opacity: 0.55;
 }
 
+/* ── Modal Carbomax ──────────────────────────────────────────────── */
+.carbomax-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(30, 42, 36, 0.55);
+  backdrop-filter: blur(6px);
+}
+.carbomax-modal-overlay[hidden] { display: none; }
+
+.carbomax-modal {
+  width: min(480px, 100%);
+  background: var(--panel-strong);
+  border-radius: 24px;
+  padding: 28px 28px 24px;
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+}
+.carbomax-modal-kicker {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin: 0 0 4px;
+}
+.carbomax-modal-title {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--ink);
+  margin: 0 0 4px;
+}
+.carbomax-modal-source {
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0 0 16px;
+}
+.carbomax-modal-values {
+  display: flex;
+  gap: 16px;
+  background: var(--accent);
+  border-radius: 14px;
+  padding: 16px 20px;
+  margin-bottom: 20px;
+}
+.carbomax-val-block {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.carbomax-val-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: rgba(255,255,255,0.65);
+}
+.carbomax-val-num {
+  font-size: 32px;
+  font-weight: 800;
+  color: #fff;
+  line-height: 1;
+}
+.carbomax-val-unit {
+  font-size: 14px;
+  color: rgba(255,255,255,0.7);
+}
+.carbomax-modal-field {
+  margin-bottom: 14px;
+}
+.carbomax-modal-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-bottom: 5px;
+}
+.carbomax-modal-select,
+.carbomax-modal-input {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1.5px solid var(--border);
+  border-radius: 10px;
+  font-size: 14px;
+  background: #fff;
+  color: var(--ink);
+  box-sizing: border-box;
+}
+.carbomax-modal-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 20px;
+}
+.secondary-button {
+  flex: 1;
+  padding: 12px;
+  border: 1.5px solid var(--border);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.secondary-button:hover { background: var(--accent-soft); }
+/* ─────────────────────────────────────────────────────────────────── */
+
 .empty-state {
   display: none;
   margin: 0;
@@ -939,7 +1048,7 @@ tbody tr:nth-child(even) {
 
 #inoc-detail-body .inoc-etapa-first-row td,
 #inoc-detail-body .inoc-etapa-first-row th {
-  border-top: 2px solid var(--accent);
+  border-top: 3px solid var(--border);
 }
 
 .inoc-etapa-cell {
@@ -947,8 +1056,23 @@ tbody tr:nth-child(even) {
   vertical-align: middle;
   font-weight: 600;
   font-size: 0.85em;
-  background: var(--card-bg);
   border-right: 2px solid var(--accent);
   padding: 6px 10px;
   white-space: nowrap;
+}
+
+#inoc-detail-body .inoc-etapa-odd td:not(.inoc-etapa-cell) {
+  background-color: rgba(48, 92, 77, 0.11);
+}
+
+#inoc-detail-body .inoc-etapa-even td:not(.inoc-etapa-cell) {
+  background-color: var(--panel-strong);
+}
+
+#inoc-detail-body .inoc-etapa-odd .inoc-etapa-cell {
+  background: rgba(48, 92, 77, 0.16);
+}
+
+#inoc-detail-body .inoc-etapa-even .inoc-etapa-cell {
+  background: var(--panel-strong);
 }

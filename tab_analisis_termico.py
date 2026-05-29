@@ -17,7 +17,7 @@ from pathlib import Path
 from tkinter import ttk, messagebox
 
 from config import BG_ENTRY, FG, ACCENT
-from storage import attach_thermal_analysis, load_history, load_thermal_device_records, save_thermal_device_records
+from storage import attach_thermal_analysis, load_history, load_thermal_device_records, save_thermal_device_records, load_thermal_ips, save_thermal_ips
 from widgets import ScrollFrame
 from device_sync import DeviceSyncService, WatchService
 
@@ -218,11 +218,15 @@ class TabAnalisisTermico(ttk.Frame):
                     parent=self,
                 )
                 return
+            # Actualizar IP desde el campo antes de arrancar
+            ip = str(self.device_ip_var.get() or "").strip() or DEFAULT_THERMAL_DEVICE_IP
+            self._watch_service.ip = ip
+            self._save_ip_to_history(ip)
             # Sembrar IDs actuales para no disparar en registros viejos
             self._watch_service.reset_seed()
             self._watch_service.start()
             self._auto_ajuste_var.set(True)
-            self.status_var.set(f"● Auto Ajuste activo — vigilando {self._watch_service.ip}")
+            self.status_var.set(f"● Auto Ajuste activo — vigilando {ip}")
         self._update_auto_ajuste_btn()
 
     def _update_auto_ajuste_btn(self):
@@ -262,7 +266,7 @@ class TabAnalisisTermico(ttk.Frame):
                 return
             try:
                 self._ajuste_target.load_carbon_silicon(
-                    carbon, silicon, source_label=label
+                    carbon, silicon, source_label=label, force_estimate=True
                 )
             except Exception as ex:
                 self._log_backend(f"[watch] Error cargando C/Si en Ajuste: {ex}")
@@ -293,6 +297,7 @@ class TabAnalisisTermico(ttk.Frame):
         ttk.Button(top, text="Descargar dispositivo", command=self._download_from_device).pack(side="right", padx=(0, 6))
         ttk.Button(top, text="Cargar C/Si en Ajuste", command=self._send_carbon_to_ajuste_v2).pack(side="right", padx=(0, 6))
         ttk.Button(top, text="Adjuntar a Historicos", command=self._attach_selected_to_history).pack(side="right", padx=(0, 6))
+        ttk.Button(top, text="Eliminar", command=self._delete_selected).pack(side="right", padx=(0, 6))
         # Botón Auto Ajuste (toggle): verde cuando está activo
         self._auto_ajuste_btn = tk.Button(
             top,
@@ -312,7 +317,11 @@ class TabAnalisisTermico(ttk.Frame):
         ).pack(side="right", padx=(0, 6))
         self.mode_var.trace_add("write", lambda *_: self.refresh())
         ttk.Label(top, text="Modo").pack(side="right", padx=(0, 6))
-        ttk.Entry(top, textvariable=self.device_ip_var, width=15).pack(side="right", padx=(0, 6))
+        self._ip_combo = ttk.Combobox(
+            top, textvariable=self.device_ip_var, width=17,
+            values=load_thermal_ips() or [DEFAULT_THERMAL_DEVICE_IP],
+        )
+        self._ip_combo.pack(side="right", padx=(0, 6))
         ttk.Label(top, text="IP equipo").pack(side="right", padx=(0, 6))
         ttk.Button(top, textvariable=self.toggle_list_var, command=self._toggle_files_pane).pack(side="right", padx=(0, 6))
 
@@ -334,15 +343,17 @@ class TabAnalisisTermico(ttk.Frame):
 
         self.files_tree = ttk.Treeview(
             left,
-            columns=("archivo", "fecha"),
+            columns=("archivo", "ip", "fecha"),
             show="headings",
             height=18,
             selectmode="extended",
         )
         self.files_tree.heading("archivo", text="Archivo")
+        self.files_tree.heading("ip", text="IP")
         self.files_tree.heading("fecha", text="Modificado")
-        self.files_tree.column("archivo", width=180, anchor="w")
-        self.files_tree.column("fecha", width=120, anchor="w")
+        self.files_tree.column("archivo", width=160, anchor="w")
+        self.files_tree.column("ip", width=110, anchor="w")
+        self.files_tree.column("fecha", width=110, anchor="w")
         self.files_tree.pack(side="left", fill="both", expand=True)
         self.files_tree.bind("<<TreeviewSelect>>", lambda e: self._on_select_files())
 
@@ -509,7 +520,7 @@ class TabAnalisisTermico(ttk.Frame):
             if iid in seen_iids:
                 continue
             seen_iids.add(iid)
-            self.files_tree.insert("", "end", iid=iid, values=(item["name"], item["modified"]))
+            self.files_tree.insert("", "end", iid=iid, values=(item["name"], self._record_ip(item), item["modified"]))
 
         self.status_var.set(f"{len(self._records)} archivo(s) detectado(s) en {self.folder}.")
         self._refresh_stats_tab()
@@ -590,13 +601,14 @@ class TabAnalisisTermico(ttk.Frame):
         if not ip:
             messagebox.showwarning("Analisis termico", "Ingresa la IP del equipo.", parent=self)
             return
+        self._save_ip_to_history(ip)
         self._log_backend(f"Inicio descarga desde dispositivo {ip}")
         self.status_var.set(f"Descargando analisis termicos desde {ip}...")
         self.selection_var.set("Consultando el equipo...")
         worker = threading.Thread(target=self._download_from_device_worker, args=(ip,), daemon=True)
         worker.start()
 
-    def poll_latest_carbon_async(self, session_started_at, consumed_paths, callback):
+    def poll_latest_carbon_async(self, session_started_at, consumed_paths, callback, timeout=None, after_ts=""):
         if self._device_poll_running:
             return False
         ip = str(self.device_ip_var.get() or "").strip()
@@ -605,16 +617,16 @@ class TabAnalisisTermico(ttk.Frame):
         self._device_poll_running = True
         worker = threading.Thread(
             target=self._poll_latest_carbon_worker,
-            args=(ip, session_started_at, consumed_paths, callback),
+            args=(ip, session_started_at, consumed_paths, callback, timeout, after_ts),
             daemon=True,
         )
         worker.start()
         return True
 
-    def _poll_latest_carbon_worker(self, ip, session_started_at, consumed_paths, callback):
+    def _poll_latest_carbon_worker(self, ip, session_started_at, consumed_paths, callback, timeout=None, after_ts=""):
         try:
             try:
-                records = self._fetch_latest_carbon_records(ip, session_started_at, consumed_paths)
+                records = self._fetch_latest_carbon_records(ip, session_started_at, consumed_paths, timeout=timeout, after_ts=after_ts)
                 source = "device"
             except Exception as ex:
                 self._log_backend(f"Poll Carbono: consulta directa fallo; usando cache de Analisis termico: {ex}")
@@ -680,7 +692,7 @@ class TabAnalisisTermico(ttk.Frame):
             self.selection_var.set("No se encontraron analisis termicos en el dispositivo.")
             self.status_var.set(f"El equipo {ip} respondio, pero no devolvio analisis termicos utilizables.")
 
-    def _fetch_latest_carbon_records(self, ip, session_started_at=None, consumed_paths=None):
+    def _fetch_latest_carbon_records(self, ip, session_started_at=None, consumed_paths=None, timeout=None, after_ts=""):
         cached = self._normalize_device_records(load_thermal_device_records() or self._device_records)
         started_dt = self._parse_session_datetime(session_started_at)
         consumed = set()
@@ -689,13 +701,29 @@ class TabAnalisisTermico(ttk.Frame):
         elif consumed_paths:
             consumed = {str(consumed_paths).strip()}
 
+        _timeout = timeout if timeout is not None else THERMAL_AUTO_POLL_TIMEOUT
         index_json = self._http_get_json(
             ip,
             "/getallidx.cgi",
-            timeout=THERMAL_AUTO_POLL_TIMEOUT,
+            timeout=_timeout,
             retries=THERMAL_AUTO_POLL_RETRIES,
         )
-        index_rows = sorted(self._extract_json_rows(index_json), key=self._index_row_sort_datetime, reverse=True)
+        all_rows = self._extract_json_rows(index_json)
+
+        # Filtrar por timestamp: solo registros posteriores al último procesado.
+        # Esto es correcto con buffers circulares (el ID puede reiniciarse, el tiempo no).
+        after_dt = self._parse_device_info_datetime(after_ts) if after_ts else None
+        if after_dt:
+            filtered = []
+            for row in all_rows:
+                row_dt = self._parse_device_info_datetime(
+                    self._format_device_index_datetime(row.get("date"))
+                )
+                if row_dt and row_dt > after_dt:
+                    filtered.append(row)
+            all_rows = filtered
+
+        index_rows = sorted(all_rows, key=self._index_row_sort_datetime, reverse=True)
         carbon_rows = [
             row for row in index_rows
             if "CARB" in str(row.get("mode", "") or "").upper()
@@ -750,7 +778,7 @@ class TabAnalisisTermico(ttk.Frame):
             detail_json = self._http_get_json(
                 ip,
                 f"/getdata.cgi?btrqh={urllib.parse.quote(row_id)}",
-                timeout=THERMAL_AUTO_POLL_TIMEOUT,
+                timeout=_timeout,
                 retries=THERMAL_AUTO_POLL_RETRIES,
             )
             detail_rows = self._extract_json_rows(detail_json)
@@ -1364,6 +1392,68 @@ class TabAnalisisTermico(ttk.Frame):
             except Exception:
                 pass
         return None
+
+    def _save_ip_to_history(self, ip):
+        ip = str(ip or "").strip()
+        if not ip:
+            return
+        history = [ip] + [h for h in load_thermal_ips() if h != ip]
+        history = history[:10]
+        save_thermal_ips(history)
+        if hasattr(self, "_ip_combo"):
+            self._ip_combo.configure(values=history)
+
+    def _record_ip(self, item):
+        if str(item.get("source", "") or "") != "device":
+            return ""
+        payload = item.get("payload", {}) if isinstance(item.get("payload"), dict) else {}
+        info = payload.get("info", {}) if isinstance(payload, dict) else {}
+        return str(info.get("IP", "") or "").strip()
+
+    def _delete_selected(self):
+        if not self._selected_paths:
+            messagebox.showinfo("Eliminar", "No hay registros seleccionados.", parent=self)
+            return
+        to_delete = [self._record_map[p] for p in self._selected_paths if p in self._record_map]
+        if not to_delete:
+            return
+        names = [r["name"] for r in to_delete]
+        preview = "\n".join(f"  - {n}" for n in names[:6])
+        if len(names) > 6:
+            preview += f"\n  ... y {len(names) - 6} más"
+        if not messagebox.askyesno(
+            "Eliminar registros",
+            f"¿Eliminar {len(to_delete)} registro(s)?\n\n{preview}",
+            parent=self,
+        ):
+            return
+        errors = []
+        device_paths_removed = set()
+        for record in to_delete:
+            source = str(record.get("source", "") or "")
+            path = str(record.get("path", "") or "")
+            if source == "file":
+                try:
+                    Path(path).unlink()
+                except Exception as ex:
+                    errors.append(f"{record['name']}: {ex}")
+            elif source == "device":
+                device_paths_removed.add(path)
+        if device_paths_removed:
+            self._device_records = [
+                r for r in self._device_records
+                if str(r.get("path", "") or "") not in device_paths_removed
+            ]
+            save_thermal_device_records(self._device_records)
+        if errors:
+            messagebox.showwarning(
+                "Eliminar",
+                f"Eliminados con errores:\n" + "\n".join(errors),
+                parent=self,
+            )
+        self._selected_paths = []
+        self._parsed_cache = {k: v for k, v in self._parsed_cache.items() if k not in device_paths_removed}
+        self.refresh()
 
     def _toggle_files_pane(self):
         if self._left_pane_visible:

@@ -894,6 +894,97 @@ function renderSnapshot(data) {
     material_objetivo: cucharas.material_objetivo || ajuste.material_objetivo || "",
   });
   renderCucharasStats(cucharas.statistics || {});
+  renderCarbomaxPending(data?.carbomax_pending || null);
+}
+
+// ── Modal Carbomax pendiente ────────────────────────────────────────
+
+const carbomaxModal = {
+  overlay: document.getElementById("carbomax-modal-overlay"),
+  sourceEl: document.getElementById("carbomax-modal-source"),
+  cEl: document.getElementById("carbomax-modal-c"),
+  siEl: document.getElementById("carbomax-modal-si"),
+  objetivoRow: document.getElementById("carbomax-objetivo-row"),
+  objetivoSelect: document.getElementById("carbomax-objetivo-select"),
+  coladaInput: document.getElementById("carbomax-colada-input"),
+  confirmBtn: document.getElementById("carbomax-confirm-btn"),
+  rejectBtn: document.getElementById("carbomax-reject-btn"),
+  visible: false,
+  sending: false,
+};
+
+function renderCarbomaxPending(pending) {
+  if (!carbomaxModal.overlay) return;
+  if (!pending) {
+    hideCarbomaxModal();
+    return;
+  }
+  // Solo mostrar a dispositivos editor
+  if (deviceState.role !== "editor") {
+    hideCarbomaxModal();
+    return;
+  }
+  const c  = Number(pending.carbon  || 0);
+  const si = Number(pending.silicon || 0);
+  if (c <= 0 && si <= 0) {
+    hideCarbomaxModal();
+    return;
+  }
+  carbomaxModal.cEl.textContent  = c.toFixed(2);
+  carbomaxModal.siEl.textContent = si.toFixed(2);
+  const src = [pending.source, pending.analysis_ts].filter(Boolean).join("  —  ");
+  carbomaxModal.sourceEl.textContent = src;
+
+  // Selector de objetivo (solo si no hay sesión)
+  const objectives = Array.isArray(pending.objectives) ? pending.objectives : [];
+  if (objectives.length) {
+    carbomaxModal.objetivoRow.hidden = false;
+    carbomaxModal.objetivoSelect.innerHTML = objectives
+      .map((o) => `<option value="${String(o).replace(/"/g, "&quot;")}">${String(o)}</option>`)
+      .join("");
+  } else {
+    carbomaxModal.objetivoRow.hidden = true;
+  }
+
+  if (!carbomaxModal.visible) {
+    carbomaxModal.overlay.removeAttribute("hidden");
+    carbomaxModal.visible = true;
+  }
+}
+
+function hideCarbomaxModal() {
+  if (!carbomaxModal.overlay) return;
+  carbomaxModal.overlay.setAttribute("hidden", "");
+  carbomaxModal.visible = false;
+  carbomaxModal.sending = false;
+}
+
+async function sendCarbomaxAction(action) {
+  if (carbomaxModal.sending) return;
+  carbomaxModal.sending = true;
+  carbomaxModal.confirmBtn.disabled = true;
+  carbomaxModal.rejectBtn.disabled  = true;
+  try {
+    const body = { action };
+    if (action === "confirm") {
+      body.objetivo = carbomaxModal.objetivoSelect?.value || "";
+      body.colada   = carbomaxModal.coladaInput?.value?.trim() || "";
+    }
+    await apiFetch("/api/carbomax/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (_) {
+    // silencioso — el host limpiará el estado de todos modos
+  } finally {
+    hideCarbomaxModal();
+  }
+}
+
+function setupCarbomaxModal() {
+  carbomaxModal.confirmBtn?.addEventListener("click", () => sendCarbomaxAction("confirm"));
+  carbomaxModal.rejectBtn?.addEventListener("click",  () => sendCarbomaxAction("reject"));
 }
 
 function setStatus(ok, label) {
@@ -964,6 +1055,7 @@ function setupCucharasTabs() {
 
 setupTabs();
 setupCucharasTabs();
+setupCarbomaxModal();
 nodes.reloadAppBtn.addEventListener("click", () => {
   window.location.reload();
 });
@@ -1111,6 +1203,7 @@ function showInocDetail(idx) {
 
   // Reconstruir tbody
   let i = 0;
+  let groupIndex = 0;
   while (i < sorted.length) {
     const mom = sorted[i].momento || "horno";
     let count = 0;
@@ -1120,10 +1213,8 @@ function showInocDetail(idx) {
       const e = sorted[i + j];
       const eUnit = e.unidad || "cucharín";
       const tr = document.createElement("tr");
-      if (e.color && /^#[0-9a-fA-F]{6}$/.test(e.color)) {
-        tr.style.backgroundColor = e.color;
-        tr.style.color = contrastColor(e.color);
-      }
+      tr.classList.add(groupIndex % 2 === 0 ? "inoc-etapa-even" : "inoc-etapa-odd");
+      const hasColor = e.color && /^#[0-9a-fA-F]{6}$/.test(e.color);
       if (j === 0) {
         tr.classList.add("inoc-etapa-first-row");
         const td = document.createElement("td");
@@ -1144,9 +1235,16 @@ function showInocDetail(idx) {
       const rest = document.createElement("template");
       rest.innerHTML = rowHtml;
       tr.append(...rest.content.childNodes);
+      if (hasColor) {
+        for (const td of tr.querySelectorAll("td:not(.inoc-etapa-cell)")) {
+          td.style.backgroundColor = e.color;
+          td.style.color = contrastColor(e.color);
+        }
+      }
       body.appendChild(tr);
     }
     i += count;
+    groupIndex++;
   }
 }
 

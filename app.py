@@ -297,6 +297,11 @@ class App(tk.Frame):
         self.tab_analisis_termico = TabAnalisisTermico(nb)
         self.tab_analisis_termico.set_adjust_target(self.tab_ajuste)
         self.tab_ajuste.set_thermal_source(self.tab_analisis_termico)
+        try:
+            from host_api import set_carbomax_action_callback
+            set_carbomax_action_callback(self.tab_ajuste._on_web_carbomax_action)
+        except Exception:
+            pass
         self.tab_pie_horno = TabPieHorno(nb)
         self.tab_options  = ttk.Frame(nb, padding=12)
         self.tab_hist.set_quality_target(nb, self.tab_calidad)

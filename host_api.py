@@ -37,6 +37,26 @@ DEVICE_ROLES = ("viewer", "editor")
 _EVENT_CONDITION = threading.Condition()
 _DATA_VERSION = 0
 
+_CARBOMAX_PENDING = {}          # {carbon, silicon, source, analysis_ts, objectives, record_keys}
+_CARBOMAX_ACTION_CB = None      # fn(action, objetivo, colada) llamado desde el web
+
+
+def set_carbomax_action_callback(fn):
+    global _CARBOMAX_ACTION_CB
+    _CARBOMAX_ACTION_CB = fn
+
+
+def set_carbomax_pending(data):
+    global _CARBOMAX_PENDING
+    _CARBOMAX_PENDING = dict(data) if data else {}
+    notify_data_changed()
+
+
+def clear_carbomax_pending():
+    global _CARBOMAX_PENDING
+    _CARBOMAX_PENDING = {}
+    notify_data_changed()
+
 
 class CucharasContextError(ValueError):
     pass
@@ -338,6 +358,7 @@ def build_host_payload():
     if changed:
         save_ladles_state(ladles)
     payload["cucharas"] = _cucharas_payload_from_state(ladles)
+    payload["carbomax_pending"] = dict(_CARBOMAX_PENDING) if _CARBOMAX_PENDING else None
     return payload
 
 
@@ -994,6 +1015,29 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
             "message": "Usa delta/start/save. No se aceptan snapshots completos para evitar pisar conteos desde clientes viejos.",
         }, status=409)
 
+    def _handle_post_carbomax_action(self):
+        device = self._device_auth_device()
+        if str((device or {}).get("status") or "unknown") != "approved":
+            self._send_device_error(str((device or {}).get("status") or "unknown"))
+            return
+        payload = self._read_json_body()
+        if payload is None:
+            self._send_json({"ok": False, "error": "invalid_json"}, status=400)
+            return
+        action = str(payload.get("action", "") or "").strip().lower()
+        if action not in ("confirm", "reject"):
+            self._send_json({"ok": False, "error": "invalid_action"}, status=400)
+            return
+        objetivo = str(payload.get("objetivo", "") or "").strip()
+        colada   = str(payload.get("colada", "") or "").strip()
+        clear_carbomax_pending()
+        if callable(_CARBOMAX_ACTION_CB):
+            try:
+                _CARBOMAX_ACTION_CB(action, objetivo, colada)
+            except Exception:
+                pass
+        self._send_json({"ok": True, "action": action})
+
     def do_POST(self):
         path = self._request_path()
         if path in ("/api/device/register", "/api/device/register/"):
@@ -1002,6 +1046,8 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
             self._handle_post_pie_horno()
         elif path in ("/api/cucharas", "/api/cucharas/"):
             self._handle_post_cucharas()
+        elif path in ("/api/carbomax/action", "/api/carbomax/action/"):
+            self._handle_post_carbomax_action()
         else:
             self._send_json({"ok": False, "error": "not_found"}, status=404)
 

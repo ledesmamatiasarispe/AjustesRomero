@@ -54,6 +54,39 @@
       <button class="tab" data-tab-target="inoc-panel" type="button">Inoculaciones</button>
     </nav>
 
+    <!-- Modal: nuevo análisis Carbono del Carbomax -->
+    <div class="carbomax-modal-overlay" id="carbomax-modal-overlay" hidden>
+      <div class="carbomax-modal" id="carbomax-modal" role="dialog" aria-modal="true">
+        <p class="carbomax-modal-kicker">Carbomax automático</p>
+        <h2 class="carbomax-modal-title">Nuevo análisis Carbono</h2>
+        <p class="carbomax-modal-source" id="carbomax-modal-source"></p>
+        <div class="carbomax-modal-values">
+          <div class="carbomax-val-block">
+            <span class="carbomax-val-label">C</span>
+            <span class="carbomax-val-num" id="carbomax-modal-c">-</span>
+            <span class="carbomax-val-unit">%</span>
+          </div>
+          <div class="carbomax-val-block">
+            <span class="carbomax-val-label">Si</span>
+            <span class="carbomax-val-num" id="carbomax-modal-si">-</span>
+            <span class="carbomax-val-unit">%</span>
+          </div>
+        </div>
+        <div class="carbomax-modal-field" id="carbomax-objetivo-row">
+          <label class="carbomax-modal-label" for="carbomax-objetivo-select">Material objetivo</label>
+          <select class="carbomax-modal-select" id="carbomax-objetivo-select"></select>
+        </div>
+        <div class="carbomax-modal-field">
+          <label class="carbomax-modal-label" for="carbomax-colada-input">N° colada (opcional)</label>
+          <input class="carbomax-modal-input" id="carbomax-colada-input" type="text" placeholder="0050/26" maxlength="30">
+        </div>
+        <div class="carbomax-modal-actions">
+          <button class="action-button" id="carbomax-confirm-btn" type="button">Calcular ajuste</button>
+          <button class="secondary-button" id="carbomax-reject-btn" type="button">Descartar</button>
+        </div>
+      </div>
+    </div>
+
     <main class="panels">
       <section class="panel is-active" id="ajuste-panel">
         <div class="summary-grid">

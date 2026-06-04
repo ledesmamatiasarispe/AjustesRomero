@@ -374,12 +374,16 @@ class TabAnalisisTermico(ttk.Frame):
         info_box = ttk.Frame(self.side_nb, padding=8)
         compare_box = ttk.Frame(self.side_nb, padding=8)
         stats_box = ttk.Frame(self.side_nb, padding=8)
+        expansion_box = ttk.Frame(self.side_nb, padding=8)
         self.info_box = info_box
         self.compare_box = compare_box
         self.stats_box = stats_box
+        self.expansion_box = expansion_box
         self.side_nb.add(info_box, text="Informacion")
         self.side_nb.add(compare_box, text="Comparacion")
         self.side_nb.add(stats_box, text="Estadisticas")
+        self.side_nb.add(expansion_box, text="Expansion")
+        self._build_expansion_tab(expansion_box)
 
         self.curves_box = ttk.LabelFrame(chart_box, text="Curvas visibles", padding=6)
         self.curves_box.pack(fill="x", pady=(0, 8))
@@ -702,12 +706,7 @@ class TabAnalisisTermico(ttk.Frame):
             consumed = {str(consumed_paths).strip()}
 
         _timeout = timeout if timeout is not None else THERMAL_AUTO_POLL_TIMEOUT
-        index_json = self._http_get_json(
-            ip,
-            "/getallidx.cgi",
-            timeout=_timeout,
-            retries=THERMAL_AUTO_POLL_RETRIES,
-        )
+        index_json = self._fetch_index_json(ip, _timeout)
         all_rows = self._extract_json_rows(index_json)
 
         # Filtrar por timestamp: solo registros posteriores al último procesado.
@@ -775,12 +774,7 @@ class TabAnalisisTermico(ttk.Frame):
                     break
                 continue
 
-            detail_json = self._http_get_json(
-                ip,
-                f"/getdata.cgi?btrqh={urllib.parse.quote(row_id)}",
-                timeout=_timeout,
-                retries=THERMAL_AUTO_POLL_RETRIES,
-            )
+            detail_json = self._fetch_detail_json(ip, row_id, row, _timeout)
             detail_rows = self._extract_json_rows(detail_json)
             if not detail_rows:
                 continue
@@ -822,8 +816,8 @@ class TabAnalisisTermico(ttk.Frame):
         return self._normalize_device_records(list(records_by_identity.values()) + records_without_identity)
 
     def _fetch_device_records(self, ip):
-        self._log_backend(f"Solicitando indice getallidx.cgi a {ip}")
-        index_json = self._http_get_json(ip, "/getallidx.cgi")
+        self._log_backend(f"Solicitando indice a {ip}")
+        index_json = self._fetch_index_json(ip, THERMAL_DEVICE_TIMEOUT)
         index_rows = sorted(self._extract_json_rows(index_json), key=self._index_row_sort_datetime, reverse=True)
         self._log_backend(f"Indice recibido desde {ip}: {len(index_rows)} registro(s)")
         existing_by_path = {}
@@ -888,7 +882,7 @@ class TabAnalisisTermico(ttk.Frame):
             if existing:
                 self._log_backend(f"id={row_id}: cache incompleto para este modo, se redescarga detalle")
             self._log_backend(f"Descargando detalle {idx}/{len(index_rows)} id={row_id}")
-            detail_json = self._http_get_json(ip, f"/getdata.cgi?btrqh={urllib.parse.quote(row_id)}")
+            detail_json = self._fetch_detail_json(ip, row_id, row, THERMAL_DEVICE_TIMEOUT)
             detail_rows = self._extract_json_rows(detail_json)
             if not detail_rows:
                 self._log_backend(f"id={row_id}: detalle vacio")
@@ -1121,6 +1115,67 @@ class TabAnalisisTermico(ttk.Frame):
             return None
         _, record = candidates[0]
         return record
+
+    def _fetch_index_json(self, ip, timeout):
+        """Obtiene el índice de análisis usando HistIndex.dat (página web) con fallback a getallidx.cgi."""
+        from device_sync import _parse_hist_index_dat, _is_busy_html
+        try:
+            raw = self._http_get_json_raw_bytes(ip, "/HistIndex.dat", timeout)
+            if _is_busy_html(raw):
+                raise RuntimeError("device_busy: dispositivo en análisis")
+            return _parse_hist_index_dat(raw)
+        except RuntimeError:
+            raise
+        except Exception as ex1:
+            self._log_backend(f"HistIndex.dat falló ({ex1}), usando getallidx.cgi")
+            try:
+                raw2 = self._http_get_json_raw_bytes(ip, "/getallidx.cgi", timeout)
+                if _is_busy_html(raw2):
+                    raise RuntimeError("device_busy: dispositivo en análisis")
+                return self._parse_device_json_bytes(raw2, f"http://{ip}/getallidx.cgi")
+            except RuntimeError:
+                raise
+            except Exception as ex2:
+                raise RuntimeError(str(ex2)) from ex2
+
+    def _fetch_detail_json(self, ip, row_id, index_row, timeout):
+        """Obtiene el detalle de un análisis usando dadoshist.cgi con fallback a getdata.cgi."""
+        from device_sync import _parse_dadoshist_csv, _is_busy_html
+        try:
+            raw = self._http_get_json_raw_bytes(ip, f"/dadoshist.cgi?btrqh={urllib.parse.quote(str(row_id))}", timeout)
+            if _is_busy_html(raw):
+                raise RuntimeError("Dispositivo ocupado")
+            return _parse_dadoshist_csv(raw, index_row=index_row)
+        except Exception as ex1:
+            self._log_backend(f"dadoshist.cgi falló ({ex1}), usando getdata.cgi")
+            return self._http_get_json(ip, f"/getdata.cgi?btrqh={urllib.parse.quote(str(row_id))}", timeout=timeout, retries=THERMAL_AUTO_POLL_RETRIES)
+
+    def _http_get_json_raw_bytes(self, ip, endpoint, timeout):
+        """Hace GET y devuelve bytes crudos sin parsear como JSON."""
+        import http.client as _hc
+        url = f"http://{ip}{endpoint}"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "AjusteComp/1.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read()
+        except _hc.BadStatusLine:
+            return self._http_get_json_raw_socket_bytes(ip, endpoint, timeout)
+
+    def _http_get_json_raw_socket_bytes(self, ip, endpoint, timeout):
+        request = (
+            f"GET {endpoint} HTTP/1.0\r\nHost: {ip}\r\n"
+            "User-Agent: AjusteComp/1.0\r\nConnection: close\r\n\r\n"
+        ).encode("ascii", errors="ignore")
+        with socket.create_connection((ip, 80), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            sock.sendall(request)
+            chunks = []
+            while True:
+                chunk = sock.recv(65536)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        return b"".join(chunks)
 
     def _http_get_json(self, ip, endpoint, timeout=None, retries=None):
         url = f"http://{ip}{endpoint}"
@@ -1455,6 +1510,142 @@ class TabAnalisisTermico(ttk.Frame):
         self._parsed_cache = {k: v for k, v in self._parsed_cache.items() if k not in device_paths_removed}
         self.refresh()
 
+    # ── Calculadora de expansión ───────────────────────────────────────────────
+
+    def _build_expansion_tab(self, parent):
+        ttk.Label(parent, text="Calculadora de Expansión Grafítica",
+                  font=("Arial", 10, "bold")).pack(anchor="w", pady=(0, 4))
+        ttk.Label(parent,
+                  text="Ingresá los tiempos (tag) en segundos desde el inicio del análisis.",
+                  foreground="#666").pack(anchor="w", pady=(0, 8))
+
+        fields_frame = ttk.Frame(parent)
+        fields_frame.pack(fill="x")
+
+        # Entradas de tiempo
+        self._exp_vars = {}
+        field_defs = [
+            ("tag1", "tag1 — Tiempo en TL (Liquidus) [s]"),
+            ("tag2", "tag2 — Tiempo en TSE (Inicio eutéctico) [s]"),
+            ("tag3", "tag3 — Tiempo en TRE (Fin eutéctico / REC) [s]"),
+            ("tag4", "tag4 — Tiempo en TF (Solidificación final) [s]"),
+        ]
+        for key, label in field_defs:
+            row = ttk.Frame(fields_frame)
+            row.pack(fill="x", pady=2)
+            ttk.Label(row, text=label, width=36, anchor="w").pack(side="left")
+            var = tk.StringVar()
+            ttk.Entry(row, textvariable=var, width=8).pack(side="left", padx=(4, 0))
+            var.trace_add("write", lambda *_: self._calc_expansion())
+            self._exp_vars[key] = var
+
+        ttk.Button(parent, text="Limpiar", command=self._clear_expansion).pack(
+            anchor="w", pady=(6, 0))
+
+        ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=10)
+
+        # Resultados
+        res_frame = ttk.Frame(parent)
+        res_frame.pack(fill="x")
+
+        def _result_widget(res_frame, label):
+            f = ttk.Frame(res_frame)
+            f.pack(fill="x", pady=4)
+            ttk.Label(f, text=label, width=18, anchor="w",
+                      font=("Arial", 9, "bold")).pack(side="left")
+            val_var = tk.StringVar(value="—")
+            val_lbl = tk.Label(f, textvariable=val_var, width=10,
+                               font=("Arial", 14, "bold"), anchor="center",
+                               bg="#e8e8e8", relief="groove", padx=4)
+            val_lbl.pack(side="left", padx=(6, 0))
+            status_var = tk.StringVar()
+            status_lbl = tk.Label(f, textvariable=status_var,
+                                  font=("Arial", 9), anchor="w", width=20)
+            status_lbl.pack(side="left", padx=(8, 0))
+            return val_var, val_lbl, status_var, status_lbl
+
+        (self._exp_gray_var, self._exp_gray_lbl,
+         self._exp_gray_st, self._exp_gray_st_lbl)     = _result_widget(res_frame, "Expansión gris:")
+        (self._exp_nod_var, self._exp_nod_lbl,
+         self._exp_nod_st, self._exp_nod_st_lbl)       = _result_widget(res_frame, "Expansión nodular:")
+
+        ttk.Separator(parent, orient="horizontal").pack(fill="x", pady=(10, 4))
+
+        # Nota con las fórmulas
+        note = (
+            "Fórmulas:\n"
+            "  Exp. gris    = (tag4 − tag2) / (tag4 − tag1)   →  objetivo > 60 %\n"
+            "  Exp. nodular = (tag4 − tag3) / (tag4 − tag1)   →  objetivo > 70 %"
+        )
+        ttk.Label(parent, text=note, foreground="#555",
+                  font=("Arial", 8), justify="left").pack(anchor="w")
+
+    def _parse_exp_float(self, key):
+        try:
+            return float(self._exp_vars[key].get().replace(",", "."))
+        except Exception:
+            return None
+
+    def _clear_expansion(self):
+        for v in self._exp_vars.values():
+            v.set("")
+
+    def _populate_expansion_from_info(self, info):
+        """Auto-carga los tags desde el info dict de un registro seleccionado."""
+        if not hasattr(self, "_exp_vars"):
+            return
+        aliases = {
+            "tag1": ("tag1", "tag1 / TL (s)"),
+            "tag2": ("tag2", "tag2 / TSE (s)"),
+            "tag3": ("tag3", "tag3 / TRE (s)"),
+            "tag4": ("tag4", "tag4 / TF (s)"),
+        }
+        for key, alias_tuple in aliases.items():
+            val = self._info_alias_value(info, *alias_tuple)
+            if val:
+                self._exp_vars[key].set(str(val))
+
+    def _calc_expansion(self):
+        if not hasattr(self, "_exp_gray_var"):
+            return
+        t1 = self._parse_exp_float("tag1")
+        t2 = self._parse_exp_float("tag2")
+        t3 = self._parse_exp_float("tag3")
+        t4 = self._parse_exp_float("tag4")
+
+        COLOR_OK   = "#2ecc71"
+        COLOR_FAIL = "#e74c3c"
+        COLOR_ND   = "#aaaaaa"
+        BG_NORMAL  = "#e8e8e8"
+
+        def _apply(val_var, val_lbl, st_var, st_lbl, value, threshold, label):
+            if value is None:
+                val_var.set("—")
+                val_lbl.config(bg=BG_NORMAL, fg="#333")
+                st_var.set("")
+                st_lbl.config(fg="#666")
+            else:
+                pct = value * 100.0
+                ok = value >= threshold
+                val_var.set(f"{pct:.1f} %")
+                val_lbl.config(bg=COLOR_OK if ok else COLOR_FAIL, fg="#fff")
+                st_var.set("✓ OK" if ok else f"✗ Bajo (mín {threshold*100:.0f}%)")
+                st_lbl.config(fg=COLOR_OK if ok else COLOR_FAIL)
+
+        gray = None
+        nod  = None
+        if t1 is not None and t2 is not None and t4 is not None and t4 != t1:
+            gray = (t4 - t2) / (t4 - t1)
+        if t1 is not None and t3 is not None and t4 is not None and t4 != t1:
+            nod  = (t4 - t3) / (t4 - t1)
+
+        _apply(self._exp_gray_var, self._exp_gray_lbl,
+               self._exp_gray_st, self._exp_gray_st_lbl, gray, 0.60, "gris")
+        _apply(self._exp_nod_var, self._exp_nod_lbl,
+               self._exp_nod_st, self._exp_nod_st_lbl, nod, 0.70, "nodular")
+
+    # ── Fin calculadora de expansión ──────────────────────────────────────────
+
     def _toggle_files_pane(self):
         if self._left_pane_visible:
             try:
@@ -1622,6 +1813,9 @@ class TabAnalisisTermico(ttk.Frame):
             return
         first = payloads[0]
         mode_group = self._payload_mode_group(first)
+        # Auto-poblar calculadora de expansión solo para microestructura
+        if mode_group == "Microestructura":
+            self._populate_expansion_from_info(first.get("info", {}))
         row_order = THERMAL_INFO_CARBON_V2 if mode_group == "Carbono" else THERMAL_INFO_MICRO_V2
         self.info_tree.insert("", "end", values=("Archivo", first.get("name", "")))
         source = str(first.get("source", "") or "")

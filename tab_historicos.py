@@ -7,7 +7,7 @@ import json
 import re
 from datetime import datetime
 
-from storage import DuplicateColadaError, load_history, load_ladles_state, prune_ladles_history_for_sessions, update_session, delete_session, update_adjustment, delete_adjustment
+from storage import DuplicateColadaError, load_history, load_ladles_state, save_ladles_state, prune_ladles_history_for_sessions, update_session, delete_session, update_adjustment, delete_adjustment
 from widgets import ScrollFrame
 from config import ELEMENTS
 from utils import fmt, to_float, simulate_with_plan
@@ -449,7 +449,10 @@ class TabHistoricos(ttk.Frame):
         tree_ladles_events.pack(fill="both", expand=True)
         ladles_btns = ttk.Frame(tab_ladles)
         ladles_btns.pack(fill="x", pady=(6, 0))
-        ttk.Button(ladles_btns, text="Cerrar pestaÃ±a", command=lambda: self._close_session_tab(idx)).pack(side="right")
+        ttk.Button(ladles_btns, text="Editar cucharas",
+                   command=lambda i=idx: self._edit_ladles_dialog(i)).pack(side="left")
+        ttk.Button(ladles_btns, text="Cerrar pestaña",
+                   command=lambda: self._close_session_tab(idx)).pack(side="right")
 
         thermal_summary = ttk.Label(tab_thermal, text="", justify="left")
         thermal_summary.pack(anchor="w", pady=(0, 8))
@@ -776,6 +779,152 @@ class TabHistoricos(ttk.Frame):
     def _ladle_entries_for_session(self, session):
         entry = self._ladle_entry_for_session(session)
         return [entry] if entry else []
+
+    def _ladle_colada_key(self, session):
+        idn, yy, _ = split_colada(session.get("colada", ""))
+        if not idn:
+            return str(session.get("colada", "")).strip()
+        return f"{int(idn):04d} /{str(yy).zfill(2)}"
+
+    def _edit_ladles_dialog(self, idx):
+        if idx < 0 or idx >= len(self.hist):
+            return
+        session = self.hist[idx]
+        ladle_entry = self._ladle_entry_for_session(session)
+        colada_key  = self._ladle_colada_key(session)
+
+        # Obtener materiales disponibles (de la entrada existente o vacío)
+        rows = (ladle_entry or {}).get("rows", [])
+        if not rows:
+            from tkinter import messagebox
+            messagebox.showinfo("Editar cucharas",
+                                "No hay registro de cucharas para esta sesión.",
+                                parent=self)
+            return
+
+        dlg = tk.Toplevel(self)
+        dlg.title(f"Editar cucharas — {session.get('colada', '')}")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+
+        ttk.Label(dlg, text=f"Sesión: {session.get('colada', '')}",
+                  font=("TkDefaultFont", 10, "bold")).pack(anchor="w", padx=14, pady=(12, 2))
+        ttk.Label(dlg, text="Modificá la cantidad de cucharas por material.",
+                  foreground="#666").pack(anchor="w", padx=14, pady=(0, 8))
+
+        frame = ttk.Frame(dlg, padding=(14, 0, 14, 0))
+        frame.pack(fill="x")
+
+        count_vars = {}
+        for i, row in enumerate(rows):
+            mat = str(row.get("material_final", "") or "")
+            qty = int(row.get("cantidad", 0) or 0)
+            ttk.Label(frame, text=mat, width=22, anchor="w").grid(row=i, column=0, padx=(0, 8), pady=3)
+            var = tk.IntVar(value=qty)
+            count_vars[mat] = var
+            spin = ttk.Spinbox(frame, from_=0, to=9999, textvariable=var, width=6)
+            spin.grid(row=i, column=1, pady=3)
+            # Botones +/-
+            ttk.Button(frame, text="−", width=2,
+                       command=lambda v=var: v.set(max(0, v.get() - 1))).grid(row=i, column=2, padx=2)
+            ttk.Button(frame, text="+", width=2,
+                       command=lambda v=var: v.set(v.get() + 1)).grid(row=i, column=3)
+
+        ttk.Separator(dlg, orient="horizontal").pack(fill="x", padx=10, pady=10)
+
+        btn_frame = ttk.Frame(dlg)
+        btn_frame.pack(fill="x", padx=14, pady=(0, 12))
+
+        def _save():
+            new_counts = {mat: max(0, var.get()) for mat, var in count_vars.items()}
+            self._save_ladle_counts(colada_key, new_counts, ladle_entry)
+            dlg.destroy()
+            self._fill_session_tab(idx)
+
+        ttk.Button(btn_frame, text="Guardar", command=_save).pack(side="left")
+        ttk.Button(btn_frame, text="Cancelar", command=dlg.destroy).pack(side="left", padx=(6, 0))
+
+        dlg.update_idletasks()
+        try:
+            rx = self.winfo_rootx() + (self.winfo_width()  - dlg.winfo_width())  // 2
+            ry = self.winfo_rooty() + (self.winfo_height() - dlg.winfo_height()) // 2
+            dlg.geometry(f"+{rx}+{ry}")
+        except Exception:
+            pass
+
+    def _save_ladle_counts(self, colada_key, new_counts, old_entry):
+        """Actualiza history_by_colada con los nuevos conteos y recalcula estadísticas."""
+        from datetime import datetime as _dt
+        state = load_ladles_state()
+        if not isinstance(state, dict):
+            state = {}
+        history = state.get("history_by_colada", {})
+        if not isinstance(history, dict):
+            history = {}
+
+        old = history.get(colada_key, {})
+        if isinstance(old, list):
+            # Legacy: convertir a dict
+            old = {}
+
+        # Reconstruir events a partir de los nuevos counts
+        saved_at = _dt.now().isoformat(timespec="seconds")
+        old_events = old.get("events", {}) if isinstance(old, dict) else {}
+        new_events = {}
+        for mat, qty in new_counts.items():
+            existing = [e for e in (old_events.get(mat) or []) if isinstance(e, dict) and e.get("saved_at")]
+            if len(existing) > qty:
+                existing = existing[:qty]
+            while len(existing) < qty:
+                existing.append({"saved_at": saved_at})
+            if existing:
+                new_events[mat] = existing
+
+        total = sum(new_counts.values())
+        rows  = [{"material_final": m, "cantidad": c} for m, c in new_counts.items() if c > 0]
+
+        # Recalcular estadísticas básicas
+        all_times = []
+        stat_rows = []
+        for mat, evts in new_events.items():
+            times = [e.get("saved_at", "") for e in evts if e.get("saved_at")]
+            from datetime import datetime as _dt2
+            parsed = []
+            for t in times:
+                try:
+                    parsed.append(_dt2.fromisoformat(t))
+                except Exception:
+                    pass
+            first = min(parsed).isoformat(timespec="seconds") if parsed else ""
+            last  = max(parsed).isoformat(timespec="seconds") if parsed else ""
+            dur   = int((max(parsed) - min(parsed)).total_seconds()) if len(parsed) >= 2 else 0
+            all_times.extend(parsed)
+            stat_rows.append({
+                "material_final": mat, "total": len(evts),
+                "first_saved_at": first, "last_saved_at": last,
+                "duration_seconds": dur,
+            })
+
+        total_dur = int((max(all_times) - min(all_times)).total_seconds()) if len(all_times) >= 2 else 0
+        statistics = {
+            "rows": stat_rows,
+            "total_cucharas": total,
+            "first_saved_at": min(all_times).isoformat(timespec="seconds") if all_times else "",
+            "last_saved_at":  max(all_times).isoformat(timespec="seconds") if all_times else "",
+            "duration_seconds": total_dur,
+        }
+
+        history[colada_key] = {
+            "updated_at":       saved_at,
+            "colada":           colada_key,
+            "material_objetivo": (old.get("material_objetivo", "") if isinstance(old, dict) else ""),
+            "counts":           new_counts,
+            "events":           new_events,
+            "statistics":       statistics,
+        }
+        state["history_by_colada"] = history
+        save_ladles_state(state)
+        self.ladles = state   # refrescar cache local
 
     def _ladle_entry_for_session(self, session):
         idn, yy, _ = split_colada(session.get("colada", ""))

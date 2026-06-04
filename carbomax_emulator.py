@@ -281,8 +281,12 @@ class _Handler(BaseHTTPRequestHandler):
         q = self._query()
         if p in ("/getallidx.cgi", "/getallidx.cgi/"):
             self._handle_index()
+        elif p in ("/HistIndex.dat", "/HistIndex.dat/"):
+            self._handle_hist_index_dat()
         elif p in ("/getdata.cgi", "/getdata.cgi/"):
             self._handle_detail(q)
+        elif p in ("/dadoshist.cgi", "/dadoshist.cgi/"):
+            self._handle_dadoshist(q)
         elif p in ("/dataparam.cgi", "/dataparam.cgi/"):
             self._handle_auth(q)
         elif p in ("/", "/index.html"):
@@ -327,6 +331,89 @@ class _Handler(BaseHTTPRequestHandler):
                 "lot":      r["lot"],
             })
         _json_resp(self, {"TableIndex": rows})
+
+    def _handle_hist_index_dat(self):
+        lines = ["Historic,Date/Time,Test Type,Lot,Material,Save,Return"]
+        for r in _records:
+            # Convertir date "DDMMYYYY HHMMSS" → "DD/MM/YYYY - HH:MM:SS"
+            try:
+                from datetime import datetime as _dt
+                dt = _dt.strptime(r["date"], "%d%m%Y %H%M%S")
+                date_fmt = dt.strftime("%d/%m/%Y - %H:%M:%S")
+            except Exception:
+                date_fmt = r["date"]
+            lot  = r.get("lot", "").ljust(20)
+            mat  = r.get("material", "").ljust(20)
+            mode = r.get("mode", "").ljust(16)
+            lines.append(f"{date_fmt},{mode},{lot},{mat},{r['id']}")
+        body = "\r\n".join(lines).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _handle_dadoshist(self, q):
+        rid = (q.get("btrqh") or [""])[0].strip().lstrip("0") or "0"
+        for r in _records:
+            if str(r["id"]) == rid:
+                detail = r["detail"]
+                self._send_dadoshist_csv(detail)
+                return
+        body = b"Not found\r\n"
+        self.send_response(404)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_dadoshist_csv(self, detail):
+        mode = str(detail.get("test_mode", "")).upper()
+        def _f(v, div):  # valor / div formateado con coma decimal
+            try:
+                return f"{int(v)/div:>8.2f}".replace(".", ",")
+            except Exception:
+                return "   0,00"
+
+        if "CARB" in mode:
+            header = "Pico;TL;CE;TS;C;Si;TF"
+            vals = ";".join([
+                _f(detail.get("peak",0), 10),
+                _f(detail.get("liquidus",0), 10),
+                _f(detail.get("carbon_eq",0), 100),
+                _f(detail.get("solidus",0), 10),
+                _f(detail.get("carbon",0), 100),
+                _f(detail.get("silicon",0), 100),
+                _f(detail.get("final",0), 10),
+            ])
+        else:
+            header = "Pico;TL;CE%;TSE;TRE;REC;DREC;TF"
+            vals = ";".join([
+                _f(detail.get("peak",0), 10),
+                _f(detail.get("liquidus",0), 10),
+                _f(detail.get("carbon_eq",0), 100),
+                _f(detail.get("tse",0), 10),
+                _f(detail.get("tre",0), 10),
+                _f(detail.get("recalec",0), 10),
+                _f(detail.get("delta_rec",0), 100),
+                _f(detail.get("final",0), 10),
+            ])
+
+        temps  = detail.get("data_temp", [])
+        derivs = detail.get("data_deriv", [])
+        curve_lines = ["Periodo;Temperatura;Derivada"]
+        step = 0.5
+        for i, (t, d) in enumerate(zip(temps, derivs)):
+            periodo = f"{(i+1)*step:>6.2f}".replace(".", ",")
+            temp    = f"{t/10:>8.2f}".replace(".", ",")
+            deriv   = f"{d/100:>6.2f}".replace(".", ",")
+            curve_lines.append(f"{periodo};{temp};{deriv}")
+
+        body = (header + "\r\n" + vals + "\r\n\r\n" + "\r\n".join(curve_lines)).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _handle_detail(self, q):
         rid = (q.get("btrqh") or [""])[0].strip()

@@ -194,6 +194,11 @@
       </section>
 
       <section class="panel" id="cucharas-panel">
+        <div class="session-changed-banner" id="cucharas-session-banner" hidden>
+          <span class="session-changed-icon">↺</span>
+          <span id="cucharas-session-banner-text"></span>
+          <button class="session-changed-close" id="cucharas-session-banner-close" type="button">✕</button>
+        </div>
         <div class="danger-banner" id="cucharas-saved-warning"></div>
 
         <div class="cucharas-topline">
@@ -202,6 +207,7 @@
             <button class="subtab" data-cucharas-tab-target="cucharas-stats-panel" type="button">Estadisticas</button>
           </nav>
           <div class="toolbar-actions editor-actions primary-editor-actions" id="cucharas-editor-actions">
+            <button class="action-button big undo-button" id="cucharas-undo-btn" type="button" hidden>↩ Volver</button>
             <button class="action-button big secondary" id="cucharas-start-btn" type="button">Iniciar</button>
             <button class="action-button big" id="cucharas-save-btn" type="button">Guardar</button>
           </div>
@@ -322,6 +328,10 @@
                 <h2 id="inoc-detail-title">—</h2>
               </div>
               <button id="inoc-mode-btn" class="action-button secondary" type="button">Ver detalle</button>
+            </div>
+            <div class="inoc-base-bar" id="inoc-base-bar" hidden>
+              <span class="inoc-base-bar-label">Base:</span>
+              <select id="inoc-base-selector" class="inoc-base-select-full"></select>
             </div>
             <div class="table-wrap">
               <table id="inoc-detail-table" class="is-compact">

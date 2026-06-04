@@ -476,9 +476,32 @@ def _persist_cucharas_events(state, current, target, valid_materials, events, sa
     return _cucharas_payload_from_state(state)
 
 
-def save_cuchara_delta(material, delta):
+def save_cuchara_delta(material, delta, colada_override=None):
     host_payload = load_furnace_state()
     state, changed = _sync_ladles_current_with_host(load_ladles_state(), host_payload)
+
+    # Si el cliente envía colada_override, guardar en esa sesión aunque
+    # el servidor ya esté en una sesión distinta.
+    if colada_override:
+        colada_override = str(colada_override).strip()
+        current_colada = str(state["current"].get("colada", "") or "").strip()
+        if colada_override != current_colada:
+            # Recuperar el registro histórico de la sesión iniciada si existe,
+            # o crear un current temporal para esa sesión
+            history = state.get("history_by_colada", {})
+            if colada_override in history:
+                # Reconstituir current desde el histórico
+                hist_rec = history[colada_override]
+                state["current"] = {
+                    "colada": colada_override,
+                    "material_objetivo": str(hist_rec.get("material_objetivo", "") or ""),
+                    "counts": dict(hist_rec.get("counts", {})),
+                    "events": {k: list(v) for k, v in hist_rec.get("events", {}).items()},
+                }
+            else:
+                # Crear una nueva entrada para esa colada
+                state["current"]["colada"] = colada_override
+
     current = state["current"]
     target = current.get("material_objetivo", "")
     valid_materials = set(_ladle_material_options(target))
@@ -558,6 +581,38 @@ def start_cucharas_count():
         history_by_colada.pop(colada, None)
         state["history_by_colada"] = history_by_colada
     state["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    save_ladles_state(state)
+    notify_data_changed()
+    return _cucharas_payload_from_state(state)
+
+
+def restore_previous_cucharas(colada, material, counts):
+    """Restaura el current a una sesión anterior (undo del Iniciar)."""
+    host_payload = load_furnace_state()
+    state = _normalize_ladles_state(load_ladles_state())
+    saved_at = datetime.now().isoformat(timespec="seconds")
+
+    if not isinstance(counts, dict):
+        counts = {}
+    valid_counts = {}
+    for k, v in counts.items():
+        key = str(k or "").strip()
+        if not key:
+            continue
+        try:
+            qty = max(0, int(v))
+        except Exception:
+            qty = 0
+        valid_counts[key] = qty
+
+    events = _normalize_events_for_counts({}, valid_counts, saved_at)
+    state["current"] = {
+        "colada":           colada,
+        "material_objetivo": material,
+        "counts":           valid_counts,
+        "events":           events,
+    }
+    state["updated_at"] = saved_at
     save_ladles_state(state)
     notify_data_changed()
     return _cucharas_payload_from_state(state)
@@ -850,6 +905,7 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
         self._send_json(payload)
 
     def _handle_get_inoculaciones(self):
+        from storage import resolve_inoc_protocol
         device = self._device_auth_device()
         if str((device or {}).get("status") or "unknown") != "approved":
             self._send_device_error(str((device or {}).get("status") or "unknown"))
@@ -861,16 +917,10 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
         momentos_cfg = load_inoc_momentos()
         momento_label_map = {m["key"]: m["label"] for m in momentos_cfg}
         momento_idx_map   = {m["key"]: i for i, m in enumerate(momentos_cfg)}
-        result = []
-        for a in alloys:
-            meta = a.get("inoculacion_meta", {})
-            if not isinstance(meta, dict):
-                continue
-            inoc = meta.get("inoculacion", [])
-            if not inoc:
-                continue
-            procedimiento = []
-            for e in inoc:
+
+        def _build_procedimiento(inoc_entries):
+            out = []
+            for e in inoc_entries:
                 if isinstance(e, str):
                     nombre, cant, momento = e, 1, "horno"
                 elif isinstance(e, dict):
@@ -880,7 +930,7 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
                 else:
                     continue
                 g = gramos_map.get(nombre, 0)
-                procedimiento.append({
+                out.append({
                     "nombre": nombre,
                     "cant": cant,
                     "gramos": g,
@@ -891,7 +941,28 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
                     "unidad": unidad_map.get(nombre, "cucharín"),
                     "color": color_map.get(nombre),
                 })
-            result.append({"nombre": a.get("nombre", ""), "procedimiento": procedimiento})
+            return out
+
+        result = []
+        for a in alloys:
+            meta = a.get("inoculacion_meta", {})
+            if not isinstance(meta, dict):
+                continue
+            default_inoc = resolve_inoc_protocol(meta)
+            if not default_inoc:
+                continue
+            entry = {
+                "nombre": a.get("nombre", ""),
+                "procedimiento": _build_procedimiento(default_inoc),
+            }
+            # Agregar protocolos por base si existen
+            por_base = meta.get("por_base", {})
+            if isinstance(por_base, dict) and por_base:
+                entry["procedimiento_por_base"] = {
+                    base: _build_procedimiento(resolve_inoc_protocol(meta, base=base))
+                    for base in por_base
+                }
+            result.append(entry)
         self._send_json({"ok": True, "inoculaciones": result})
 
     def do_GET(self):
@@ -1000,6 +1071,14 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
         if action == "save":
             self._send_json({"ok": True, "cucharas": save_cucharas_current()})
             return
+        if action == "restore_previous":
+            cucharas = restore_previous_cucharas(
+                colada   = str(payload.get("previous_colada",   "") or "").strip(),
+                material = str(payload.get("previous_material", "") or "").strip(),
+                counts   = payload.get("previous_counts") or {},
+            )
+            self._send_json({"ok": True, "cucharas": cucharas})
+            return
         if "delta" in payload:
             if not _is_valid_delta_payload(payload):
                 self._send_json({"ok": False, "error": "invalid_delta"}, status=400)
@@ -1007,6 +1086,7 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
             cucharas = save_cuchara_delta(
                 payload.get("material_final") or payload.get("material"),
                 payload.get("delta"),
+                colada_override=payload.get("colada_override"),
             )
             self._send_json({"ok": True, "cucharas": cucharas})
             return

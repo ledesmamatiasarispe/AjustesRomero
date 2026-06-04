@@ -130,6 +130,170 @@ def _parse_json(raw, url=""):
     return json.loads(text)
 
 
+# ---------- parsers de la página web del dispositivo ----------
+
+def _is_busy_html(raw):
+    """Devuelve True si el dispositivo responde con la página de 'análisis en curso'."""
+    text = raw.decode("latin-1", errors="replace") if isinstance(raw, bytes) else raw
+    return "working on an analysis" in text.lower() or "carbomaxdelta" in text.lower()
+
+
+def _parse_float_es(s):
+    """Convierte '1.298,00' o '1298,00' o ' 4,60' al float correspondiente."""
+    try:
+        return float(str(s).strip().replace(".", "").replace(",", "."))
+    except Exception:
+        return None
+
+
+def _hist_index_date_to_compact(date_str):
+    """'17/04/2026 - 12:52:57'  →  '17042026 125257'"""
+    raw = str(date_str or "").strip()
+    for fmt in ("%d/%m/%Y - %H:%M:%S", "%d/%m/%Y - %H:%M", "%d/%m/%Y %H:%M:%S"):
+        try:
+            from datetime import datetime as _dt
+            return _dt.strptime(raw, fmt).strftime("%d%m%Y %H%M%S")
+        except Exception:
+            pass
+    return raw
+
+
+def _parse_hist_index_dat(raw):
+    """
+    Parsea HistIndex.dat (CSV de la página web del dispositivo).
+    Devuelve dict compatible con {"TableIndex": [...]}.
+    """
+    text = raw.decode("latin-1", errors="replace") if isinstance(raw, bytes) else str(raw)
+    # Quitar cabeceras HTTP y BOM
+    if "\r\n\r\n" in text:
+        text = text.split("\r\n\r\n", 1)[1]
+    text = text.lstrip("﻿").strip()
+
+    if _is_busy_html(text):
+        raise _HttpError("Dispositivo ocupado (análisis en curso)")
+
+    rows = []
+    lines = [l.rstrip("\r") for l in text.split("\n")]
+    for line in lines:
+        parts = [p.strip() for p in line.split(",")]
+        # Formato esperado: date/time, mode, lot, material, id
+        # La primera fila de datos tiene fecha con longitud > 5
+        if len(parts) < 5 or len(parts[0]) < 8:
+            continue
+        date_compact = _hist_index_date_to_compact(parts[0])
+        rows.append({
+            "id":       parts[4],
+            "date":     date_compact,
+            "mode":     parts[1],
+            "lot":      parts[2],
+            "material": parts[3],
+        })
+    return {"TableIndex": rows}
+
+
+def _parse_dadoshist_csv(raw, index_row=None):
+    """
+    Parsea dadoshist.cgi (CSV con ; y decimales con coma).
+    Devuelve dict compatible con {"TableData": [...]}.
+    index_row: fila del índice con id, date, mode, lot, material.
+    """
+    text = raw.decode("latin-1", errors="replace") if isinstance(raw, bytes) else str(raw)
+    if "\r\n\r\n" in text:
+        text = text.split("\r\n\r\n", 1)[1]
+    text = text.lstrip("﻿").strip()
+
+    if _is_busy_html(text):
+        raise _HttpError("Dispositivo ocupado (análisis en curso)")
+
+    idx = index_row or {}
+    row_id  = str(idx.get("id", ""))
+    mode    = str(idx.get("mode", "")).strip().upper()
+    lot     = str(idx.get("lot", "")).strip()
+    material = str(idx.get("material", "")).strip()
+    date_compact = str(idx.get("date", "")).strip()
+
+    # Parsear fecha para start/stop_date en formato "DD/MM/YYYY HH:MM"
+    try:
+        from datetime import datetime as _dt
+        stop_dt = _dt.strptime(date_compact, "%d%m%Y %H%M%S")
+        stop_fmt = stop_dt.strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        stop_fmt = date_compact
+
+    # Separar secciones por línea en blanco
+    sections = [s.strip() for s in text.replace("\r", "").split("\n\n") if s.strip()]
+
+    metrics = {}
+    data_temp, data_deriv = [], []
+
+    for section in sections:
+        lines = section.split("\n")
+        if not lines:
+            continue
+        headers = [h.strip() for h in lines[0].split(";")]
+        if not headers:
+            continue
+
+        if headers[0].lower() in ("periodo", "period", "time"):
+            # Sección de curva: Periodo;Temperatura;Derivada
+            for line in lines[1:]:
+                parts = [p.strip() for p in line.split(";")]
+                if len(parts) >= 3:
+                    temp = _parse_float_es(parts[1])
+                    deriv = _parse_float_es(parts[2])
+                    if temp is not None:
+                        data_temp.append(int(round(temp * 10)))
+                    if deriv is not None:
+                        data_deriv.append(int(round(deriv * 100)))
+        elif len(lines) >= 2:
+            # Sección de métricas: headers en línea 0, valores en línea 1
+            values = [v.strip() for v in lines[1].split(";")]
+            for h, v in zip(headers, values):
+                f = _parse_float_es(v)
+                if f is not None:
+                    metrics[h.strip()] = f
+
+    # Mapear métricas al formato interno (×10 para temps, ×100 para %)
+    def _t(key, *aliases):
+        for k in (key,) + aliases:
+            if k in metrics:
+                return int(round(metrics[k] * 10))
+        return 0
+
+    def _c(key, *aliases):
+        for k in (key,) + aliases:
+            if k in metrics:
+                return int(round(metrics[k] * 100))
+        return 0
+
+    detail = {
+        "id":          row_id,
+        "test_mode":   mode,
+        "material":    material,
+        "lot":         lot,
+        "obsevation":  "",
+        "start_date":  stop_fmt,
+        "stop_date":   stop_fmt,
+        "channel":     0,
+        "tag1": 0, "tag2": 0, "tag3": 0, "tag4": 0,
+        "product":     "DELTA",
+        "peak":        _t("Pico", "Peak"),
+        "liquidus":    _t("TL"),
+        "carbon_eq":   _c("CE", "CE%"),
+        "solidus":     _t("TS"),
+        "carbon":      _c("C"),
+        "silicon":     _c("Si"),
+        "tse":         _t("TSE"),
+        "tre":         _t("TRE"),
+        "recalec":     _t("REC"),
+        "delta_rec":   _c("ΔREC", "Delta REC", "DREC"),
+        "final":       _t("TF"),
+        "data_temp":   data_temp,
+        "data_deriv":  data_deriv,
+    }
+    return {"TableData": [detail]}
+
+
 # ---------- lógica de sync ----------
 
 def _identity_from_info(info):
@@ -310,13 +474,20 @@ def sync_once(ip, log=None):
         if path and path.startswith("device://") and "/local/" not in path:
             existing_by_legacy[path] = rec
 
-    # 2. Obtener índice del dispositivo
+    # 2. Obtener índice del dispositivo (web-page primero, JSON como fallback)
     try:
-        raw_idx = _http_get(ip, "/getallidx.cgi")
-        idx_data = _parse_json(raw_idx)
+        raw_idx = _http_get(ip, "/HistIndex.dat")
+        idx_data = _parse_hist_index_dat(raw_idx)
         index_rows = idx_data.get("TableIndex", [])
-    except Exception as ex:
-        return {"ok": False, "error": f"No se pudo obtener índice: {ex}", "new": 0, "reused": 0, "total": len(existing)}
+        _log(f"[sync] Índice obtenido via HistIndex.dat")
+    except Exception as ex1:
+        _log(f"[sync] HistIndex.dat falló ({ex1}), intentando getallidx.cgi...")
+        try:
+            raw_idx = _http_get(ip, "/getallidx.cgi")
+            idx_data = _parse_json(raw_idx)
+            index_rows = idx_data.get("TableIndex", [])
+        except Exception as ex2:
+            return {"ok": False, "error": f"No se pudo obtener índice: {ex2}", "new": 0, "reused": 0, "total": len(existing)}
 
     _log(f"[sync] Índice recibido: {len(index_rows)} registros en dispositivo")
 
@@ -345,18 +516,28 @@ def sync_once(ip, log=None):
             _log(f"[sync] id={row_id}: reutilizado")
             continue
 
-        # Descargar detalle
+        # Descargar detalle (web-page primero, JSON como fallback)
         try:
-            raw_detail = _http_get(ip, f"/getdata.cgi?btrqh={urllib.parse.quote(row_id)}")
-            detail_data = _parse_json(raw_detail)
+            raw_detail = _http_get(ip, f"/dadoshist.cgi?btrqh={urllib.parse.quote(row_id)}")
+            detail_data = _parse_dadoshist_csv(raw_detail, index_row=row)
             rows_detail = detail_data.get("TableData", [])
             if not rows_detail:
-                _log(f"[sync] id={row_id}: detalle vacío, se omite")
+                _log(f"[sync] id={row_id}: detalle vacío (dadoshist), se omite")
                 continue
             detail = rows_detail[0]
-        except Exception as ex:
-            _log(f"[sync] id={row_id}: error descargando detalle: {ex}")
-            continue
+        except Exception as ex1:
+            _log(f"[sync] id={row_id}: dadoshist falló ({ex1}), intentando getdata.cgi...")
+            try:
+                raw_detail = _http_get(ip, f"/getdata.cgi?btrqh={urllib.parse.quote(row_id)}")
+                detail_data = _parse_json(raw_detail)
+                rows_detail = detail_data.get("TableData", [])
+                if not rows_detail:
+                    _log(f"[sync] id={row_id}: detalle vacío (getdata), se omite")
+                    continue
+                detail = rows_detail[0]
+            except Exception as ex2:
+                _log(f"[sync] id={row_id}: error descargando detalle: {ex2}")
+                continue
 
         series = [v for v in (detail.get("data_temp") or []) if v != 0]
         if not series:
@@ -539,28 +720,32 @@ class WatchService:
             except Exception:
                 pass
 
+    def _fetch_index(self, retries=SYNC_RETRIES):
+        """Obtiene el índice via HistIndex.dat (página web) con fallback a getallidx.cgi."""
+        try:
+            raw = _http_get(self.ip, "/HistIndex.dat", timeout=SYNC_TIMEOUT, retries=retries)
+            data = _parse_hist_index_dat(raw)
+        except Exception:
+            raw = _http_get(self.ip, "/getallidx.cgi", timeout=SYNC_TIMEOUT, retries=retries)
+            data = _parse_json(raw)
+        return data.get("TableIndex", [])
+
     def _seed_known_ids(self):
         """Marca todos los IDs actualmente en el dispositivo como 'ya conocidos'
         para no re-disparar en el primer poll."""
         try:
-            raw  = _http_get(self.ip, "/getallidx.cgi",
-                             timeout=SYNC_TIMEOUT, retries=SYNC_RETRIES)
-            data = _parse_json(raw)
-            rows = data.get("TableIndex", [])
+            rows = self._fetch_index()
             self._known_ids = {str(r.get("id", "")).strip() for r in rows if r.get("id") is not None}
             self._seeded = True
             self._emit_status(f"[watch] Semilla: {len(self._known_ids)} IDs conocidos en {self.ip}")
         except Exception as ex:
             self._emit_status(f"[watch] No se pudo obtener semilla inicial: {ex}")
-            self._seeded = True   # seguir de todos modos; el primer poll verá todo como "nuevo"
+            self._seeded = True
 
     def _poll_once(self):
         """Un ciclo de sondeo: pide el índice y procesa IDs nuevos."""
         try:
-            raw  = _http_get(self.ip, "/getallidx.cgi",
-                             timeout=SYNC_TIMEOUT, retries=1)
-            data = _parse_json(raw)
-            rows = data.get("TableIndex", [])
+            rows = self._fetch_index(retries=1)
         except Exception as ex:
             self._emit_status(f"[watch] Error al consultar índice: {ex}")
             return
@@ -585,20 +770,29 @@ class WatchService:
                 self._emit_status(f"[watch] id={rid} modo={mode}: ignorado (no es CARBONO)")
                 continue
 
-            # Descargar detalle
+            # Descargar detalle (web-page primero, JSON como fallback)
             try:
-                raw_d  = _http_get(self.ip,
-                                   f"/getdata.cgi?btrqh={urllib.parse.quote(rid)}",
-                                   timeout=SYNC_TIMEOUT, retries=2)
-                det_data = _parse_json(raw_d)
+                raw_d    = _http_get(self.ip, f"/dadoshist.cgi?btrqh={urllib.parse.quote(rid)}",
+                                     timeout=SYNC_TIMEOUT, retries=2)
+                det_data = _parse_dadoshist_csv(raw_d, index_row=row)
                 rows_d   = det_data.get("TableData", [])
                 if not rows_d:
                     self._emit_status(f"[watch] id={rid}: detalle vacío")
                     continue
                 detail = rows_d[0]
-            except Exception as ex:
-                self._emit_status(f"[watch] id={rid}: error descargando detalle: {ex}")
-                continue
+            except Exception as ex1:
+                try:
+                    raw_d    = _http_get(self.ip, f"/getdata.cgi?btrqh={urllib.parse.quote(rid)}",
+                                         timeout=SYNC_TIMEOUT, retries=2)
+                    det_data = _parse_json(raw_d)
+                    rows_d   = det_data.get("TableData", [])
+                    if not rows_d:
+                        self._emit_status(f"[watch] id={rid}: detalle vacío")
+                        continue
+                    detail = rows_d[0]
+                except Exception as ex2:
+                    self._emit_status(f"[watch] id={rid}: error descargando detalle: {ex2}")
+                    continue
 
             info = _build_info_from_detail(self.ip, rid, detail)
             carbon  = info.get("C %")

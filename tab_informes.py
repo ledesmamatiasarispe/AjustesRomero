@@ -6,7 +6,7 @@ import re
 import matplotlib
 matplotlib.use("Agg")
 from matplotlib.figure import Figure
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 
 matplotlib.rcParams.update({
     "axes.spines.top": False,
@@ -32,12 +32,15 @@ class TabInformes(ttk.Frame):
         self.hist = []
         self.ladles = {}
         self.quality_reports = []
-        self.section_vars = {}
         self.section_frames = {}
+        self._section_items = []   # [(key, label), ...] en orden
         self.monthly_furnace_summary_var = tk.StringVar(value="")
         self._monthly_furnace_data = []
         self.monthly_hornos_summary_var = tk.StringVar(value="")
         self._monthly_hornos_data = []
+        self._timeline_available_days = []
+        self._timeline_day_idx = -1
+        self._timeline_corrected = tk.BooleanVar(value=False)
 
         top = ttk.Frame(self)
         top.pack(fill="x", pady=(0, 8))
@@ -53,9 +56,7 @@ class TabInformes(ttk.Frame):
         body.add(content_host, weight=1)
 
         self.sidebar = sidebar
-        self.scroll = ScrollFrame(content_host)
-        self.scroll.pack(fill="both", expand=True)
-        self.content = self.scroll.inner
+        self.content = content_host
 
         self._build_sections()
 
@@ -64,14 +65,7 @@ class TabInformes(ttk.Frame):
         self.refresh()
 
     def _add_sidebar_toggle(self, key, label, default=True):
-        var = tk.BooleanVar(value=default)
-        self.section_vars[key] = var
-        ttk.Checkbutton(
-            self.sidebar,
-            text=label,
-            variable=var,
-            command=self._render_sections,
-        ).pack(anchor="w", fill="x", pady=2)
+        self._section_items.append((key, label))
 
     def _build_sections(self):
         self._add_sidebar_toggle("summary", "Resumen general")
@@ -86,6 +80,7 @@ class TabInformes(ttk.Frame):
         self._add_sidebar_toggle("cucharas", "Cucharas")
         self._add_sidebar_toggle("quality_reports", "Informes de calidad")
         self._add_sidebar_toggle("inoculantes", "Uso de inoculantes")
+        self._add_sidebar_toggle("timeline", "Linea de tiempo diaria")
 
         box = ttk.LabelFrame(self.content, text="Resumen general", padding=8)
         self.lbl_summary = ttk.Label(box, text="", justify="left")
@@ -327,7 +322,7 @@ class TabInformes(ttk.Frame):
                 ("inoc", "Inoculante", 180, "w"),
                 ("dosis", "Total dosis", 100, "e"),
                 ("gramos_u", "g/unidad", 90, "e"),
-                ("total_g", "Total g estimado", 130, "e"),
+                ("total_g", "Total kg estimado", 130, "e"),
             ),
             height=6,
         )
@@ -340,7 +335,7 @@ class TabInformes(ttk.Frame):
                 ("inoc", "Inoculante", 180, "w"),
                 ("coladas", "Coladas", 80, "e"),
                 ("dosis", "Total dosis", 110, "e"),
-                ("total_g", "Total g estimado", 140, "e"),
+                ("total_g", "Total kg estimado", 140, "e"),
                 ("prom_g", "Prom g/colada", 130, "e"),
             ),
             height=8,
@@ -349,6 +344,41 @@ class TabInformes(ttk.Frame):
 
         self.section_frames["inoculantes"] = box
 
+        box = ttk.LabelFrame(self.content, text="Linea de tiempo diaria  (5:00 — 18:00)", padding=8)
+        nav = ttk.Frame(box)
+        nav.pack(fill="x", pady=(0, 6))
+        self.btn_timeline_prev = ttk.Button(nav, text="◀", width=3, command=self._timeline_prev_day)
+        self.btn_timeline_prev.pack(side="left")
+        self.lbl_timeline_day = ttk.Label(nav, text="Sin datos", width=22, anchor="center",
+                                          font=("TkDefaultFont", 9, "bold"))
+        self.lbl_timeline_day.pack(side="left", padx=6)
+        self.btn_timeline_next = ttk.Button(nav, text="▶", width=3, command=self._timeline_next_day)
+        self.btn_timeline_next.pack(side="left")
+        ttk.Checkbutton(
+            nav, text="Horarios corregidos",
+            variable=self._timeline_corrected,
+            command=self._fill_timeline_diaria,
+        ).pack(side="left", padx=(18, 0))
+
+        self.fig_timeline, self.mpl_timeline = self._make_mpl_canvas(box, figsize=(9, 3.2))
+        self.section_frames["timeline"] = box
+
+        # Listbox de selección de sección (reemplaza los checkboxes)
+        self.section_listbox = tk.Listbox(
+            self.sidebar,
+            selectmode="single",
+            activestyle="dotbox",
+            font=("TkDefaultFont", 9),
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        for _, label in self._section_items:
+            self.section_listbox.insert(tk.END, label)
+        self.section_listbox.pack(fill="both", expand=True)
+        self.section_listbox.bind("<<ListboxSelect>>", self._on_section_select)
+        # Mostrar la primera sección por defecto
+        self.section_listbox.selection_set(0)
         self._render_sections()
 
     def _make_tree(self, parent, columns, height=8):
@@ -364,32 +394,25 @@ class TabInformes(ttk.Frame):
         fig.patch.set_facecolor("#f0f0f0")
         mpl = FigureCanvasTkAgg(fig, master=parent)
         mpl.get_tk_widget().pack(fill="both", expand=True)
+        tb = NavigationToolbar2Tk(mpl, parent, pack_toolbar=False)
+        tb.pack(fill="x", pady=(2, 0))
         return fig, mpl
 
     def _mpl_colors(self, n):
         cmap = matplotlib.colormaps.get_cmap("tab20")
         return [cmap(i / max(n, 1)) for i in range(n)]
 
+    def _on_section_select(self, event=None):
+        self._render_sections()
+
     def _render_sections(self):
-        order = [
-            "summary",
-            "materials",
-            "monthly_furnace",
-            "monthly_hornos",
-            "targets",
-            "elements",
-            "ce",
-            "days",
-            "durations",
-            "cucharas",
-            "quality_reports",
-            "inoculantes",
-        ]
+        sel = self.section_listbox.curselection()
+        idx = sel[0] if sel else 0
+        key = self._section_items[idx][0] if idx < len(self._section_items) else None
         for frame in self.section_frames.values():
             frame.pack_forget()
-        for key in order:
-            if self.section_vars[key].get():
-                self.section_frames[key].pack(fill="both", expand=True, pady=(0, 8))
+        if key and key in self.section_frames:
+            self.section_frames[key].pack(fill="both", expand=True)
 
     def refresh(self):
         self.hist = load_history()
@@ -408,6 +431,7 @@ class TabInformes(ttk.Frame):
         self._fill_cucharas()
         self._fill_quality_reports()
         self._fill_inoculantes()
+        self._fill_timeline_diaria()
 
     def _fill_summary(self):
         total_sessions = len(self.hist)
@@ -1281,24 +1305,40 @@ class TabInformes(ttk.Frame):
                     }
 
         # Mapa nombre_final -> [{nombre, cantidad_dosis, momento}]
+        # Incluye protocolos por base cuando existen; la clave puede ser
+        # "NombreFinal" (default) o "NombreFinal|Base" (específico por base).
+        from storage import resolve_inoc_protocol
+
+        def _normalize_entries(raw_list):
+            out = []
+            for e in raw_list:
+                if isinstance(e, str):
+                    out.append({"nombre": e, "cantidad_dosis": 1, "momento": "horno"})
+                elif isinstance(e, dict):
+                    out.append({
+                        "nombre": str(e.get("nombre", "") or ""),
+                        "cantidad_dosis": max(1, int(e.get("cantidad_dosis", 1) or 1)),
+                        "momento": str(e.get("momento", "horno") or "horno"),
+                    })
+            return out
+
         final_inoc_map = {}
         for a in self.alloys:
             if a.get("tipo") != "Aleación final":
                 continue
             nombre_final = str(a.get("nombre", "") or "").strip()
-            inoc_list = (a.get("inoculacion_meta") or {}).get("inoculacion", [])
-            entries = []
-            for e in inoc_list:
-                if isinstance(e, str):
-                    entries.append({"nombre": e, "cantidad_dosis": 1, "momento": "horno"})
-                elif isinstance(e, dict):
-                    entries.append({
-                        "nombre": str(e.get("nombre", "") or ""),
-                        "cantidad_dosis": max(1, int(e.get("cantidad_dosis", 1) or 1)),
-                        "momento": str(e.get("momento", "horno") or "horno"),
-                    })
-            if entries and nombre_final:
-                final_inoc_map[nombre_final] = entries
+            inoc_meta = a.get("inoculacion_meta") or {}
+            # Protocolo por defecto
+            default_entries = _normalize_entries(resolve_inoc_protocol(inoc_meta))
+            if default_entries and nombre_final:
+                final_inoc_map[nombre_final] = default_entries
+            # Protocolos por base
+            por_base = inoc_meta.get("por_base", {}) if isinstance(inoc_meta, dict) else {}
+            if isinstance(por_base, dict):
+                for base, raw in por_base.items():
+                    entries = _normalize_entries(raw if isinstance(raw, list) else [])
+                    if entries:
+                        final_inoc_map[f"{nombre_final}|{base}"] = entries
 
         # Sub-caja 1: configuración
         self._clear_tree(self.tree_inoc_config)
@@ -1344,7 +1384,7 @@ class TabInformes(ttk.Frame):
                     inoc,
                     data["dosis"],
                     fmt(g, 4) if g else "—",
-                    fmt(data["total_g"], 2),
+                    fmt(data["total_g"] / 1000, 3),
                 ))
         else:
             self.lbl_inoc_recent_colada.config(text="Sin datos de cucharas")
@@ -1366,13 +1406,13 @@ class TabInformes(ttk.Frame):
                     hist_acc[inoc]["coladas"].add(record["colada"])
         for inoc, data in sorted(hist_acc.items(), key=lambda x: x[1]["total_g"], reverse=True):
             n_coladas = len(data["coladas"])
-            prom = data["total_g"] / n_coladas if n_coladas else 0.0
+            prom_kg = (data["total_g"] / n_coladas / 1000) if n_coladas else 0.0
             self.tree_inoc_hist.insert("", "end", values=(
                 inoc,
                 n_coladas,
                 data["dosis"],
-                fmt(data["total_g"], 2),
-                fmt(prom, 2),
+                fmt(data["total_g"] / 1000, 3),
+                fmt(prom_kg, 3),
             ))
         self.fig_inoc.clear()
         ax = self.fig_inoc.add_subplot(111)
@@ -1381,8 +1421,276 @@ class TabInformes(ttk.Frame):
             top = sorted(hist_acc.items(), key=lambda x: x[1]["total_g"], reverse=True)[:12]
             if top:
                 labels, data_vals = zip(*reversed(top))
-                vals = [d["total_g"] for d in data_vals]
+                vals = [d["total_g"] / 1000 for d in data_vals]
                 ax.barh(list(labels), vals, color=self._mpl_colors(len(vals)))
-                ax.set_xlabel("Total g estimado")
+                ax.set_xlabel("Total kg estimado")
                 ax.set_title("Consumo historico de inoculantes", fontsize=9)
         self.mpl_inoc.draw()
+
+    # ── Línea de tiempo diaria ────────────────────────────────────────────────
+
+    _TL_WIN_START = 5 * 60    # 300 min desde medianoche
+    _TL_WIN_END   = 18 * 60   # 1080 min
+
+    def _timeline_colada_key(self, colada):
+        """Normaliza la clave de colada para buscar en history_by_colada."""
+        raw = str(colada or "").strip()
+        m = re.match(r"^\s*(\d+)\s*/\s*(\d{2,4})", raw)
+        if m:
+            return f"{int(m.group(1)):04d} /{m.group(2).zfill(2)}"
+        return raw
+
+    def _timeline_to_min(self, ts):
+        """Convierte timestamp a minutos (float con segundos) desde medianoche. Acepta 'T' o espacio."""
+        try:
+            dt = datetime.strptime(str(ts or "")[:19].replace("T", " "), "%Y-%m-%d %H:%M:%S")
+            return dt.hour * 60 + dt.minute + dt.second / 60.0
+        except Exception:
+            return None
+
+    def _timeline_prev_day(self):
+        if self._timeline_day_idx < len(self._timeline_available_days) - 1:
+            self._timeline_day_idx += 1
+            self._fill_timeline_diaria()
+
+    def _timeline_next_day(self):
+        if self._timeline_day_idx > 0:
+            self._timeline_day_idx -= 1
+            self._fill_timeline_diaria()
+
+
+    def _fill_timeline_diaria(self):
+        # Agrupar sesiones por fecha de started_at
+        by_day = {}
+        for s in self.hist:
+            ts = str(s.get("started_at", "") or "")
+            if len(ts) < 10:
+                continue
+            day = ts[:10]
+            by_day.setdefault(day, []).append(s)
+
+        self._timeline_available_days = sorted(by_day.keys(), reverse=True)
+
+        if not self._timeline_available_days:
+            self.lbl_timeline_day.config(text="Sin datos")
+            self.fig_timeline.clear()
+            self.mpl_timeline.draw()
+            return
+
+        if self._timeline_day_idx < 0 or self._timeline_day_idx >= len(self._timeline_available_days):
+            self._timeline_day_idx = 0
+
+        day = self._timeline_available_days[self._timeline_day_idx]
+        total = len(self._timeline_available_days)
+        pos   = total - self._timeline_day_idx
+        self.lbl_timeline_day.config(text=f"{day}  ({pos}/{total})")
+        self.btn_timeline_prev.config(state="normal" if self._timeline_day_idx < total - 1 else "disabled")
+        self.btn_timeline_next.config(state="normal" if self._timeline_day_idx > 0 else "disabled")
+
+        sessions = sorted(by_day[day], key=lambda s: str(s.get("started_at", "") or ""))
+        self._draw_timeline_chart(sessions, corrected=self._timeline_corrected.get())
+
+    def _draw_timeline_chart(self, sessions, corrected=False):
+        WIN_START = self._TL_WIN_START
+        WIN_END   = self._TL_WIN_END
+        WIN_SPAN  = WIN_END - WIN_START
+
+        ladle_history = {}
+        if isinstance(self.ladles, dict):
+            ladle_history = self.ladles.get("history_by_colada", {}) or {}
+
+        colors = self._mpl_colors(max(len(sessions), 1))
+
+        self.fig_timeline.clear()
+        ax = self.fig_timeline.add_subplot(111)
+        ax.set_facecolor("#f8f8f8")
+        ax.set_xlim(0, WIN_SPAN)
+        ax.set_ylim(-0.8, max(len(sessions) - 0.2, 0.8))
+
+        if not sessions:
+            ax.text(WIN_SPAN / 2, 0, "Sin coladas para este día",
+                    ha="center", va="center", fontsize=9, color="#888")
+            self.mpl_timeline.draw()
+            return
+
+        # ── Precalcular start/end corregidos ──────────────────────────────────
+        FIRST_START = 5 * 60 + 30   # 5:30 am en minutos desde medianoche
+        corrected_starts = {}   # row_idx → minuto inicio corregido
+        corrected_ends   = {}   # row_idx → minuto fin corregido
+
+        if corrected:
+            prev_end = FIRST_START
+            for row_idx, session in enumerate(sessions):
+                colada = str(session.get("colada", "") or "")
+                key = self._timeline_colada_key(colada)
+                ladle_rec = ladle_history.get(key)
+
+                # Fin = último evento de cuchara
+                last_cuchara = None
+                if isinstance(ladle_rec, dict):
+                    events_raw = ladle_rec.get("events", {}) if isinstance(ladle_rec.get("events"), dict) else {}
+                    for mat_events in events_raw.values():
+                        if not isinstance(mat_events, list):
+                            continue
+                        for ev in mat_events:
+                            saved = str(ev.get("saved_at", "") if isinstance(ev, dict) else ev).strip()
+                            t = self._timeline_to_min(saved) if saved else None
+                            if t is not None:
+                                if last_cuchara is None or t > last_cuchara:
+                                    last_cuchara = t
+
+                # Fallback: último ajuste, o inicio + 90 min
+                if last_cuchara is None:
+                    ajuste_times = [
+                        self._timeline_to_min(aj.get("fecha"))
+                        for aj in session.get("ajustes", [])
+                    ]
+                    valid = [t for t in ajuste_times if t is not None]
+                    last_cuchara = max(valid) if valid else prev_end + 90
+
+                corrected_starts[row_idx] = prev_end
+                corrected_ends[row_idx]   = max(last_cuchara, prev_end + 1)
+                prev_end = corrected_ends[row_idx]
+
+        legend_done = {"sesion": False, "ajuste": False, "cuchara": False, "inicio": False}
+
+        for row_idx, session in enumerate(sessions):
+            y        = row_idx
+            color    = colors[row_idx % len(colors)]
+            colada   = str(session.get("colada", "") or "")
+            objetivo = str(session.get("objetivo", "") or "")
+
+            # Tiempos de sesión (raw o corregidos)
+            if corrected:
+                start_m = corrected_starts[row_idx]
+                end_m   = corrected_ends[row_idx]
+            else:
+                start_m = self._timeline_to_min(session.get("started_at"))
+                end_m   = self._timeline_to_min(session.get("ended_at"))
+                if end_m is None:
+                    ajuste_times = [
+                        self._timeline_to_min(aj.get("fecha"))
+                        for aj in session.get("ajustes", [])
+                    ]
+                    valid = [t for t in ajuste_times if t is not None]
+                    end_m = max(valid) + 5 if valid else ((start_m or WIN_START) + 60)
+                if start_m is None:
+                    start_m = WIN_START
+
+            # Clipear a ventana
+            s = max(start_m, WIN_START) - WIN_START
+            e = min(end_m,   WIN_END)   - WIN_START
+            dur = max(e - s, 3)
+
+            # Barra de sesión
+            lbl = "Sesión" if not legend_done["sesion"] else "_"
+            legend_done["sesion"] = True
+            ax.broken_barh(
+                [(s, dur)], (y - 0.35, 0.7),
+                facecolors=color, edgecolors="white", linewidth=0.5,
+                alpha=0.85, label=lbl,
+            )
+
+            # Línea verde de inicio de sesión (ambos modos)
+            lbl_ini = "Inicio sesión" if not legend_done["inicio"] else "_"
+            legend_done["inicio"] = True
+            ax.vlines(s, y - 0.42, y + 0.42, colors="#2ecc71",
+                      linewidth=2.0, label=lbl_ini, zorder=5)
+            # Objetivo de la sesión sobre la línea de inicio
+            obj_sesion = str(session.get("objetivo", "") or "").strip()
+            if obj_sesion:
+                ax.text(s, y + 0.44, obj_sesion,
+                        ha="center", va="bottom", fontsize=6,
+                        color="#27ae60", rotation=90,
+                        clip_on=True, zorder=6)
+
+            # Label de colada a la izquierda
+            label_txt = colada if colada else objetivo
+            ax.text(-4, y, label_txt, ha="right", va="center", fontsize=7,
+                    color="#333", clip_on=False)
+
+            # Objetivo debajo del nombre
+            if objetivo and objetivo != label_txt:
+                ax.text(-4, y - 0.28, objetivo, ha="right", va="center",
+                        fontsize=6, color="#888", clip_on=False)
+
+            # Marcadores de ajustes
+            for aj_idx, aj in enumerate(session.get("ajustes", []), start=1):
+                t = self._timeline_to_min(aj.get("fecha"))
+                if t is None or t < WIN_START or t > WIN_END:
+                    continue
+                x = t - WIN_START
+                lbl_aj = "Ajuste" if not legend_done["ajuste"] else "_"
+                legend_done["ajuste"] = True
+                ax.vlines(x, y - 0.35, y + 0.35, colors="#e05252",
+                          linewidth=1.6, label=lbl_aj, zorder=3)
+                # Material objetivo en ambos modos
+                obj_txt = str(aj.get("objetivo", "") or "").strip()
+                if obj_txt:
+                    ax.text(x, y + 0.38, obj_txt,
+                            ha="center", va="bottom", fontsize=6,
+                            color="#c0392b", rotation=90,
+                            clip_on=True, zorder=4)
+
+            # Cucharas PDH: líneas verticales amarillas individuales
+            key = self._timeline_colada_key(colada)
+            ladle_rec = ladle_history.get(key)
+            total_cucharas = 0
+            if isinstance(ladle_rec, dict):
+                events_raw = ladle_rec.get("events", {}) if isinstance(ladle_rec.get("events"), dict) else {}
+                for mat_events in events_raw.values():
+                    if not isinstance(mat_events, list):
+                        continue
+                    for ev in mat_events:
+                        saved = str(ev.get("saved_at", "") if isinstance(ev, dict) else ev).strip()
+                        t = self._timeline_to_min(saved) if saved else None
+                        if t is None or t < WIN_START or t > WIN_END:
+                            continue
+                        x = t - WIN_START
+                        lbl_cu = "Cuchara (PDH)" if not legend_done["cuchara"] else "_"
+                        legend_done["cuchara"] = True
+                        ax.vlines(x, y - 0.35, y + 0.35, colors="#f1c40f",
+                                  linewidth=1.2, label=lbl_cu, zorder=3)
+                        total_cucharas += 1
+                if not events_raw:
+                    counts = ladle_rec.get("counts", {}) if isinstance(ladle_rec.get("counts"), dict) else {}
+                    total_cucharas = sum(max(0, int(v or 0)) for v in counts.values())
+
+            # Total cucharas al final de la barra
+            if total_cucharas > 0:
+                x_end = min(e + 2, WIN_SPAN - 2)
+                ax.text(x_end, y, f"  {total_cucharas}🥄",
+                        va="center", fontsize=7, color="#d4ac0d", zorder=5)
+
+        # Eje X: ticks cada 60 min (label) y 15 min (minor)
+        major_ticks  = list(range(0, WIN_SPAN + 1, 60))
+        minor_ticks  = [t for t in range(0, WIN_SPAN + 1, 15) if t % 60 != 0]
+        major_labels = [f"{(t + WIN_START) // 60:02d}:00" for t in major_ticks]
+        ax.set_xticks(major_ticks)
+        ax.set_xticklabels(major_labels, fontsize=7)
+        ax.set_xticks(minor_ticks, minor=True)
+        ax.tick_params(axis="x", which="minor", length=3, color="#aaa")
+        ax.set_xlabel("Hora del día  (usar toolbar para zoom/pan)", fontsize=8)
+
+        # Eje Y: ocultar ticks
+        ax.set_yticks([])
+        ax.tick_params(left=False)
+
+        # Grilla
+        for t in major_ticks:
+            ax.axvline(t, color="#ccc", linewidth=0.6, zorder=0)
+        for t in minor_ticks:
+            ax.axvline(t, color="#e8e8e8", linewidth=0.4, linestyle=":", zorder=0)
+
+        # Leyenda
+        handles = [h for h in ax.get_legend_handles_labels()[0]]
+        labels_lg = [l for l in ax.get_legend_handles_labels()[1] if not l.startswith("_")]
+        if handles:
+            ax.legend(handles[:3], labels_lg[:3], loc="upper right",
+                      fontsize=7, framealpha=0.8)
+
+        ax.set_title(
+            f"{len(sessions)} colada(s) — Ajustes y cucharas PDH",
+            fontsize=9,
+        )
+        self.mpl_timeline.draw()

@@ -44,6 +44,7 @@ const nodes = {
   cucharasSavedWarning: document.getElementById("cucharas-saved-warning"),
   cucharasStatus: document.getElementById("cucharas-status"),
   cucharasEditorActions: document.getElementById("cucharas-editor-actions"),
+  cucharasUndoBtn: document.getElementById("cucharas-undo-btn"),
   cucharasStartBtn: document.getElementById("cucharas-start-btn"),
   cucharasSaveBtn: document.getElementById("cucharas-save-btn"),
   totalCucharas: document.getElementById("total-cucharas"),
@@ -63,6 +64,9 @@ const cucharasState = {
   counts: {},
   saving: false,
   canEdit: false,
+  initiated: false,        // true desde que el operador presionó Iniciar en PDH
+  initiatedColada: "",     // colada activa al momento de iniciar
+  initiatedMaterial: "",   // material activo al momento de iniciar
 };
 
 const ajusteState = {
@@ -577,12 +581,69 @@ function renderCucharasWarning(payload) {
   nodes.cucharasSavedWarning.textContent = "";
 }
 
+const sessionBanner = {
+  el:        document.getElementById("cucharas-session-banner"),
+  textEl:    document.getElementById("cucharas-session-banner-text"),
+  closeBtn:  document.getElementById("cucharas-session-banner-close"),
+  timer:     null,
+};
+if (sessionBanner.closeBtn) {
+  sessionBanner.closeBtn.addEventListener("click", () => hideSessionBanner());
+}
+
+function hideSessionBanner() {
+  if (!sessionBanner.el) return;
+  sessionBanner.el.setAttribute("hidden", "");
+  if (sessionBanner.timer) { clearTimeout(sessionBanner.timer); sessionBanner.timer = null; }
+}
+
+function showSessionBanner(colada, material) {
+  if (!sessionBanner.el || !sessionBanner.textEl) return;
+  const coladaTxt   = String(colada   || "").trim();
+  const materialTxt = String(material || "").trim();
+  const label = [coladaTxt, materialTxt].filter(Boolean).join("  ·  ");
+  sessionBanner.textEl.textContent = label
+    ? `Nueva sesión: ${label}`
+    : "Sesión reiniciada";
+  sessionBanner.el.removeAttribute("hidden");
+  // Forzar re-animación
+  sessionBanner.el.style.animation = "none";
+  sessionBanner.el.offsetHeight;  // reflow
+  sessionBanner.el.style.animation = "";
+  if (sessionBanner.timer) clearTimeout(sessionBanner.timer);
+  sessionBanner.timer = setTimeout(hideSessionBanner, 8000);
+}
+
 function syncCucharasState(payload) {
-  cucharasState.colada = payload?.colada || "";
-  cucharasState.materialObjetivo = payload?.material_objetivo || "";
-  cucharasState.counts = {};
-  for (const row of payload?.rows || []) {
-    cucharasState.counts[row.material_final] = Math.max(0, Number(row.cantidad) || 0);
+  const newColada   = payload?.colada            || "";
+  const newMaterial = payload?.material_objetivo || "";
+  const prevColada  = cucharasState.colada;
+  const prevMaterial = cucharasState.materialObjetivo;
+
+  // Detectar cambio de sesión (ignorar la primera carga donde prev estaba vacío)
+  const firstLoad = !prevColada && !prevMaterial;
+  const sessionChanged = !firstLoad &&
+    (newColada || newMaterial) &&
+    (newColada !== prevColada || newMaterial !== prevMaterial);
+
+  // Determinar si hay un conteo activo iniciado por este operador
+  const hasActiveCounts = cucharasState.initiated &&
+    Object.values(cucharasState.counts).some(v => v > 0);
+
+  cucharasState.colada = newColada;
+  cucharasState.materialObjetivo = newMaterial;
+
+  if (!sessionChanged || !hasActiveCounts) {
+    // Misma sesión, o primera carga, o sin conteo activo: aceptar counts del servidor
+    cucharasState.counts = {};
+    for (const row of payload?.rows || []) {
+      cucharasState.counts[row.material_final] = Math.max(0, Number(row.cantidad) || 0);
+    }
+  }
+  // Si la sesión cambió Y hay conteo activo: mantener los counts actuales (no resetear)
+
+  if (sessionChanged) {
+    showSessionBanner(newColada, newMaterial);
   }
 }
 
@@ -658,11 +719,12 @@ async function runCucharasAction(action) {
   if (!cucharasState.canEdit || cucharasState.saving) {
     return;
   }
-  if (action === "start" && cucharasTotal() > 0) {
-    const ok = window.confirm("Iniciar borra el conteo actual de esta colada. Continuar?");
-    if (!ok) {
-      return;
+  if (action === "start") {
+    if (cucharasTotal() > 0) {
+      const ok = window.confirm("Iniciar borra el conteo actual de esta colada. Continuar?");
+      if (!ok) return;
     }
+    saveUndoSnapshot();  // guardar antes de limpiar
   }
   cucharasState.saving = true;
   setCucharasStatus(action === "start" ? "Iniciando..." : "Guardando...", "is-dirty");
@@ -696,6 +758,13 @@ async function runCucharasAction(action) {
       throw new Error(`HTTP ${response.status}`);
     }
     const data = await response.json();
+    if (action === "start") {
+      cucharasState.initiated = true;
+      cucharasState.initiatedColada   = cucharasState.colada;
+      cucharasState.initiatedMaterial = cucharasState.materialObjetivo;
+      cucharasState.counts = {};
+      showUndoBtn();  // mostrar "Volver" después de iniciar con éxito
+    }
     syncCucharasState(data.cucharas || {});
     cucharasState.saving = false;
     renderCucharas(data.cucharas || {});
@@ -790,6 +859,12 @@ function changeCuchara(material, delta) {
   if (!cucharasState.canEdit) {
     return;
   }
+  if (!cucharasState.initiated) {
+    cucharasState.initiated        = true;
+    cucharasState.initiatedColada   = cucharasState.colada;
+    cucharasState.initiatedMaterial = cucharasState.materialObjetivo;
+  }
+  hideUndoBtn();  // ocultar "Volver" al primer toque de +/-
   const current = Math.max(0, Number(cucharasState.counts[material] || 0));
   cucharasState.counts[material] = Math.max(0, current + delta);
   renderCucharas({
@@ -805,13 +880,16 @@ function changeCuchara(material, delta) {
 }
 
 async function saveCucharaDelta(material, delta) {
-  if (!cucharasState.canEdit || cucharasState.saving || !cucharasState.materialObjetivo) {
+  // Usar la sesión iniciada por el operador (puede diferir de la sesión actual del servidor)
+  const targetMaterial = cucharasState.initiatedMaterial || cucharasState.materialObjetivo;
+  const targetColada   = cucharasState.initiatedColada   || cucharasState.colada;
+  if (!cucharasState.canEdit || cucharasState.saving || !targetMaterial) {
     return;
   }
   cucharasState.saving = true;
   renderCucharas({
-    colada: cucharasState.colada,
-    material_objetivo: cucharasState.materialObjetivo,
+    colada: targetColada,
+    material_objetivo: targetMaterial,
     rows: Object.keys(cucharasState.counts).map((key) => ({
       material_final: key,
       cantidad: cucharasState.counts[key],
@@ -823,7 +901,8 @@ async function saveCucharaDelta(material, delta) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        material_objetivo: cucharasState.materialObjetivo,
+        material_objetivo: targetMaterial,
+        colada_override: targetColada,
         material_final: material,
         delta,
       }),
@@ -982,6 +1061,74 @@ async function sendCarbomaxAction(action) {
   }
 }
 
+// ── Botón Volver (undo iniciar) ────────────────────────────────────────────
+
+const undoState = {
+  available:       false,
+  colada:          "",
+  material:        "",
+  counts:          {},
+  timer:           null,
+  TIMEOUT_MS:      120_000,   // 2 minutos para arrepentirse
+};
+
+function saveUndoSnapshot() {
+  undoState.colada   = cucharasState.colada;
+  undoState.material = cucharasState.materialObjetivo;
+  undoState.counts   = { ...cucharasState.counts };
+  undoState.available = Object.values(undoState.counts).some(v => v > 0);
+}
+
+function showUndoBtn() {
+  if (!nodes.cucharasUndoBtn || !undoState.available) return;
+  nodes.cucharasUndoBtn.removeAttribute("hidden");
+  if (undoState.timer) clearTimeout(undoState.timer);
+  undoState.timer = setTimeout(hideUndoBtn, undoState.TIMEOUT_MS);
+}
+
+function hideUndoBtn() {
+  if (!nodes.cucharasUndoBtn) return;
+  nodes.cucharasUndoBtn.setAttribute("hidden", "");
+  undoState.available = false;
+  if (undoState.timer) { clearTimeout(undoState.timer); undoState.timer = null; }
+}
+
+async function restorePreviousSession() {
+  if (!undoState.available || cucharasState.saving) return;
+  if (!window.confirm(
+    `Volver a:\n  Colada: ${undoState.colada || "—"}\n  Material: ${undoState.material || "—"}\n\n¿Confirmar?`
+  )) return;
+
+  hideUndoBtn();
+  cucharasState.saving = true;
+  setCucharasStatus("Restaurando...", "is-dirty");
+  try {
+    const response = await apiFetch("/api/cucharas", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "restore_previous",
+        previous_colada:   undoState.colada,
+        previous_material: undoState.material,
+        previous_counts:   undoState.counts,
+      }),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    cucharasState.initiated        = true;
+    cucharasState.initiatedColada   = undoState.colada;
+    cucharasState.initiatedMaterial = undoState.material;
+    cucharasState.counts = { ...undoState.counts };
+    syncCucharasState(data.cucharas || {});
+    cucharasState.saving = false;
+    renderCucharas(data.cucharas || {});
+    setCucharasStatus("Colada anterior restaurada.", "is-saved");
+  } catch (err) {
+    cucharasState.saving = false;
+    setCucharasStatus("No se pudo restaurar.", "is-dirty");
+  }
+}
+
 function setupCarbomaxModal() {
   carbomaxModal.confirmBtn?.addEventListener("click", () => sendCarbomaxAction("confirm"));
   carbomaxModal.rejectBtn?.addEventListener("click",  () => sendCarbomaxAction("reject"));
@@ -1084,6 +1231,7 @@ document.addEventListener("focusout", () => {
     setKeyboardButtonState(editable);
   }, 0);
 });
+nodes.cucharasUndoBtn?.addEventListener("click", () => restorePreviousSession());
 nodes.cucharasStartBtn.addEventListener("click", () => runCucharasAction("start"));
 nodes.cucharasSaveBtn.addEventListener("click", () => runCucharasAction("save"));
 nodes.ajusteSaveBtn.addEventListener("click", () => saveAjusteConfirmation());
@@ -1129,6 +1277,12 @@ async function loadInoculaciones() {
     const data = await res.json();
     inocData = data.inoculaciones || [];
     renderInocList();
+    // Auto-seleccionar el material activo de Cucharas si coincide
+    const activeMat = cucharasState.materialObjetivo || "";
+    if (activeMat) {
+      const matchIdx = inocData.findIndex(it => it.nombre === activeMat);
+      if (matchIdx >= 0) showInocDetail(matchIdx);
+    }
   } catch (_) {
     inocData = [];
   }
@@ -1151,9 +1305,16 @@ function renderInocList() {
   });
 }
 
+let _inocDetailIdx = -1;
+let _inocManualBase = null;  // base elegida manualmente por el usuario (null = usar default auto)
+
 function showInocDetail(idx) {
   const item = inocData[idx];
   if (!item) return;
+
+  // Al cambiar de material, resetear la selección manual
+  if (idx !== _inocDetailIdx) _inocManualBase = null;
+  _inocDetailIdx = idx;
 
   document.querySelectorAll(".inoc-item").forEach((el, i) =>
     el.classList.toggle("is-active", i === idx)
@@ -1161,12 +1322,38 @@ function showInocDetail(idx) {
 
   document.getElementById("inoc-detail-title").textContent = item.nombre;
 
+  // Barra de selector de base
+  const baseSelector = document.getElementById("inoc-base-selector");
+  const baseBar      = document.getElementById("inoc-base-bar");
+  const porBase = item.procedimiento_por_base || {};
+  const bases = Object.keys(porBase);
+  if (baseSelector && baseBar) {
+    if (bases.length > 0) {
+      baseBar.removeAttribute("hidden");
+      baseSelector.innerHTML =
+        `<option value="">Por defecto</option>` +
+        bases.map(b => `<option value="${b}">${b}</option>`).join("");
+
+      // Prioridad: 1) selección manual del usuario  2) base activa de Cucharas  3) Por defecto
+      const autoBase = cucharasState.materialObjetivo || "";
+      const targetBase = (_inocManualBase !== null && bases.includes(_inocManualBase))
+        ? _inocManualBase
+        : (bases.includes(autoBase) ? autoBase : "");
+      baseSelector.value = targetBase;
+    } else {
+      baseBar.setAttribute("hidden", "");
+      baseSelector.value = "";
+    }
+  }
+
   const body  = document.getElementById("inoc-detail-body");
   const empty = document.getElementById("inoc-detail-empty");
   const theadRow = document.querySelector("#inoc-detail-table thead tr");
   body.innerHTML = "";
 
-  const proc = item.procedimiento || [];
+  // Elegir protocolo según base seleccionada
+  const selectedBase = baseSelector?.value || "";
+  const proc = (selectedBase && porBase[selectedBase]) ? porBase[selectedBase] : (item.procedimiento || []);
   if (!proc.length) {
     empty.hidden = false;
     theadRow.innerHTML = "<th>Etapa</th><th>Inoculante</th><th>Total g</th>";
@@ -1258,6 +1445,11 @@ function contrastColor(hex) {
   return L > 0.179 ? "#1a1a1a" : "#ffffff";
 }
 
+document.getElementById("inoc-base-selector")?.addEventListener("change", (e) => {
+  _inocManualBase = e.target.value;   // guardar elección explícita del usuario
+  if (_inocDetailIdx >= 0) showInocDetail(_inocDetailIdx);
+});
+
 document.getElementById("inoc-mode-btn").addEventListener("click", () => {
   const table = document.getElementById("inoc-detail-table");
   const nowCompact = table.classList.toggle("is-compact");
@@ -1268,8 +1460,13 @@ document.getElementById("inoc-mode-btn").addEventListener("click", () => {
 // Cargar al entrar a la pestaña
 document.querySelectorAll("[data-tab-target]").forEach(btn => {
   btn.addEventListener("click", () => {
-    if (btn.dataset.tabTarget === "inoc-panel" && !inocData.length) {
-      loadInoculaciones();
+    if (btn.dataset.tabTarget === "inoc-panel") {
+      if (!inocData.length) {
+        loadInoculaciones();
+      } else if (_inocDetailIdx >= 0) {
+        // Re-renderizar con la base activa de Cucharas (sin resetear selección manual)
+        showInocDetail(_inocDetailIdx);
+      }
     }
   });
 });

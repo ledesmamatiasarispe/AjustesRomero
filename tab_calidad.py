@@ -191,6 +191,7 @@ class TabCalidad(ttk.Frame):
         ttk.Button(top, text="Refrescar", command=self.refresh).pack(side="right")
         ttk.Button(top, text="Imprimir con imagenes", command=lambda: self._print_groups(include_images=True)).pack(side="right", padx=(0, 6))
         ttk.Button(top, text="Imprimir", command=lambda: self._print_groups(include_images=False)).pack(side="right", padx=(0, 6))
+        ttk.Button(top, text="Archivar", command=self._archive_groups).pack(side="right", padx=(0, 6))
 
         action_bar = ttk.Frame(self, padding=(0, 4))
         action_bar.pack(fill="x", pady=(0, 8))
@@ -594,6 +595,16 @@ class TabCalidad(ttk.Frame):
         tv.insert("", "end", values=("CE",) + tuple(fmt(v, 4) for v in ce_vals))
 
         ttk.Button(frm, text="Cerrar", command=win.destroy).pack(pady=(10, 0))
+
+    def _build_inoc_snapshot(self, material_code, base=None):
+        from storage import resolve_inoc_protocol
+        alloy = self._get_final_alloy_by_code(str(material_code or "").strip()) or {}
+        meta = alloy.get("inoculacion_meta", {})
+        return {
+            "inoculacion_meta": meta,
+            "base_resuelta": str(base or "").strip(),
+            "protocolo": resolve_inoc_protocol(meta, base=base),
+        }
 
     def _get_final_alloy_by_code(self, code):
         """Busca la Aleación final en el catálogo por su código (calidad_meta.codigo o nombre)."""
@@ -3534,8 +3545,9 @@ class TabCalidad(ttk.Frame):
             "imagenes": self._normalize_report_images(self._report_images),
             "_draft_pending": bool(pending),
             "_draft_fields": sorted(self._draft_fields) if pending else [],
-            "inoculacion_snapshot": (
-                (self._get_final_alloy_by_code(self.var_material.get().strip()) or {}).get("inoculacion_meta", {})
+            "inoculacion_snapshot": self._build_inoc_snapshot(
+                self.var_material.get().strip(),
+                self.var_base.get().strip(),
             ),
         }
 
@@ -3951,9 +3963,7 @@ class TabCalidad(ttk.Frame):
                 "_draft_pending": False,
                 "_draft_base": None,
                 "_draft_fields": [],
-                "inoculacion_snapshot": (
-                    (self._get_final_alloy_by_code(material) or {}).get("inoculacion_meta", {})
-                ),
+                "inoculacion_snapshot": self._build_inoc_snapshot(material, base),
             }
             existing_idx = next(
                 (
@@ -4588,7 +4598,7 @@ class TabCalidad(ttk.Frame):
             self._clear_form()
         return archived
 
-    def _pick_groups_to_print(self):
+    def _pick_groups_to_print(self, title="Imprimir grupos", label="Selecciona hasta 3 grupos para imprimir:"):
         groups = self._group_choices()
         if not groups:
             return None
@@ -4596,14 +4606,14 @@ class TabCalidad(ttk.Frame):
 
         picked = {"value": None}
         win = tk.Toplevel(self)
-        win.title("Imprimir grupos")
+        win.title(title)
         win.transient(self.winfo_toplevel())
         win.grab_set()
         win.resizable(False, False)
 
         box = ttk.Frame(win, padding=12)
         box.pack(fill="both", expand=True)
-        ttk.Label(box, text="Selecciona hasta 3 grupos para imprimir:").pack(anchor="w", pady=(0, 8))
+        ttk.Label(box, text=label).pack(anchor="w", pady=(0, 8))
 
         checks = ttk.LabelFrame(box, text="Grupos", padding=8)
         checks.pack(fill="x", expand=True)
@@ -4641,6 +4651,23 @@ class TabCalidad(ttk.Frame):
         win.geometry(f"+{x}+{y}")
         win.wait_window()
         return picked["value"]
+
+    def _archive_groups(self):
+        chosen = self._pick_groups_to_print(
+            title="Archivar grupos",
+            label="Selecciona los grupos a archivar:",
+        )
+        if chosen is None:
+            return
+        if not chosen:
+            messagebox.showinfo("Calidad", "No seleccionaste grupos para archivar.", parent=self)
+            return
+        archived = self._archive_printed_groups(chosen)
+        messagebox.showinfo(
+            "Calidad",
+            f"Grupos archivados correctamente.\nInformes archivados: {archived}",
+            parent=self,
+        )
 
     def _print_groups(self, include_images=False):
         chosen = self._pick_groups_to_print()

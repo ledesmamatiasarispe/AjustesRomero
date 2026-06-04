@@ -54,9 +54,11 @@ class TabAjuste(ttk.Frame):
         self._carbomax_last_ts = ""
         self._carbomax_objetivo_dlg = None   # referencia al popup de escritorio activo
         self._carbomax_poll_seconds = self.CARBOMAX_POLL_SECONDS
+        self._carbomax_busy_poll_seconds = 5.0   # intervalo cuando el disp está analizando
+        self._carbomax_device_busy = False
         self._carbomax_max_mass_factor = self.CARBOMAX_AUTO_MAX_MASS_FACTOR
         self._carbomax_auto_apply = True
-        self._carbomax_timeout = 4.0   # segundos de timeout por request HTTP
+        self._carbomax_timeout = 4.0
         self._view_mode = False
         self._view_restore_state = None
         self._view_hidden_buttons = []
@@ -500,6 +502,7 @@ class TabAjuste(ttk.Frame):
             "carbomax_rejected_keys": list(self._carbomax_rejected_keys),
             "carbomax_last_ts": self._carbomax_last_ts,
             "carbomax_poll_seconds": self._carbomax_poll_seconds,
+            "carbomax_busy_poll_seconds": self._carbomax_busy_poll_seconds,
             "carbomax_max_mass_factor": self._carbomax_max_mass_factor,
             "carbomax_auto_apply": self._carbomax_auto_apply,
             "carbomax_timeout": self._carbomax_timeout,
@@ -584,6 +587,10 @@ class TabAjuste(ttk.Frame):
             if isinstance(saved_rejected, list):
                 self._carbomax_rejected_keys = set(str(k) for k in saved_rejected if k)
             self._carbomax_last_ts = str(st.get("carbomax_last_ts", "") or "")
+            try:
+                self._carbomax_busy_poll_seconds = max(1.0, float(st.get("carbomax_busy_poll_seconds", 5.0)))
+            except Exception:
+                pass
             try:
                 self._carbomax_poll_seconds = max(5.0, float(st.get("carbomax_poll_seconds", self.CARBOMAX_POLL_SECONDS)))
             except Exception:
@@ -1788,6 +1795,9 @@ class TabAjuste(ttk.Frame):
         poll_var = tk.StringVar(value=str(int(self._carbomax_poll_seconds)))
         _row("Intervalo entre consultas (seg)", lambda f: ttk.Spinbox(
             f, from_=5, to=300, textvariable=poll_var, width=6))
+        busy_var = tk.StringVar(value=str(int(self._carbomax_busy_poll_seconds)))
+        _row("Intervalo cuando está analizando (seg)", lambda f: ttk.Spinbox(
+            f, from_=1, to=60, textvariable=busy_var, width=6))
         timeout_var = tk.StringVar(value=str(int(self._carbomax_timeout)))
         _row("Timeout HTTP por request (seg)", lambda f: ttk.Spinbox(
             f, from_=1, to=30, textvariable=timeout_var, width=6))
@@ -1833,6 +1843,10 @@ class TabAjuste(ttk.Frame):
                 return
             self._carbomax_base_names = names
             self._carbomax_poll_seconds = poll_s
+            try:
+                self._carbomax_busy_poll_seconds = max(1.0, float(busy_var.get()))
+            except Exception:
+                pass
             self._carbomax_timeout = timeout_s
             self._carbomax_auto_apply = apply_var.get()
             self._carbomax_max_mass_factor = mass_f
@@ -1993,9 +2007,11 @@ class TabAjuste(ttk.Frame):
         if not self.session_started_at and not self._carbomax_auto_armed_at:
             self._carbomax_auto_armed_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         now = time.monotonic()
-        if now - self._carbomax_last_poll_monotonic < self._carbomax_poll_seconds:
+        cooldown = self._carbomax_busy_poll_seconds if self._carbomax_device_busy else self._carbomax_poll_seconds
+        if now - self._carbomax_last_poll_monotonic < cooldown:
             return
         self._carbomax_last_poll_monotonic = now
+        self._carbomax_device_busy = False   # resetear antes del poll
         self._carbomax_pb_start()
         self._status("Carbomax automático: consultando...")
         self._carbomax_poll_running = True
@@ -2097,7 +2113,16 @@ class TabAjuste(ttk.Frame):
     def _on_carbomax_poll_result(self, record, error=None):
         self._carbomax_poll_running = False
         self._carbomax_pb_stop()
-        if error or not record:
+        if error:
+            if "device_busy" in str(error).lower():
+                self._carbomax_device_busy = True
+                self._status(
+                    f"Carbomax: dispositivo analizando — reintentando en {int(self._carbomax_busy_poll_seconds)}s"
+                )
+            else:
+                self._status(f"Carbomax automático — error: {error}")
+            return
+        if not record:
             return
         try:
             payload = record.get("payload", {}) if isinstance(record, dict) else {}
@@ -2666,7 +2691,9 @@ class TabAjuste(ttk.Frame):
         except Exception:
             bath_kg = 1000.0
         base_comp = base_alloy.get("composicion", {})
-        inoc_list = (final_alloy.get("inoculacion_meta") or {}).get("inoculacion", [])
+        base_name = str(base_alloy.get("nombre", "") or "").strip()
+        from storage import resolve_inoc_protocol
+        inoc_list = resolve_inoc_protocol(final_alloy.get("inoculacion_meta"), base=base_name)
         if not isinstance(inoc_list, list):
             inoc_list = []
         inoc_grams = {}

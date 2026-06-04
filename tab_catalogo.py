@@ -698,6 +698,14 @@ class TabCatalogo(ttk.Frame):
             (e["nombre"], e["momento"]): e["cantidad_dosis"]
             for e in _meta_inoculacion_full(inoc_meta_saved)
         }
+        # Mapas por base (si existen)
+        saved_por_base_raw = inoc_meta_saved.get("por_base", {}) if isinstance(inoc_meta_saved, dict) else {}
+        saved_por_base_maps = {}
+        for _base, _raw in (saved_por_base_raw.items() if isinstance(saved_por_base_raw, dict) else []):
+            saved_por_base_maps[_base] = {
+                (e["nombre"], e["momento"]): e["cantidad_dosis"]
+                for e in _meta_inoculacion_full({"inoculacion": _raw})
+            }
 
         momentos_cfg = load_inoc_momentos()
         momentos_keys   = [m["key"]   for m in momentos_cfg]
@@ -709,57 +717,91 @@ class TabCatalogo(ttk.Frame):
             d.transient(win)
             d.grab_set()
             d.resizable(False, False)
-            frm = ttk.Frame(d, padding=12); frm.pack(fill="both", expand=True)
-            ttk.Label(frm, text="Lista de etapas (orden de aplicación):").pack(anchor="w")
-            lb = tk.Listbox(frm, height=8, selectmode="single",
-                            bg=BG_ENTRY, fg=FG, selectbackground=ACCENT)
-            lb.pack(fill="both", expand=True, pady=(4, 0))
+            frm = ttk.Frame(d, padding=12)
+            frm.pack(fill="both", expand=True)
+            ttk.Label(frm, text="Editá los nombres de las etapas:").pack(anchor="w", pady=(0, 6))
+
             cur_moms = load_inoc_momentos()
+            # Lista de (key_original, StringVar_label); key=None para nuevas etapas
+            entries = []   # [(key_or_None, StringVar, row_frame), ...]
+
+            rows_frame = ttk.Frame(frm)
+            rows_frame.pack(fill="x")
+
+            def _add_row(key, label):
+                row = ttk.Frame(rows_frame)
+                row.pack(fill="x", pady=2)
+                var = tk.StringVar(value=label)
+                ttk.Entry(row, textvariable=var, width=22).pack(side="left")
+                idx_ref = [len(entries)]   # captura posición
+                def _remove(r=row, ref=idx_ref):
+                    for i, (k, v, rf) in enumerate(entries):
+                        if rf is r:
+                            entries.pop(i)
+                            break
+                    r.destroy()
+                tk.Button(row, text="×", width=2, relief="flat",
+                          fg="#c0392b", bg="#f0f0f0",
+                          command=_remove).pack(side="left", padx=(4, 0))
+                entries.append((key, var, row))
+
             for m in cur_moms:
-                lb.insert(tk.END, m["label"])
-            add_row = ttk.Frame(frm); add_row.pack(fill="x", pady=(6, 0))
+                _add_row(m["key"], m["label"])
+
+            # Agregar nueva etapa
+            ttk.Separator(frm, orient="horizontal").pack(fill="x", pady=(8, 4))
+            add_row_f = ttk.Frame(frm)
+            add_row_f.pack(fill="x")
             new_var = tk.StringVar()
-            ttk.Entry(add_row, textvariable=new_var, width=18).pack(side="left")
+            ttk.Entry(add_row_f, textvariable=new_var, width=22).pack(side="left")
             def _add():
                 label = new_var.get().strip()
-                if not label or label in lb.get(0, tk.END): return
-                lb.insert(tk.END, label)
+                if not label:
+                    return
+                existing = [v.get().strip() for _, v, _ in entries]
+                if label in existing:
+                    messagebox.showwarning("Etapas", f"Ya existe una etapa '{label}'.", parent=d)
+                    return
+                _add_row(None, label)
                 new_var.set("")
-            ttk.Button(add_row, text="Agregar", command=_add).pack(side="left", padx=(6, 0))
-            def _delete():
-                sel = lb.curselection()
-                if sel: lb.delete(sel[0])
-            ttk.Button(frm, text="Eliminar seleccionado", command=_delete).pack(anchor="w", pady=(4, 0))
+            ttk.Button(add_row_f, text="+ Agregar etapa", command=_add).pack(side="left", padx=(6, 0))
+
             def _save_moms():
-                new_labels = list(lb.get(0, tk.END))
-                if not new_labels:
+                new_moms = []
+                for key, var, _ in entries:
+                    label = var.get().strip()
+                    if not label:
+                        continue
+                    if key is None:
+                        # Etapa nueva: generar key desde el label
+                        key = label.lower().replace(" ", "_").replace("/", "_")
+                    new_moms.append({"key": key, "label": label})
+                if not new_moms:
                     messagebox.showwarning("Etapas", "La lista no puede quedar vacía.", parent=d)
                     return
-                old_key_for_label = {m["label"]: m["key"] for m in cur_moms}
-                new_moms = []
-                for label in new_labels:
-                    if label in old_key_for_label:
-                        new_moms.append({"key": old_key_for_label[label], "label": label})
-                    else:
-                        key = label.lower().replace(" ", "_").replace("/", "_")
-                        new_moms.append({"key": key, "label": label})
-                removed_keys = {m["key"] for m in cur_moms} - {m["key"] for m in new_moms}
+                # Limpiar etapas eliminadas del catálogo
+                current_keys = {m["key"] for m in cur_moms}
+                new_keys     = {m["key"] for m in new_moms}
+                removed_keys = current_keys - new_keys
                 if removed_keys:
                     for a in self.model:
                         meta = a.get("inoculacion_meta", {})
-                        if not isinstance(meta, dict): continue
+                        if not isinstance(meta, dict):
+                            continue
                         lst = meta.get("inoculacion", [])
-                        if not isinstance(lst, list): continue
-                        a["inoculacion_meta"]["inoculacion"] = [
-                            e for e in lst
-                            if not (isinstance(e, dict) and e.get("momento") in removed_keys)
-                        ]
+                        if isinstance(lst, list):
+                            a["inoculacion_meta"]["inoculacion"] = [
+                                e for e in lst
+                                if not (isinstance(e, dict) and e.get("momento") in removed_keys)
+                            ]
                     save_alloys(self.model)
                 save_inoc_momentos(new_moms)
                 messagebox.showinfo("Etapas",
                     "Guardado. Cerrá y volvé a abrir el editor para ver los cambios.", parent=d)
                 d.destroy()
-            btn_row = ttk.Frame(frm); btn_row.pack(fill="x", pady=(10, 0))
+
+            btn_row = ttk.Frame(frm)
+            btn_row.pack(fill="x", pady=(10, 0))
             ttk.Button(btn_row, text="Guardar", command=_save_moms).pack(side="right")
             ttk.Button(btn_row, text="Cancelar", command=d.destroy).pack(side="right", padx=(0, 6))
 
@@ -767,18 +809,11 @@ class TabCatalogo(ttk.Frame):
         inoc_top.pack(fill="x", pady=(0, 4))
         ttk.Button(inoc_top, text="Editar etapas", command=_edit_inoc_momentos).pack(side="right")
 
-        # Grilla: filas = material, columnas dinámicas por etapa
-        inoc_scroll_frame = ScrollFrame(inoc_panel)
-        inoc_scroll_frame.pack(fill="both", expand=True)
-
-        inoc_vars = {}  # (nombre, momento) → IntVar
         nombres_sorted = sorted(
             {a.get("nombre", "") for a in self.model
              if a.get("nombre", "") and a.get("inoculante", False)},
             key=lambda v: (0, int(v)) if v.isdigit() else (1, v.lower())
         )
-
-        # unidad por material y columnas presentes (en orden de aparicion)
         unit_of = {
             str(a.get("nombre", "")).strip(): str(a.get("unidad_inoculacion", "") or "cucharín")
             for a in self.model
@@ -790,62 +825,109 @@ class TabCatalogo(ttk.Frame):
             if u not in units_present:
                 units_present.append(u)
 
-        inner = inoc_scroll_frame.inner
         bold = ("Segoe UI", 9, "bold")
         n_mom = len(momentos_keys)
         n_unit = len(units_present)
         total_cols = 1 + n_mom + n_unit
 
-        inner.columnconfigure(0, minsize=180, weight=0)
-        for ci in range(1, 1 + n_mom):
-            inner.columnconfigure(ci, minsize=72, weight=0)
-        for ci in range(1 + n_mom, total_cols):
-            inner.columnconfigure(ci, minsize=80, weight=0)
+        # Notebook: pestaña "Por defecto" + una por cada base
+        inoc_nb = ttk.Notebook(inoc_panel)
+        inoc_nb.pack(fill="both", expand=True)
 
-        # Fila 0 — cabecera
-        ttk.Label(inner, text="Material", font=bold, anchor="w").grid(
-            row=0, column=0, sticky="w", padx=(4, 8), pady=(0, 2))
-        for ci, mom in enumerate(momentos_keys, 1):
-            ttk.Label(inner, text=momentos_labels.get(mom, mom), font=bold, anchor="center").grid(
-                row=0, column=ci, sticky="ew", padx=4, pady=(0, 2))
-        for ci, u in enumerate(units_present, 1 + n_mom):
-            ttk.Label(inner, text=f"g/{u}", font=bold, anchor="center").grid(
-                row=0, column=ci, sticky="ew", padx=4, pady=(0, 2))
+        # all_inoc_vars[""] = vars del protocolo por defecto
+        # all_inoc_vars[base] = vars del protocolo específico de esa base
+        all_inoc_vars = {}
+        # use_default_vars[base] = BooleanVar — si True, esa base hereda el protocolo por defecto
+        use_default_vars = {}
 
-        # Fila 1 — separador
-        ttk.Separator(inner, orient="horizontal").grid(
-            row=1, column=0, columnspan=total_cols, sticky="ew", pady=(0, 4))
-
-        # Filas de datos
-        for ri, name in enumerate(nombres_sorted, 2):
-            if not name:
-                continue
-            g = self._gramos_cucharin1(name)
-            mat_unit = unit_of.get(name, "cucharín")
-            ttk.Label(inner, text=name, anchor="w").grid(
-                row=ri, column=0, sticky="w", padx=(4, 8), pady=1)
+        def _build_inoc_grid(parent, inoc_map_for_tab):
+            """Construye la grilla de spinboxes. Retorna dict {(nombre,momento): IntVar}."""
+            sf = ScrollFrame(parent)
+            sf.pack(fill="both", expand=True)
+            inn = sf.inner
+            inn.columnconfigure(0, minsize=180, weight=0)
+            for ci in range(1, 1 + n_mom):
+                inn.columnconfigure(ci, minsize=72, weight=0)
+            for ci in range(1 + n_mom, total_cols):
+                inn.columnconfigure(ci, minsize=80, weight=0)
+            ttk.Label(inn, text="Material", font=bold, anchor="w").grid(
+                row=0, column=0, sticky="w", padx=(4, 8), pady=(0, 2))
             for ci, mom in enumerate(momentos_keys, 1):
-                cant = saved_inoc_map.get((name, mom), 0)
-                var = tk.IntVar(value=cant if cant else 0)
-                inoc_vars[(name, mom)] = var
-                sb = tk.Spinbox(
-                    inner, from_=0, to=99, textvariable=var,
-                    width=5, justify="center",
-                    bg=BG_ENTRY, fg=FG, insertbackground=FG,
-                    buttonbackground=BG_ENTRY,
-                    increment=1, wrap=False,
-                )
-                sb.grid(row=ri, column=ci, padx=4, pady=1)
+                ttk.Label(inn, text=momentos_labels.get(mom, mom), font=bold, anchor="center").grid(
+                    row=0, column=ci, sticky="ew", padx=4, pady=(0, 2))
             for ci, u in enumerate(units_present, 1 + n_mom):
-                text = (f"{g} g" if g else "—") if mat_unit == u else "—"
-                ttk.Label(inner, text=text, anchor="center", foreground="#888888").grid(
-                    row=ri, column=ci, sticky="ew", padx=4, pady=1)
+                ttk.Label(inn, text=f"g/{u}", font=bold, anchor="center").grid(
+                    row=0, column=ci, sticky="ew", padx=4, pady=(0, 2))
+            ttk.Separator(inn, orient="horizontal").grid(
+                row=1, column=0, columnspan=total_cols, sticky="ew", pady=(0, 4))
+            tab_vars = {}
+            for ri, name in enumerate(nombres_sorted, 2):
+                if not name:
+                    continue
+                g = self._gramos_cucharin1(name)
+                mat_unit = unit_of.get(name, "cucharín")
+                ttk.Label(inn, text=name, anchor="w").grid(
+                    row=ri, column=0, sticky="w", padx=(4, 8), pady=1)
+                for ci, mom in enumerate(momentos_keys, 1):
+                    cant = inoc_map_for_tab.get((name, mom), 0)
+                    var = tk.IntVar(value=cant if cant else 0)
+                    tab_vars[(name, mom)] = var
+                    sb = tk.Spinbox(
+                        inn, from_=0, to=99, textvariable=var,
+                        width=5, justify="center",
+                        bg=BG_ENTRY, fg=FG, insertbackground=FG,
+                        buttonbackground=BG_ENTRY, increment=1, wrap=False,
+                    )
+                    sb.grid(row=ri, column=ci, padx=4, pady=1)
+                for ci, u in enumerate(units_present, 1 + n_mom):
+                    text = (f"{g} g" if g else "—") if mat_unit == u else "—"
+                    ttk.Label(inn, text=text, anchor="center", foreground="#888888").grid(
+                        row=ri, column=ci, sticky="ew", padx=4, pady=1)
+            return tab_vars
 
-        def _get_inoc_converters():
+        # Pestaña "Por defecto"
+        tab_default = ttk.Frame(inoc_nb, padding=4)
+        inoc_nb.add(tab_default, text="Por defecto")
+        inoc_vars = _build_inoc_grid(tab_default, saved_inoc_map)
+        all_inoc_vars[""] = inoc_vars
+
+        # Pestañas por base
+        for base in saved_bases:
+            tab_base = ttk.Frame(inoc_nb, padding=4)
+            inoc_nb.add(tab_base, text=base)
+            has_specific = base in saved_por_base_maps
+            use_default_var = tk.BooleanVar(value=not has_specific)
+            use_default_vars[base] = use_default_var
+            chk_row = ttk.Frame(tab_base)
+            chk_row.pack(fill="x", pady=(0, 4))
+            ttk.Checkbutton(
+                chk_row, text="Usar protocolo por defecto",
+                variable=use_default_var,
+            ).pack(side="left")
+            base_map = saved_por_base_maps.get(base, {})
+            base_vars_dict = _build_inoc_grid(tab_base, base_map)
+            all_inoc_vars[base] = base_vars_dict
+
+        def _get_inoc_converters(vars_dict=None):
+            src = vars_dict if vars_dict is not None else inoc_vars
             return [
                 {"nombre": nombre, "cantidad_dosis": var.get(), "momento": momento}
-                for (nombre, momento), var in inoc_vars.items() if var.get() > 0
+                for (nombre, momento), var in src.items() if var.get() > 0
             ]
+
+        def _get_all_inoc_data():
+            """Retorna (default_list, por_base_dict)."""
+            default_list = _get_inoc_converters(all_inoc_vars.get("", {}))
+            por_base = {}
+            for base, base_vars_dict in all_inoc_vars.items():
+                if base == "":
+                    continue
+                if use_default_vars.get(base, tk.BooleanVar(value=True)).get():
+                    continue  # hereda default, no guardar entrada
+                entries = _get_inoc_converters(base_vars_dict)
+                if entries:
+                    por_base[base] = entries
+            return default_list, por_base
 
         comp_title = ttk.Label(form, text="Composición (% en peso)", font=("Segoe UI", 10, "bold"))
         comp_title.pack(anchor="w", pady=(8,2))
@@ -1244,9 +1326,14 @@ class TabCatalogo(ttk.Frame):
                     },
                 },
             })
-            inoc_converters = _get_inoc_converters()
-            if inoc_converters:
-                a["inoculacion_meta"] = {"inoculacion": inoc_converters}
+            inoc_default, inoc_por_base = _get_all_inoc_data()
+            meta = {}
+            if inoc_default:
+                meta["inoculacion"] = inoc_default
+            if inoc_por_base:
+                meta["por_base"] = inoc_por_base
+            if meta:
+                a["inoculacion_meta"] = meta
             elif "inoculacion_meta" in src:
                 a["inoculacion_meta"] = src["inoculacion_meta"]
             _commit(a)

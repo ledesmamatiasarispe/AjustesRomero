@@ -989,6 +989,23 @@ _DEFAULT_INOC_MOMENTOS = [
     {"key": "cuchara_colar",  "label": "C. colar"},
 ]
 
+def resolve_inoc_protocol(inoculacion_meta, base=None):
+    """
+    Devuelve la lista de entradas de protocolo para el material+base dados.
+    Si existe un protocolo específico para 'base' en por_base, lo usa.
+    Si no, devuelve el protocolo por defecto (inoculacion).
+    Retrocompatible: si inoculacion_meta no tiene por_base, devuelve inoculacion.
+    """
+    if not isinstance(inoculacion_meta, dict):
+        return []
+    if base:
+        base = str(base).strip()
+        por_base = inoculacion_meta.get("por_base", {})
+        if isinstance(por_base, dict) and base in por_base:
+            return list(por_base[base])
+    return list(inoculacion_meta.get("inoculacion", []))
+
+
 def load_inoc_momentos():
     if os.path.exists(_INOC_MOMENTOS_FILE):
         try:

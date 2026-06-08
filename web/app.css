@@ -666,33 +666,44 @@ tbody tr:nth-child(even) {
   gap: 10px;
   margin-top: 20px;
 }
-.inoc-base-bar {
+.inoc-filter-bar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 16px;
-  background: var(--accent-soft);
+  gap: 8px;
+  padding: 10px 16px 8px;
   border-bottom: 1px solid var(--line);
 }
-.inoc-base-bar[hidden] { display: none; }
-.inoc-base-bar-label {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--accent);
+.inoc-filter-label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--muted);
   white-space: nowrap;
+  text-transform: uppercase;
+  letter-spacing: .04em;
 }
 .inoc-base-select-full {
   flex: 1;
-  padding: 8px 14px;
+  padding: 7px 12px;
   border: 1.5px solid var(--border);
   border-radius: 10px;
   background: #fff;
   color: var(--ink);
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 500;
   cursor: pointer;
   min-width: 0;
 }
+.inoc-active-base-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 20px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  margin-right: 6px;
+}
+.inoc-active-base-badge[hidden] { display: none; }
 
 .undo-button {
   background: #d4a017 !important;

@@ -363,6 +363,28 @@ function setupIdleClock() {
   window.setInterval(checkIdleClock, 1000);
 }
 
+function toFraction(n) {
+  if (typeof n !== "number" || Number.isNaN(n)) return "—";
+  if (n === 0) return "0";
+  // Parte entera + fraccionaria
+  const sign   = n < 0 ? "-" : "";
+  const abs    = Math.abs(n);
+  const whole  = Math.floor(abs);
+  const frac   = abs - whole;
+  if (frac < 1e-9) return sign + whole;
+  // Algoritmo de fracción continua con denominador máximo 16
+  let best = { num: 1, den: 1, err: Infinity };
+  for (let d = 1; d <= 16; d++) {
+    const num = Math.round(frac * d);
+    const err = Math.abs(frac - num / d);
+    if (err < best.err) best = { num, den: d, err };
+    if (err < 1e-9) break;
+  }
+  const fracStr = best.den === 1 ? String(best.num) : `${best.num}/${best.den}`;
+  if (whole === 0) return sign + fracStr;
+  return `${sign}${whole} ${fracStr}`;
+}
+
 function formatValue(value) {
   if (typeof value !== "number" || Number.isNaN(value)) {
     return "";
@@ -1270,14 +1292,130 @@ const MOMENTO_LABEL = {
 };
 
 let inocData = [];
+let _inocDetailIdx  = -1;
+let _inocDetailBase = null;   // base activa en el detalle (null = por defecto)
+
+// ── Filtro de base en el panel izquierdo ──────────────────────────────────────
+
+function _inocActiveFilter() {
+  return document.getElementById("inoc-base-filter")?.value || "";
+}
+
+function _inocPopulateBaseFilter() {
+  const sel = document.getElementById("inoc-base-filter");
+  if (!sel) return;
+  const prev = sel.value;
+  const allBases = new Set();
+  for (const item of inocData) {
+    // Incluir todas las bases del material (calidad_meta.bases)
+    for (const b of (item.bases || [])) allBases.add(b);
+    // También incluir bases con protocolo específico
+    for (const b of Object.keys(item.procedimiento_por_base || {})) allBases.add(b);
+  }
+  sel.innerHTML = `<option value="">Todas las bases</option>` +
+    [...allBases].sort().map(b => `<option value="${b}">${b}</option>`).join("");
+  const autoBase = cucharasState.materialObjetivo || "";
+  const target = (prev && allBases.has(prev)) ? prev
+               : (allBases.has(autoBase) ? autoBase : "");
+  sel.value = target;
+}
+
+function _inocItemBases(item) {
+  const s = new Set([
+    ...(item.bases || []),
+    ...Object.keys(item.procedimiento_por_base || {}),
+  ]);
+  return [...s].sort();
+}
+
+function _inocProtocol(item, base) {
+  const pb = item.procedimiento_por_base || {};
+  if (base && pb[base]) return pb[base];
+  return item.procedimiento || [];
+}
+
+function renderInocList() {
+  const list   = document.getElementById("inoc-list");
+  const empty  = document.getElementById("inoc-list-empty");
+  const filter = _inocActiveFilter();
+  list.innerHTML = "";
+
+  // Construir la lista de (idx, base_or_null, label)
+  const entries = [];
+  for (let idx = 0; idx < inocData.length; idx++) {
+    const item  = inocData[idx];
+    const bases = _inocItemBases(item);
+    if (!filter) {
+      if (bases.length <= 1) {
+        const base = bases[0] || null;
+        if (_inocProtocol(item, base).length > 0)
+          entries.push({ idx, base, label: base ? `${item.nombre} (${base})` : item.nombre });
+      } else {
+        for (const base of bases) {
+          if (_inocProtocol(item, base).length > 0)
+            entries.push({ idx, base, label: `${item.nombre} (${base})` });
+        }
+      }
+    } else {
+      const inBases   = (item.bases || []).includes(filter);
+      const inPorBase = filter in (item.procedimiento_por_base || {});
+      if ((inBases || inPorBase) && _inocProtocol(item, filter).length > 0)
+        entries.push({ idx, base: filter, label: item.nombre });
+    }
+  }
+
+  if (!entries.length) {
+    list.appendChild(empty);
+    return;
+  }
+  for (const entry of entries) {
+    const li = document.createElement("li");
+    li.className = "inoc-item";
+    li.textContent = entry.label;
+    li.dataset.inocIdx  = entry.idx;
+    li.dataset.inocBase = entry.base || "";
+    li.addEventListener("click", () => showInocDetail(entry.idx, entry.base));
+    list.appendChild(li);
+  }
+  _syncInocListSelection();
+}
+
+function _syncInocListSelection() {
+  document.querySelectorAll(".inoc-item").forEach(el => {
+    const match = Number(el.dataset.inocIdx) === _inocDetailIdx
+               && (el.dataset.inocBase || null) === _inocDetailBase;
+    el.classList.toggle("is-active", match);
+  });
+}
+
+document.getElementById("inoc-base-filter")?.addEventListener("change", () => {
+  renderInocList();
+  // Si el material activo ya no es visible con el nuevo filtro, limpiar detalle
+  if (_inocDetailIdx >= 0) {
+    const filter = _inocActiveFilter();
+    const item   = inocData[_inocDetailIdx];
+    const stillVisible = !filter || (filter in (item?.procedimiento_por_base || {}));
+    if (!stillVisible) {
+      _inocDetailIdx = -1;
+      document.getElementById("inoc-detail-title").textContent = "—";
+      document.getElementById("inoc-detail-body").innerHTML = "";
+      document.getElementById("inoc-detail-empty").hidden = false;
+      const badge = document.getElementById("inoc-active-base-badge");
+      if (badge) badge.setAttribute("hidden", "");
+    } else {
+      showInocDetail(_inocDetailIdx, _inocDetailBase);
+    }
+  }
+});
 
 async function loadInoculaciones() {
   try {
     const res = await apiFetch("/api/inoculaciones");
     const data = await res.json();
     inocData = data.inoculaciones || [];
+    _inocPopulateBaseFilter();
     renderInocList();
-    // Auto-seleccionar el material activo de Cucharas si coincide
+    // Auto-seleccionar el material activo de Cucharas
     const activeMat = cucharasState.materialObjetivo || "";
     if (activeMat) {
       const matchIdx = inocData.findIndex(it => it.nombre === activeMat);
@@ -1288,78 +1426,47 @@ async function loadInoculaciones() {
   }
 }
 
-function renderInocList() {
-  const list  = document.getElementById("inoc-list");
-  const empty = document.getElementById("inoc-list-empty");
-  list.innerHTML = "";
-  if (!inocData.length) {
-    list.appendChild(empty);
-    return;
-  }
-  inocData.forEach((item, idx) => {
-    const li = document.createElement("li");
-    li.className = "inoc-item";
-    li.textContent = item.nombre;
-    li.addEventListener("click", () => showInocDetail(idx));
-    list.appendChild(li);
-  });
-}
-
-let _inocDetailIdx = -1;
-let _inocManualBase = null;  // base elegida manualmente por el usuario (null = usar default auto)
-
-function showInocDetail(idx) {
+function showInocDetail(idx, base) {
   const item = inocData[idx];
   if (!item) return;
+  _inocDetailIdx  = idx;
+  // base explícita > filtro activo > base de Cucharas > null
+  const filter    = _inocActiveFilter();
+  const autoBase  = cucharasState.materialObjetivo || "";
+  const porBase   = item.procedimiento_por_base || {};
+  const porBases  = Object.keys(porBase);
+  _inocDetailBase = base !== undefined ? (base || null)
+    : (filter && porBases.includes(filter)) ? filter
+    : (porBases.includes(autoBase)) ? autoBase
+    : null;
 
-  // Al cambiar de material, resetear la selección manual
-  if (idx !== _inocDetailIdx) _inocManualBase = null;
-  _inocDetailIdx = idx;
+  _syncInocListSelection();
 
-  document.querySelectorAll(".inoc-item").forEach((el, i) =>
-    el.classList.toggle("is-active", i === idx)
-  );
+  const titleBase = _inocDetailBase ? ` (${_inocDetailBase})` : "";
+  document.getElementById("inoc-detail-title").textContent = item.nombre + titleBase;
 
-  document.getElementById("inoc-detail-title").textContent = item.nombre;
-
-  // Barra de selector de base
-  const baseSelector = document.getElementById("inoc-base-selector");
-  const baseBar      = document.getElementById("inoc-base-bar");
-  const porBase = item.procedimiento_por_base || {};
-  const bases = Object.keys(porBase);
-  if (baseSelector && baseBar) {
-    if (bases.length > 0) {
-      baseBar.removeAttribute("hidden");
-      baseSelector.innerHTML =
-        `<option value="">Por defecto</option>` +
-        bases.map(b => `<option value="${b}">${b}</option>`).join("");
-
-      // Prioridad: 1) selección manual del usuario  2) base activa de Cucharas  3) Por defecto
-      const autoBase = cucharasState.materialObjetivo || "";
-      const targetBase = (_inocManualBase !== null && bases.includes(_inocManualBase))
-        ? _inocManualBase
-        : (bases.includes(autoBase) ? autoBase : "");
-      baseSelector.value = targetBase;
+  const badge = document.getElementById("inoc-active-base-badge");
+  if (badge) {
+    if (_inocDetailBase) {
+      badge.textContent = _inocDetailBase;
+      badge.removeAttribute("hidden");
     } else {
-      baseBar.setAttribute("hidden", "");
-      baseSelector.value = "";
+      badge.setAttribute("hidden", "");
     }
   }
 
-  const body  = document.getElementById("inoc-detail-body");
-  const empty = document.getElementById("inoc-detail-empty");
-  const theadRow = document.querySelector("#inoc-detail-table thead tr");
-  body.innerHTML = "";
+  const proc = _inocProtocol(item, _inocDetailBase);
 
-  // Elegir protocolo según base seleccionada
-  const selectedBase = baseSelector?.value || "";
-  const proc = (selectedBase && porBase[selectedBase]) ? porBase[selectedBase] : (item.procedimiento || []);
+  const body      = document.getElementById("inoc-detail-body");
+  const emptyEl   = document.getElementById("inoc-detail-empty");
+  const theadRow  = document.querySelector("#inoc-detail-table thead tr");
+  body.innerHTML  = "";
   if (!proc.length) {
-    empty.hidden = false;
+    emptyEl.hidden = false;
     theadRow.innerHTML = "<th>Etapa</th><th>Inoculante</th><th>Total g</th>";
     return;
   }
-  empty.hidden = true;
+  emptyEl.hidden = true;
 
   const sorted = [...proc].sort((a, b) =>
     (a.momento_idx ?? 999) - (b.momento_idx ?? 999)
@@ -1412,10 +1519,10 @@ function showInocDetail(idx) {
       }
       let rowHtml = `<td>${e.nombre}</td>`;
       for (const u of unitsPresent)
-        rowHtml += `<td class="inoc-col-compact">${eUnit === u ? e.cant : "—"}</td>`;
+        rowHtml += `<td class="inoc-col-compact">${eUnit === u ? toFraction(e.cant) : "—"}</td>`;
       for (const u of unitsPresent) {
         const match = eUnit === u;
-        rowHtml += `<td class="inoc-col-detail inoc-group-start">${match ? e.cant : "—"}</td>`;
+        rowHtml += `<td class="inoc-col-detail inoc-group-start">${match ? toFraction(e.cant) : "—"}</td>`;
         rowHtml += `<td class="inoc-col-detail">${match && e.gramos ? e.gramos + " g" : "—"}</td>`;
       }
       rowHtml += `<td>${e.total != null ? e.total + " g" : "—"}</td>`;
@@ -1445,10 +1552,6 @@ function contrastColor(hex) {
   return L > 0.179 ? "#1a1a1a" : "#ffffff";
 }
 
-document.getElementById("inoc-base-selector")?.addEventListener("change", (e) => {
-  _inocManualBase = e.target.value;   // guardar elección explícita del usuario
-  if (_inocDetailIdx >= 0) showInocDetail(_inocDetailIdx);
-});
 
 document.getElementById("inoc-mode-btn").addEventListener("click", () => {
   const table = document.getElementById("inoc-detail-table");
@@ -1457,15 +1560,17 @@ document.getElementById("inoc-mode-btn").addEventListener("click", () => {
     nowCompact ? "Ver detalle" : "Vista rápida";
 });
 
-// Cargar al entrar a la pestaña
+// Cargar al entrar a la pestaña Inoculaciones
 document.querySelectorAll("[data-tab-target]").forEach(btn => {
   btn.addEventListener("click", () => {
     if (btn.dataset.tabTarget === "inoc-panel") {
       if (!inocData.length) {
         loadInoculaciones();
-      } else if (_inocDetailIdx >= 0) {
-        // Re-renderizar con la base activa de Cucharas (sin resetear selección manual)
-        showInocDetail(_inocDetailIdx);
+      } else {
+        // Actualizar filtro con base activa de Cucharas si cambió
+        _inocPopulateBaseFilter();
+        renderInocList();
+        if (_inocDetailIdx >= 0) showInocDetail(_inocDetailIdx);
       }
     }
   });

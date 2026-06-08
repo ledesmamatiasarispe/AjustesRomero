@@ -56,7 +56,9 @@ class TabInformes(ttk.Frame):
         body.add(content_host, weight=1)
 
         self.sidebar = sidebar
-        self.content = content_host
+        self.scroll = ScrollFrame(content_host)
+        self.scroll.pack(fill="both", expand=True)
+        self.content = self.scroll.inner
 
         self._build_sections()
 
@@ -328,7 +330,7 @@ class TabInformes(ttk.Frame):
         )
 
         hist_box = ttk.LabelFrame(box, text="Consumo historico acumulado", padding=6)
-        hist_box.pack(fill="both", expand=True)
+        hist_box.pack(fill="both", expand=True, pady=(0, 8))
         self.tree_inoc_hist = self._make_tree(
             hist_box,
             columns=(
@@ -336,11 +338,20 @@ class TabInformes(ttk.Frame):
                 ("coladas", "Coladas", 80, "e"),
                 ("dosis", "Total dosis", 110, "e"),
                 ("total_g", "Total kg estimado", 140, "e"),
-                ("prom_g", "Prom g/colada", 130, "e"),
+                ("prom_g", "Prom kg/colada", 130, "e"),
             ),
             height=8,
         )
-        self.fig_inoc, self.mpl_inoc = self._make_mpl_canvas(hist_box, figsize=(7, 2.4))
+        # El gráfico de totales históricos usa el mismo canvas que el mensual (abajo)
+
+        monthly_box = ttk.LabelFrame(box, text="Consumo mensual (kg)", padding=6)
+        monthly_box.pack(fill="both", expand=True)
+        self.monthly_tree_host = ttk.Frame(monthly_box)
+        self.monthly_tree_host.pack(fill="x")
+        self.tree_inoc_monthly = None   # se reconstruye con columnas dinámicas
+        self.fig_inoc_monthly, self.mpl_inoc_monthly = self._make_mpl_canvas(
+            monthly_box, figsize=(7, 3.6)
+        )
 
         self.section_frames["inoculantes"] = box
 
@@ -1414,18 +1425,85 @@ class TabInformes(ttk.Frame):
                 fmt(data["total_g"] / 1000, 3),
                 fmt(prom_kg, 3),
             ))
-        self.fig_inoc.clear()
-        ax = self.fig_inoc.add_subplot(111)
-        ax.set_facecolor("#f0f0f0")
-        if hist_acc:
-            top = sorted(hist_acc.items(), key=lambda x: x[1]["total_g"], reverse=True)[:12]
-            if top:
-                labels, data_vals = zip(*reversed(top))
-                vals = [d["total_g"] / 1000 for d in data_vals]
-                ax.barh(list(labels), vals, color=self._mpl_colors(len(vals)))
-                ax.set_xlabel("Total kg estimado")
-                ax.set_title("Consumo historico de inoculantes", fontsize=9)
-        self.mpl_inoc.draw()
+        # (gráfico histórico eliminado — reemplazado por el mensual abajo)
+
+        # Sub-caja 4: consumo mensual (pivote: meses × inoculantes)
+        monthly = {}   # "YYYY-MM" → {inoc: total_g}
+        for record in records:
+            updated = str(record.get("updated_at", "") or "").replace("T", " ")
+            month = updated[:7]
+            if len(month) < 7:
+                continue
+            for mat, qty in record.get("counts", {}).items():
+                qty = max(0, int(qty or 0))
+                for e in final_inoc_map.get(mat, []):
+                    inoc = e["nombre"]
+                    dosis = qty * e["cantidad_dosis"]
+                    g = inoc_info.get(inoc, {}).get("gramos", 0)
+                    monthly.setdefault(month, {}).setdefault(inoc, 0.0)
+                    monthly[month][inoc] += dosis * g
+
+        all_inocs = sorted({inoc for m_data in monthly.values() for inoc in m_data})
+        months_sorted = sorted(monthly.keys())
+
+        # Reconstruir treeview con columnas dinámicas
+        for widget in self.monthly_tree_host.winfo_children():
+            widget.destroy()
+        if monthly and all_inocs:
+            col_ids = ["mes"] + [f"i{i}" for i in range(len(all_inocs))]
+            tree = ttk.Treeview(self.monthly_tree_host, columns=col_ids,
+                                show="headings", height=min(len(months_sorted), 10))
+            tree.heading("mes", text="Mes")
+            tree.column("mes", width=80, anchor="w")
+            for i, inoc in enumerate(all_inocs):
+                cid = f"i{i}"
+                tree.heading(cid, text=inoc)
+                tree.column(cid, width=max(80, len(inoc) * 7), anchor="e")
+            for month in months_sorted:
+                row = [month] + [
+                    fmt(monthly[month].get(inoc, 0.0) / 1000, 3) if monthly[month].get(inoc, 0) else "—"
+                    for inoc in all_inocs
+                ]
+                tree.insert("", "end", values=row)
+            sb = ttk.Scrollbar(self.monthly_tree_host, orient="horizontal", command=tree.xview)
+            tree.configure(xscrollcommand=sb.set)
+            tree.pack(fill="x", expand=True)
+            sb.pack(fill="x")
+            self.tree_inoc_monthly = tree
+
+        # Gráfico de barras AGRUPADAS mensual (un grupo por mes, una barra por inoculante)
+        self.fig_inoc_monthly.clear()
+        ax2 = self.fig_inoc_monthly.add_subplot(111)
+        ax2.set_facecolor("#f0f0f0")
+        if monthly and all_inocs:
+            import numpy as np
+            colors  = self._mpl_colors(len(all_inocs))
+            n_inocs = len(all_inocs)
+            n_months = len(months_sorted)
+            x      = np.arange(n_months)
+            # Ancho de cada barra: distribuir 0.8 entre los inoculantes del grupo
+            bar_w  = min(0.8 / n_inocs, 0.25)
+            offsets = [(i - (n_inocs - 1) / 2) * bar_w for i in range(n_inocs)]
+            for i, inoc in enumerate(all_inocs):
+                vals = [monthly[m].get(inoc, 0.0) / 1000 for m in months_sorted]
+                bars = ax2.bar(x + offsets[i], vals, width=bar_w,
+                               color=colors[i], label=inoc)
+                for bar, val in zip(bars, vals):
+                    if val > 0:
+                        ax2.text(
+                            bar.get_x() + bar.get_width() / 2,
+                            bar.get_height() + 0.005,
+                            f"{val:.2f}",
+                            ha="center", va="bottom",
+                            fontsize=9, fontweight="bold", rotation=90,
+                        )
+            ax2.set_xticks(x)
+            ax2.set_xticklabels(months_sorted, rotation=30, ha="right", fontsize=7)
+            ax2.set_ylabel("kg", fontsize=8)
+            ax2.set_title("Consumo mensual de inoculantes", fontsize=9)
+            ax2.legend(fontsize=7, loc="upper right",
+                       ncol=max(1, len(all_inocs) // 4))
+        self.mpl_inoc_monthly.draw()
 
     # ── Línea de tiempo diaria ────────────────────────────────────────────────
 
@@ -1497,7 +1575,8 @@ class TabInformes(ttk.Frame):
 
         ladle_history = {}
         if isinstance(self.ladles, dict):
-            ladle_history = self.ladles.get("history_by_colada", {}) or {}
+            raw_lh = self.ladles.get("history_by_colada", {}) or {}
+            ladle_history = {self._timeline_colada_key(k): v for k, v in raw_lh.items()}
 
         colors = self._mpl_colors(max(len(sessions), 1))
 
@@ -1662,15 +1741,25 @@ class TabInformes(ttk.Frame):
                 ax.text(x_end, y, f"  {total_cucharas}🥄",
                         va="center", fontsize=7, color="#d4ac0d", zorder=5)
 
-        # Eje X: ticks cada 60 min (label) y 15 min (minor)
-        major_ticks  = list(range(0, WIN_SPAN + 1, 60))
-        minor_ticks  = [t for t in range(0, WIN_SPAN + 1, 15) if t % 60 != 0]
-        major_labels = [f"{(t + WIN_START) // 60:02d}:00" for t in major_ticks]
+        # Eje X: FuncFormatter dinámico HH:MM:SS → funciona bien con zoom/pan
+        import matplotlib.ticker as _mticker
+
+        def _fmt_time(val, _pos):
+            total_s = (val + WIN_START) * 60
+            h = int(total_s // 3600)
+            m = int((total_s % 3600) // 60)
+            s = int(total_s % 60)
+            return f"{h:02d}:{m:02d}:{s:02d}"
+
+        ax.xaxis.set_major_formatter(_mticker.FuncFormatter(_fmt_time))
+        ax.xaxis.set_minor_formatter(_mticker.FuncFormatter(_fmt_time))
+        major_ticks = list(range(0, WIN_SPAN + 1, 60))
+        minor_ticks = [t for t in range(0, WIN_SPAN + 1, 15) if t % 60 != 0]
         ax.set_xticks(major_ticks)
-        ax.set_xticklabels(major_labels, fontsize=7)
         ax.set_xticks(minor_ticks, minor=True)
-        ax.tick_params(axis="x", which="minor", length=3, color="#aaa")
-        ax.set_xlabel("Hora del día  (usar toolbar para zoom/pan)", fontsize=8)
+        ax.tick_params(axis="x", which="major", labelsize=7)
+        ax.tick_params(axis="x", which="minor", length=3, color="#aaa", labelsize=0)
+        ax.set_xlabel("Hora del día  (toolbar para zoom/pan)", fontsize=8)
 
         # Eje Y: ocultar ticks
         ax.set_yticks([])

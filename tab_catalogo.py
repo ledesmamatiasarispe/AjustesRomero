@@ -72,9 +72,13 @@ def _meta_inoculacion_full(meta):
             result.append({"nombre": v.strip(), "cantidad_dosis": 1, "momento": "horno"})
         elif isinstance(v, dict) and str(v.get("nombre", "")).strip():
             mom = str(v.get("momento", "horno") or "horno") or "horno"
+            try:
+                dosis = float(v.get("cantidad_dosis", 1) or 1)
+            except Exception:
+                dosis = 1.0
             result.append({
                 "nombre": str(v["nombre"]).strip(),
-                "cantidad_dosis": int(v.get("cantidad_dosis", 1) or 1),
+                "cantidad_dosis": dosis,
                 "momento": mom,
             })
     return result
@@ -870,13 +874,13 @@ class TabCatalogo(ttk.Frame):
                     row=ri, column=0, sticky="w", padx=(4, 8), pady=1)
                 for ci, mom in enumerate(momentos_keys, 1):
                     cant = inoc_map_for_tab.get((name, mom), 0)
-                    var = tk.IntVar(value=cant if cant else 0)
+                    var = tk.StringVar(value=str(cant) if cant else "0")
                     tab_vars[(name, mom)] = var
                     sb = tk.Spinbox(
                         inn, from_=0, to=99, textvariable=var,
-                        width=5, justify="center",
+                        width=6, justify="center",
                         bg=BG_ENTRY, fg=FG, insertbackground=FG,
-                        buttonbackground=BG_ENTRY, increment=1, wrap=False,
+                        buttonbackground=BG_ENTRY, increment=0.5, wrap=False,
                     )
                     sb.grid(row=ri, column=ci, padx=4, pady=1)
                 for ci, u in enumerate(units_present, 1 + n_mom):
@@ -910,10 +914,15 @@ class TabCatalogo(ttk.Frame):
 
         def _get_inoc_converters(vars_dict=None):
             src = vars_dict if vars_dict is not None else inoc_vars
-            return [
-                {"nombre": nombre, "cantidad_dosis": var.get(), "momento": momento}
-                for (nombre, momento), var in src.items() if var.get() > 0
-            ]
+            result = []
+            for (nombre, momento), var in src.items():
+                try:
+                    val = float(var.get())
+                except Exception:
+                    val = 0.0
+                if val > 0:
+                    result.append({"nombre": nombre, "cantidad_dosis": val, "momento": momento})
+            return result
 
         def _get_all_inoc_data():
             """Retorna (default_list, por_base_dict)."""

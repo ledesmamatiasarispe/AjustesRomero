@@ -925,7 +925,10 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
                     nombre, cant, momento = e, 1, "horno"
                 elif isinstance(e, dict):
                     nombre = e.get("nombre", "")
-                    cant = int(e.get("cantidad_dosis", 1) or 1)
+                    try:
+                        cant = float(e.get("cantidad_dosis", 1) or 1)
+                    except Exception:
+                        cant = 1.0
                     momento = str(e.get("momento", "horno") or "horno")
                 else:
                     continue
@@ -949,15 +952,22 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
             if not isinstance(meta, dict):
                 continue
             default_inoc = resolve_inoc_protocol(meta)
-            if not default_inoc:
+            por_base = meta.get("por_base", {}) if isinstance(meta, dict) else {}
+            if not isinstance(por_base, dict):
+                por_base = {}
+            # Incluir si tiene protocolo por defecto O al menos un protocolo por base
+            if not default_inoc and not por_base:
                 continue
+            # Todas las bases del material (de calidad_meta.bases)
+            calidad_meta = a.get("calidad_meta", {}) if isinstance(a.get("calidad_meta"), dict) else {}
+            all_bases = [str(b).strip() for b in (calidad_meta.get("bases") or []) if str(b).strip()]
+
             entry = {
                 "nombre": a.get("nombre", ""),
+                "bases": all_bases,
                 "procedimiento": _build_procedimiento(default_inoc),
             }
-            # Agregar protocolos por base si existen
-            por_base = meta.get("por_base", {})
-            if isinstance(por_base, dict) and por_base:
+            if por_base:
                 entry["procedimiento_por_base"] = {
                     base: _build_procedimiento(resolve_inoc_protocol(meta, base=base))
                     for base in por_base

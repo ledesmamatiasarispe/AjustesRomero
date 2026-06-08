@@ -128,6 +128,7 @@ class TabAnalisisTermico(ttk.Frame):
         self._selected_paths = []
         self._chart_canvas = None
         self._chart_widget = None
+        self._chart_pan_state = {"active": False}
         self._load_token = 0
         self._parsed_cache = {}
         self._device_records = self._normalize_device_records(load_thermal_device_records())
@@ -2247,6 +2248,70 @@ class TabAnalisisTermico(ttk.Frame):
         self._chart_widget = self._chart_canvas.get_tk_widget()
         self._chart_widget.configure(width=THERMAL_CHART_WIDTH, height=THERMAL_CHART_HEIGHT)
         self._chart_widget.pack(fill="both", expand=True)
+        self._bind_chart_interactions(self._chart_canvas, ax_temp, ax_der)
+
+    def _bind_chart_interactions(self, canvas, ax_temp, ax_der):
+        """Habilita zoom con la rueda del mouse y paneo con click izquierdo arrastrado."""
+        axes = (ax_temp, ax_der)
+        state = self._chart_pan_state
+        state["active"] = False
+
+        def on_scroll(event):
+            if event.inaxes not in axes or event.xdata is None or event.ydata is None:
+                return
+            zoom_in = event.button == "up" or getattr(event, "step", 0) > 0
+            scale = (1 / 1.2) if zoom_in else 1.2
+            for ax in axes:
+                xlim = ax.get_xlim()
+                ylim = ax.get_ylim()
+                xdata, ydata = event.xdata, event.ydata
+                ax.set_xlim(xdata - (xdata - xlim[0]) * scale, xdata + (xlim[1] - xdata) * scale)
+                ax.set_ylim(ydata - (ydata - ylim[0]) * scale, ydata + (ylim[1] - ydata) * scale)
+            canvas.draw_idle()
+
+        def on_press(event):
+            if event.button != 1 or event.inaxes not in axes:
+                return
+            if event.x is None or event.y is None:
+                return
+            state["active"] = True
+            state["px"] = event.x
+            state["py"] = event.y
+            state["xlim"] = ax_temp.get_xlim()
+            state["ylim_temp"] = ax_temp.get_ylim()
+            state["ylim_der"] = ax_der.get_ylim()
+
+        def on_motion(event):
+            if not state.get("active") or event.x is None or event.y is None:
+                return
+            x0, y0 = state["px"], state["py"]
+            inv_temp = ax_temp.transData.inverted()
+            x0d, y0d_temp = inv_temp.transform((x0, y0))
+            x1d, y1d_temp = inv_temp.transform((event.x, event.y))
+            dx = x1d - x0d
+            dy_temp = y1d_temp - y0d_temp
+
+            inv_der = ax_der.transData.inverted()
+            _, y0d_der = inv_der.transform((x0, y0))
+            _, y1d_der = inv_der.transform((event.x, event.y))
+            dy_der = y1d_der - y0d_der
+
+            xlim = state["xlim"]
+            ax_temp.set_xlim(xlim[0] - dx, xlim[1] - dx)
+            ylim_t = state["ylim_temp"]
+            ax_temp.set_ylim(ylim_t[0] - dy_temp, ylim_t[1] - dy_temp)
+            ylim_d = state["ylim_der"]
+            ax_der.set_ylim(ylim_d[0] - dy_der, ylim_d[1] - dy_der)
+            canvas.draw_idle()
+
+        def on_release(event):
+            state["active"] = False
+
+        canvas.mpl_connect("scroll_event", on_scroll)
+        canvas.mpl_connect("button_press_event", on_press)
+        canvas.mpl_connect("motion_notify_event", on_motion)
+        canvas.mpl_connect("button_release_event", on_release)
+        canvas.mpl_connect("figure_leave_event", on_release)
 
     def _parse_file_plain(self, path):
         if path.suffix.lower() == ".csv":

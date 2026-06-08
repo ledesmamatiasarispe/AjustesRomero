@@ -316,6 +316,12 @@
                 <h2>Material final</h2>
               </div>
             </div>
+            <div class="inoc-filter-bar">
+              <span class="inoc-filter-label">Base:</span>
+              <select id="inoc-base-filter" class="inoc-base-select-full">
+                <option value="">Todas las bases</option>
+              </select>
+            </div>
             <ul class="inoc-list" id="inoc-list">
               <li class="empty-state" id="inoc-list-empty">Sin procedimientos configurados.</li>
             </ul>
@@ -327,11 +333,8 @@
                 <p class="card-kicker">Inoculacion</p>
                 <h2 id="inoc-detail-title">—</h2>
               </div>
+              <span class="inoc-active-base-badge" id="inoc-active-base-badge" hidden></span>
               <button id="inoc-mode-btn" class="action-button secondary" type="button">Ver detalle</button>
-            </div>
-            <div class="inoc-base-bar" id="inoc-base-bar" hidden>
-              <span class="inoc-base-bar-label">Base:</span>
-              <select id="inoc-base-selector" class="inoc-base-select-full"></select>
             </div>
             <div class="table-wrap">
               <table id="inoc-detail-table" class="is-compact">

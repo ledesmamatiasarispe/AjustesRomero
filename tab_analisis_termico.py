@@ -2257,16 +2257,19 @@ class TabAnalisisTermico(ttk.Frame):
         state["active"] = False
 
         def on_scroll(event):
-            if event.inaxes not in axes or event.xdata is None or event.ydata is None:
+            if event.inaxes not in axes or event.xdata is None:
                 return
             zoom_in = event.button == "up" or getattr(event, "step", 0) > 0
             scale = (1 / 1.2) if zoom_in else 1.2
+            # X: centrado en la posición del cursor (eje compartido, se aplica una sola vez)
+            xdata = event.xdata
+            xlim = ax_temp.get_xlim()
+            ax_temp.set_xlim(xdata - (xdata - xlim[0]) * scale, xdata + (xlim[1] - xdata) * scale)
+            # Y: cada eje convierte la posición del cursor a sus propias coordenadas
             for ax in axes:
-                xlim = ax.get_xlim()
                 ylim = ax.get_ylim()
-                xdata, ydata = event.xdata, event.ydata
-                ax.set_xlim(xdata - (xdata - xlim[0]) * scale, xdata + (xlim[1] - xdata) * scale)
-                ax.set_ylim(ydata - (ydata - ylim[0]) * scale, ydata + (ylim[1] - ydata) * scale)
+                _, ydata_ax = ax.transData.inverted().transform((event.x, event.y))
+                ax.set_ylim(ydata_ax - (ydata_ax - ylim[0]) * scale, ydata_ax + (ylim[1] - ydata_ax) * scale)
             canvas.draw_idle()
 
         def on_press(event):

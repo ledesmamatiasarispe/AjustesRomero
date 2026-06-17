@@ -4621,25 +4621,34 @@ class TabCalidad(ttk.Frame):
         win.title(title)
         win.transient(self.winfo_toplevel())
         win.grab_set()
-        win.resizable(False, False)
+        win.resizable(True, True)
 
         box = ttk.Frame(win, padding=12)
         box.pack(fill="both", expand=True)
-        ttk.Label(box, text=label).pack(anchor="w", pady=(0, 8))
+        box.columnconfigure(0, weight=1)
+        box.rowconfigure(1, weight=1)
 
-        checks = ttk.LabelFrame(box, text="Grupos", padding=8)
-        checks.pack(fill="x", expand=True)
+        ttk.Label(box, text=label).grid(row=0, column=0, sticky="w", pady=(0, 8))
+
+        checks_frame = ttk.LabelFrame(box, text="Grupos", padding=8)
+        checks_frame.grid(row=1, column=0, sticky="nsew")
+        checks_frame.columnconfigure(0, weight=1)
+        checks_frame.rowconfigure(0, weight=1)
+
+        scroll = ScrollFrame(checks_frame)
+        scroll.pack(fill="both", expand=True)
+
         vars_by_group = []
         for base, lote, reports, latest_fecha in groups:
             checked = (base, lote) in default_selected
             var = tk.BooleanVar(value=checked)
             family = self._family_for_reports(reports)
-            label = f"Base {base} - {family} - {lote} ({len(reports)} informes, {latest_fecha})"
-            ttk.Checkbutton(checks, text=label, variable=var).pack(anchor="w")
+            row_label = f"Base {base} - {family} - {lote} ({len(reports)} informes, {latest_fecha})"
+            ttk.Checkbutton(scroll.inner, text=row_label, variable=var).pack(anchor="w")
             vars_by_group.append(((base, lote, reports), var))
 
         btns = ttk.Frame(box)
-        btns.pack(fill="x", pady=(10, 0))
+        btns.grid(row=2, column=0, sticky="ew", pady=(10, 0))
 
         def accept():
             chosen = [group for group, var in vars_by_group if var.get()]
@@ -4658,9 +4667,14 @@ class TabCalidad(ttk.Frame):
 
         win.update_idletasks()
         root = self.winfo_toplevel()
-        x = root.winfo_rootx() + max(0, (root.winfo_width() - win.winfo_width()) // 2)
-        y = root.winfo_rooty() + max(0, (root.winfo_height() - win.winfo_height()) // 2)
-        win.geometry(f"+{x}+{y}")
+        # Altura máxima: 75% de la pantalla
+        max_h = int(root.winfo_screenheight() * 0.75)
+        win_w = win.winfo_reqwidth()
+        win_h = min(win.winfo_reqheight(), max_h)
+        x = root.winfo_rootx() + max(0, (root.winfo_width() - win_w) // 2)
+        y = root.winfo_rooty() + max(0, (root.winfo_height() - win_h) // 2)
+        win.geometry(f"{win_w}x{win_h}+{x}+{y}")
+        win.minsize(win_w, 200)
         win.wait_window()
         return picked["value"]
 

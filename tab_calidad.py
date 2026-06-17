@@ -273,6 +273,7 @@ class TabCalidad(ttk.Frame):
         props.columnconfigure(3, weight=1)
 
         self.var_traccion = tk.StringVar()
+        self.var_traccion_real = tk.StringVar()
         self.var_seccion = tk.StringVar()
         self.var_dureza = tk.StringVar()
         self.var_tam_grafito = tk.StringVar()
@@ -289,9 +290,9 @@ class TabCalidad(ttk.Frame):
         ttk.Label(props, text="Traccion (kg/mm2)").grid(row=0, column=0, sticky="w", pady=2)
         self.ent_traccion = ttk.Entry(props, textvariable=self.var_traccion, width=14)
         self.ent_traccion.grid(row=0, column=1, sticky="ew", pady=2, padx=(0, 8))
-        ttk.Label(props, text="Seccion muestra").grid(row=0, column=2, sticky="w", pady=2)
-        self.cb_seccion = ttk.Combobox(props, textvariable=self.var_seccion, state="readonly", width=14)
-        self.cb_seccion.grid(row=0, column=3, sticky="ew", pady=2)
+        ttk.Label(props, text="Traccion real Lab (kg/mm2)").grid(row=0, column=2, sticky="w", pady=2)
+        self.ent_traccion_real = ttk.Entry(props, textvariable=self.var_traccion_real, width=14)
+        self.ent_traccion_real.grid(row=0, column=3, sticky="ew", pady=2)
 
         ttk.Label(props, text="Dureza").grid(row=1, column=0, sticky="w", pady=2)
         self.ent_dureza = ttk.Entry(props, textvariable=self.var_dureza, width=14)
@@ -340,6 +341,9 @@ class TabCalidad(ttk.Frame):
         ttk.Label(props, text="Cementita %").grid(row=6, column=0, sticky="w", pady=2)
         self.ent_cementita = ttk.Entry(props, textvariable=self.var_cementita, width=14)
         self.ent_cementita.grid(row=6, column=1, sticky="ew", pady=2, padx=(0, 8))
+        ttk.Label(props, text="Seccion muestra").grid(row=6, column=2, sticky="w", pady=2)
+        self.cb_seccion = ttk.Combobox(props, textvariable=self.var_seccion, state="readonly", width=14)
+        self.cb_seccion.grid(row=6, column=3, sticky="ew", pady=2)
 
         ttk.Label(form, text="Datos / observaciones").grid(row=7, column=0, columnspan=2, sticky="w", pady=(8, 2))
         self.txt_data = tk.Text(
@@ -426,7 +430,7 @@ class TabCalidad(ttk.Frame):
         for var in (
             self.var_fecha, self.var_base, self.var_material, self.var_lote, self.var_informe,
             self.var_ce_final, self.var_c_final, self.var_si_final,
-            self.var_traccion, self.var_seccion, self.var_dureza, self.var_tam_grafito,
+            self.var_traccion, self.var_traccion_real, self.var_seccion, self.var_dureza, self.var_tam_grafito,
             self.var_morfologia, self.var_tipo_grafito, self.var_conteo_nodulos,
             self.var_pct_nod, self.var_alargamiento, self.var_perlita,
             self.var_ferrita, self.var_cementita,
@@ -445,6 +449,7 @@ class TabCalidad(ttk.Frame):
             "c_final": self.ent_c_final,
             "si_final": self.ent_si_final,
             "traccion": self.ent_traccion,
+            "traccion_real": self.ent_traccion_real,
             "seccion": self.cb_seccion,
             "dureza": self.ent_dureza,
             "tam_grafito": self.ent_tam_grafito,
@@ -3281,6 +3286,7 @@ class TabCalidad(ttk.Frame):
             "si_final": self.var_si_final.get().strip(),
             "datos": self.txt_data.get("1.0", tk.END).strip(),
             "traccion": self.var_traccion.get().strip(),
+            "traccion_real": self.var_traccion_real.get().strip(),
             "seccion": self.var_seccion.get().strip(),
             "dureza": self.var_dureza.get().strip(),
             "tam_grafito": self.var_tam_grafito.get().strip(),
@@ -3325,6 +3331,7 @@ class TabCalidad(ttk.Frame):
         self.var_c_final.set(first.get("c_final", ""))
         self.var_si_final.set(first.get("si_final", ""))
         self.var_traccion.set(first.get("traccion", ""))
+        self.var_traccion_real.set(first.get("traccion_real", ""))
         self.var_dureza.set(first.get("dureza", ""))
         self.var_tam_grafito.set(first.get("tam_grafito", ""))
         self.var_morfologia.set(first.get("morfologia", ""))
@@ -3530,6 +3537,7 @@ class TabCalidad(ttk.Frame):
             "si_final": self.var_si_final.get().strip(),
             "datos": self.txt_data.get("1.0", tk.END).strip(),
             "traccion": self.var_traccion.get().strip(),
+            "traccion_real": self.var_traccion_real.get().strip(),
             "seccion": self.var_seccion.get().strip(),
             "dureza": self.var_dureza.get().strip(),
             "tam_grafito": self.var_tam_grafito.get().strip(),
@@ -3945,6 +3953,7 @@ class TabCalidad(ttk.Frame):
                 "c_final": data["c_final"],
                 "si_final": data["si_final"],
                 "traccion": defaults.get("traccion", ""),
+                "traccion_real": "",
                 "seccion": defaults.get("seccion", self._default_section_for_material(material)),
                 "dureza": defaults.get("dureza", ""),
                 "tam_grafito": defaults.get("tam_grafito", ""),
@@ -4096,6 +4105,7 @@ class TabCalidad(ttk.Frame):
         self.var_c_final.set("")
         self.var_si_final.set("")
         self.var_traccion.set("")
+        self.var_traccion_real.set("")
         self.var_seccion.set("")
         self.var_dureza.set("")
         self.var_tam_grafito.set("")
@@ -4226,6 +4236,7 @@ class TabCalidad(ttk.Frame):
                 "si_final": template.get("si_final", ""),
                 "datos": template.get("datos", ""),
                 "traccion": defaults.get("traccion", ""),
+                "traccion_real": "",
                 "seccion": defaults.get("seccion", self._default_section_for_material(material)),
                 "dureza": defaults.get("dureza", ""),
                 "tam_grafito": defaults.get("tam_grafito", ""),
@@ -4271,6 +4282,7 @@ class TabCalidad(ttk.Frame):
             ("C final", report.get("c_final", "")),
             ("Si final", report.get("si_final", "")),
             ("Traccion (kg/mm2)", report.get("traccion", "")),
+            ("Traccion real Lab (kg/mm2)", report.get("traccion_real", "")),
             ("Seccion muestra", report.get("seccion", "")),
             ("Dureza", report.get("dureza", "")),
             ("Tam grafito", report.get("tam_grafito", "")),
@@ -4722,6 +4734,7 @@ class TabCalidad(ttk.Frame):
         self.var_c_final.set(report.get("c_final", ""))
         self.var_si_final.set(report.get("si_final", ""))
         self.var_traccion.set(report.get("traccion", ""))
+        self.var_traccion_real.set(report.get("traccion_real", ""))
         self.var_seccion.set(report.get("seccion", ""))
         self.var_dureza.set(report.get("dureza", ""))
         self.var_tam_grafito.set(report.get("tam_grafito", ""))

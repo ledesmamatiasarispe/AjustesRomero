@@ -533,17 +533,20 @@ class TabCalidad(ttk.Frame):
             snapshot = rpt.get("inoculacion_snapshot", {})
             if not isinstance(snapshot, dict):
                 snapshot = {}
-            inoc = snapshot.get("inoculacion", [])
+            inoc = snapshot.get("protocolo", [])
             if not inoc:
                 results[mat] = dict(base_comp)
                 continue
             plan = {}
             for e in inoc:
                 if isinstance(e, str):
-                    nombre, cant = e, 1
+                    nombre, cant = e, 1.0
                 elif isinstance(e, dict):
                     nombre = e.get("nombre", "")
-                    cant   = int(e.get("cantidad_dosis", 1) or 1)
+                    try:
+                        cant = float(e.get("cantidad_dosis", 1) or 1)
+                    except Exception:
+                        cant = 1.0
                 else:
                     continue
                 g = _gramos(nombre)

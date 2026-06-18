@@ -594,10 +594,6 @@ class TabCalidad(ttk.Frame):
             tv.heading(cid, text=label)
             tv.column(cid, width=max(90, len(label) * 8), anchor="center")
 
-        try:
-            tv.tag_configure("base_row", background="#e8f0fe")
-        except Exception:
-            pass
 
         tv_sb_y = ttk.Scrollbar(frm, orient="vertical",   command=tv.yview)
         tv_sb_x = ttk.Scrollbar(frm, orient="horizontal", command=tv.xview)
@@ -615,13 +611,11 @@ class TabCalidad(ttk.Frame):
         for el in ELEMENTS:
             vals = _row_vals(el)
             if any(v > 0.001 for v in vals):
-                tv.insert("", "end", values=(el,) + tuple(fmt(v, 4) for v in vals),
-                          tags=("base_row",) if el in ("C", "Si", "CE") else ())
+                tv.insert("", "end", values=(el,) + tuple(fmt(v, 4) for v in vals))
         # Fila CE
         ce_base = ce_from_percent(base_comp)
         ce_mats = [ce_from_percent(results[m]) for m in results]
-        tv.insert("", "end", values=("CE",) + tuple(fmt(v, 4) for v in ([ce_base] + ce_mats)),
-                  tags=("base_row",))
+        tv.insert("", "end", values=("CE",) + tuple(fmt(v, 4) for v in ([ce_base] + ce_mats)))
 
         ttk.Button(frm, text="Cerrar", command=win.destroy).grid(
             row=2, column=0, columnspan=2, pady=(10, 0))

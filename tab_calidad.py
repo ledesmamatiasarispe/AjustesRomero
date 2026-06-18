@@ -579,30 +579,52 @@ class TabCalidad(ttk.Frame):
 
         frm = ttk.Frame(win, padding=12)
         frm.pack(fill="both", expand=True)
+        frm.columnconfigure(0, weight=1)
+        frm.rowconfigure(0, weight=1)
 
-        materials = list(results.keys())
-        cols      = ("el",) + tuple(materials)
-        tv = ttk.Treeview(frm, columns=cols, show="headings", height=14, selectmode="none")
+        # La columna "Hierro base" va primero, luego cada material inoculado
+        BASE_COL = "Hierro base"
+        all_cols  = [BASE_COL] + list(results.keys())
+        col_ids   = ("el",) + tuple(f"c{i}" for i in range(len(all_cols)))
+
+        tv = ttk.Treeview(frm, columns=col_ids, show="headings", height=16, selectmode="none")
         tv.heading("el", text="Elemento")
         tv.column("el", width=80, anchor="w")
-        for m in materials:
-            tv.heading(m, text=m)
-            tv.column(m, width=80, anchor="center")
-        tv_sb = ttk.Scrollbar(frm, orient="vertical", command=tv.yview)
-        tv.configure(yscrollcommand=tv_sb.set)
-        tv_sb.pack(side="right", fill="y")
-        tv.pack(fill="both", expand=True)
+        for cid, label in zip(col_ids[1:], all_cols):
+            tv.heading(cid, text=label)
+            tv.column(cid, width=max(90, len(label) * 8), anchor="center")
+
+        try:
+            tv.tag_configure("base_row", background="#e8f0fe")
+        except Exception:
+            pass
+
+        tv_sb_y = ttk.Scrollbar(frm, orient="vertical",   command=tv.yview)
+        tv_sb_x = ttk.Scrollbar(frm, orient="horizontal", command=tv.xview)
+        tv.configure(yscrollcommand=tv_sb_y.set, xscrollcommand=tv_sb_x.set)
+        tv_sb_y.grid(row=0, column=1, sticky="ns")
+        tv_sb_x.grid(row=1, column=0, sticky="ew")
+        tv.grid(row=0, column=0, sticky="nsew")
+
+        def _row_vals(el):
+            base_v = to_float(base_comp.get(el, 0))
+            mat_vs = [to_float(results[m].get(el, 0)) for m in results]
+            return [base_v] + mat_vs
 
         # Filas de elementos
         for el in ELEMENTS:
-            vals = [to_float(results[m].get(el, 0)) for m in materials]
+            vals = _row_vals(el)
             if any(v > 0.001 for v in vals):
-                tv.insert("", "end", values=(el,) + tuple(fmt(v, 4) for v in vals))
+                tv.insert("", "end", values=(el,) + tuple(fmt(v, 4) for v in vals),
+                          tags=("base_row",) if el in ("C", "Si", "CE") else ())
         # Fila CE
-        ce_vals = [ce_from_percent(results[m]) for m in materials]
-        tv.insert("", "end", values=("CE",) + tuple(fmt(v, 4) for v in ce_vals))
+        ce_base = ce_from_percent(base_comp)
+        ce_mats = [ce_from_percent(results[m]) for m in results]
+        tv.insert("", "end", values=("CE",) + tuple(fmt(v, 4) for v in ([ce_base] + ce_mats)),
+                  tags=("base_row",))
 
-        ttk.Button(frm, text="Cerrar", command=win.destroy).pack(pady=(10, 0))
+        ttk.Button(frm, text="Cerrar", command=win.destroy).grid(
+            row=2, column=0, columnspan=2, pady=(10, 0))
 
     def _build_inoc_snapshot(self, material_code, base=None):
         from storage import resolve_inoc_protocol

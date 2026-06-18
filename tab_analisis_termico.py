@@ -1834,6 +1834,11 @@ class TabAnalisisTermico(ttk.Frame):
             value = self._pick_info_value(first.get("info", {}), THERMAL_FIELD_ALIASES_V2.get(display, (display,)))
             if value:
                 self.info_tree.insert("", "end", values=(display, value))
+        if mode_group == "Microestructura":
+            tag4 = self._parse_decimal(self._info_alias_value(first.get("info", {}), "tag4", "tag4 / TF (s)"))
+            vps = self._compute_vps(first.get("series", []), tag4)
+            if vps is not None:
+                self.info_tree.insert("", "end", values=("VPS (°)", f"{vps:.1f}"))
 
     def _apply_mode_tabs(self, payloads):
         if not payloads:
@@ -1898,6 +1903,8 @@ class TabAnalisisTermico(ttk.Frame):
             ("TL - TSE", lambda metric, payload: self._fmt_nullable(metric["solid_interval"], " C")),
             ("Expansion gris", lambda metric, payload: self._fmt_pct_or_nd(metric["gray_expansion"])),
             ("Expansion nodular", lambda metric, payload: self._fmt_pct_or_nd(metric["nodular_expansion"])),
+            ("VPS (°)", lambda metric, payload: self._fmt_nullable(
+                self._compute_vps(payload.get("series", []), metric["tag4"]), "°")),
             ("Puntos", lambda metric, payload: str(len(payload.get("series", [])))),
         ]
 
@@ -2612,6 +2619,7 @@ class TabAnalisisTermico(ttk.Frame):
             f"Puntos de curva: {len(series)}",
             f"Expansion gris por tiempo ((tag4-tag2)/(tag4-tag1)): {self._fmt_pct_or_nd(metrics['gray_expansion'])}",
             f"Expansion nodular por tiempo ((tag4-tag3)/(tag4-tag1)): {self._fmt_pct_or_nd(metrics['nodular_expansion'])}",
+            f"VPS — angulo entre tramos de derivada en TF: {self._fmt_or_nd(self._compute_vps(series, metrics['tag4']), '°')}",
             "",
             THERMAL_RESULTS_NOTE,
             "",
@@ -2648,6 +2656,8 @@ class TabAnalisisTermico(ttk.Frame):
             self._compare_metric_line("TL - TSE", m1["solid_interval"], m2["solid_interval"], " C"),
             self._compare_metric_line("Expansion gris", self._to_pct(m1["gray_expansion"]), self._to_pct(m2["gray_expansion"]), "%"),
             self._compare_metric_line("Expansion nodular", self._to_pct(m1["nodular_expansion"]), self._to_pct(m2["nodular_expansion"]), "%"),
+            self._compare_metric_line("VPS", self._compute_vps(first.get("series", []), m1["tag4"]),
+                                              self._compute_vps(second.get("series", []), m2["tag4"]), "°"),
             self._compare_metric_line("Puntos", float(len(first.get("series", []))), float(len(second.get("series", []))), ""),
             "",
             f"Estado gris A: TSE {self._range_status(m1['tse'], 1140.0, None)} | REC {self._range_status(m1['rec'], 4.0, 7.0)} | Expansion {self._ratio_status(m1['gray_expansion'], 0.60)}",
@@ -2664,6 +2674,37 @@ class TabAnalisisTermico(ttk.Frame):
             return f"{label}: A={self._fmt_nullable(a, suffix)} | B={self._fmt_nullable(b, suffix)} | Delta=N/D"
         delta = b - a
         return f"{label}: A={self._fmt_nullable(a, suffix)} | B={self._fmt_nullable(b, suffix)} | Delta={delta:.2f}{suffix}"
+
+    def _compute_vps(self, series, tag4_time, n_points=15):
+        """Angulo (grados) entre los tramos de la primera derivada a ambos lados de TF (solidus).
+        Se ajusta una recta a los n_points puntos antes y después del índice más cercano a tag4."""
+        import math
+        if not series or tag4_time is None:
+            return None
+        idx = min(range(len(series)), key=lambda i: abs(series[i]["periodo"] - tag4_time))
+
+        def slope(pts):
+            xs = [p["periodo"] for p in pts]
+            ys = [p["derivada"] for p in pts]
+            n = len(xs)
+            if n < 2:
+                return None
+            sx, sy = sum(xs), sum(ys)
+            sxy = sum(x * y for x, y in zip(xs, ys))
+            sx2 = sum(x * x for x in xs)
+            d = n * sx2 - sx * sx
+            if abs(d) < 1e-12:
+                return None
+            return (n * sxy - sx * sy) / d
+
+        m1 = slope(series[max(0, idx - n_points): idx + 1])
+        m2 = slope(series[idx: min(len(series), idx + n_points + 1)])
+        if m1 is None or m2 is None:
+            return None
+        denom = 1.0 + m1 * m2
+        if abs(denom) < 1e-10:
+            return 90.0
+        return abs(math.degrees(math.atan((m2 - m1) / denom)))
 
     def _result_metrics(self, info):
         tl = self._parse_decimal(self._info_alias_value(info, "TL"))

@@ -18,6 +18,8 @@ from config import BG_ENTRY, FG, ACCENT, ELEMENTS
 from widgets import ScrollFrame
 from ce import ce_from_percent
 
+_FIJI_PATH_FILE = Path.home() / "ajuste_comp_fiji_path.txt"
+
 try:
     from PIL import Image, ImageOps, ImageTk
 except Exception:
@@ -372,6 +374,8 @@ class TabCalidad(ttk.Frame):
         ttk.Button(image_btns, text="Importar ImageJ", command=self._import_imagej_analysis).pack(fill="x")
         ttk.Button(image_btns, text="Agregar imagen", command=self._add_images).pack(fill="x")
         ttk.Button(image_btns, text="Camara", command=self._open_camera_popup).pack(fill="x", pady=(4, 0))
+        ttk.Button(image_btns, text="Medir", command=self._open_measurement_popup).pack(fill="x", pady=(4, 0))
+        ttk.Button(image_btns, text="Abrir en ImageJ", command=self._open_in_imagej).pack(fill="x", pady=(4, 0))
         ttk.Button(image_btns, text="Comentario", command=self._edit_selected_image_comment).pack(fill="x", pady=(4, 0))
         ttk.Button(image_btns, text="Abrir", command=self._open_selected_image).pack(fill="x", pady=(4, 0))
         ttk.Button(image_btns, text="Quitar", command=self._remove_selected_images).pack(fill="x", pady=(4, 0))
@@ -728,12 +732,15 @@ class TabCalidad(ttk.Frame):
             while image_id in used_ids:
                 image_id = uuid.uuid4().hex
             used_ids.add(image_id)
+            _KNOWN = {"id", "nombre", "path", "comentario", "comment", "added_at", "archivo"}
+            extra = {k: v for k, v in item.items() if k not in _KNOWN}
             normalized.append({
                 "id": image_id,
                 "nombre": nombre,
                 "path": path,
                 "comentario": str(item.get("comentario") or item.get("comment") or "").strip(),
                 "added_at": str(item.get("added_at") or ""),
+                **extra,
             })
         return normalized
 
@@ -819,6 +826,238 @@ class TabCalidad(ttk.Frame):
         if self._selected_index is not None:
             self._draft_fields.add("imagenes")
             self._schedule_draft_save()
+
+    # ── Herramienta de medición (Opción A) ───────────────────────────────────
+
+    def _open_measurement_popup(self):
+        if Image is None or ImageTk is None:
+            messagebox.showinfo("Mediciones", "Pillow no esta disponible.", parent=self)
+            return
+        image_item = self._selected_report_image()
+        if image_item is None:
+            messagebox.showinfo("Mediciones", "Selecciona una imagen de la lista primero.", parent=self)
+            return
+        path = Path(str(image_item.get("path", "") or ""))
+        if not path.exists():
+            messagebox.showinfo("Mediciones", "El archivo de imagen no existe.", parent=self)
+            return
+        try:
+            pil_img = Image.open(path).convert("RGB")
+        except Exception as ex:
+            messagebox.showerror("Mediciones", f"No se pudo abrir la imagen:\n{ex}", parent=self)
+            return
+
+        CANVAS_W, CANVAS_H = 820, 580
+        img_w, img_h = pil_img.size
+        ds = min(CANVAS_W / img_w, CANVAS_H / img_h, 1.0)
+        disp_w, disp_h = int(img_w * ds), int(img_h * ds)
+        off_x = (CANVAS_W - disp_w) // 2
+        off_y = (CANVAS_H - disp_h) // 2
+        disp_img = pil_img.resize((disp_w, disp_h), Image.LANCZOS)
+
+        measurements = list(image_item.get("measurements", []))
+        cal = {
+            "px_per_unit": image_item.get("px_per_unit"),
+            "unit": image_item.get("meas_unit", "µm"),
+        }
+        mode = ["medir"]
+        pending = []
+
+        win = tk.Toplevel(self)
+        win.title(f"Mediciones — {path.name}")
+        win.transient(self.winfo_toplevel())
+        win.resizable(True, True)
+
+        canvas = tk.Canvas(win, width=CANVAS_W, height=CANVAS_H, bg="#222", cursor="crosshair")
+        canvas.pack(fill="both", expand=True)
+        photo_ref = [None]
+
+        def _redraw():
+            canvas.delete("all")
+            photo = ImageTk.PhotoImage(disp_img)
+            photo_ref[0] = photo
+            canvas.create_image(off_x, off_y, anchor="nw", image=photo)
+            for m in measurements:
+                col = "#ffcc00" if m.get("type") == "calibration" else "#00ee44"
+                x1c = m["x1"] * ds + off_x
+                y1c = m["y1"] * ds + off_y
+                x2c = m["x2"] * ds + off_x
+                y2c = m["y2"] * ds + off_y
+                canvas.create_line(x1c, y1c, x2c, y2c, fill=col, width=2)
+                canvas.create_oval(x1c-3, y1c-3, x1c+3, y1c+3, fill=col, outline="")
+                canvas.create_oval(x2c-3, y2c-3, x2c+3, y2c+3, fill=col, outline="")
+                mx, my = (x1c + x2c) / 2, (y1c + y2c) / 2
+                canvas.create_text(mx + 1, my - 9, text=m.get("label", ""), fill="#111",
+                                   font=("TkDefaultFont", 8, "bold"))
+                canvas.create_text(mx, my - 10, text=m.get("label", ""), fill=col,
+                                   font=("TkDefaultFont", 8, "bold"))
+            if pending:
+                px, py = pending[0][0] * ds + off_x, pending[0][1] * ds + off_y
+                canvas.create_oval(px-5, py-5, px+5, py+5, fill="#ff4444", outline="white", width=1)
+
+        def _to_img(cx, cy):
+            return (cx - off_x) / ds, (cy - off_y) / ds
+
+        def _on_click(event):
+            ix, iy = _to_img(event.x, event.y)
+            if not (0 <= ix <= img_w and 0 <= iy <= img_h):
+                return
+            pending.append((ix, iy))
+            if len(pending) < 2:
+                _redraw()
+                return
+            (x1, y1), (x2, y2) = pending[0], pending[1]
+            pending.clear()
+            px_d = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+            if mode[0] == "calibrar":
+                real = simpledialog.askfloat(
+                    "Calibrar escala",
+                    f"Distancia real entre los dos puntos ({cal['unit']}):",
+                    parent=win, minvalue=1e-6,
+                )
+                if real is None:
+                    _redraw()
+                    return
+                cal["px_per_unit"] = px_d / real
+                scale_var.set(f"Escala: {1 / cal['px_per_unit']:.4f} {cal['unit']}/px  |  "
+                              f"{cal['px_per_unit']:.2f} px/{cal['unit']}")
+                measurements.append({"type": "calibration", "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                                     "px_dist": px_d, "real_dist": real,
+                                     "label": f"REF {real} {cal['unit']}"})
+            else:
+                if cal["px_per_unit"]:
+                    real = px_d / cal["px_per_unit"]
+                    label = f"{real:.2f} {cal['unit']}"
+                else:
+                    real = None
+                    label = f"{px_d:.1f} px (sin calibrar)"
+                measurements.append({"type": "measure", "x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                                     "px_dist": px_d, "real_dist": real, "label": label})
+            _redraw()
+            _refresh_lb()
+
+        canvas.bind("<Button-1>", _on_click)
+
+        # ── Controles ─────────────────────────────────────────────────────────
+        ctrl = ttk.Frame(win, padding=(8, 4))
+        ctrl.pack(fill="x")
+        mode_var = tk.StringVar(value="medir")
+
+        def _set_mode(m):
+            mode[0] = m
+            pending.clear()
+            _redraw()
+
+        ttk.Radiobutton(ctrl, text="Medir", variable=mode_var, value="medir",
+                        command=lambda: _set_mode("medir")).pack(side="left")
+        ttk.Radiobutton(ctrl, text="Calibrar escala", variable=mode_var, value="calibrar",
+                        command=lambda: _set_mode("calibrar")).pack(side="left", padx=(10, 0))
+
+        unit_var = tk.StringVar(value=cal["unit"])
+        ttk.Label(ctrl, text="Unidad:").pack(side="left", padx=(16, 4))
+        ttk.Combobox(ctrl, textvariable=unit_var,
+                     values=["µm", "mm", "cm", "px"], width=5, state="readonly").pack(side="left")
+        unit_var.trace_add("write", lambda *_: cal.update({"unit": unit_var.get()}))
+
+        if cal["px_per_unit"]:
+            _sc = f"Escala: {1/cal['px_per_unit']:.4f} {cal['unit']}/px"
+        else:
+            _sc = "Sin calibrar — usa 'Calibrar escala' primero"
+        scale_var = tk.StringVar(value=_sc)
+        ttk.Label(ctrl, textvariable=scale_var, foreground="#0055aa").pack(side="left", padx=(14, 0))
+
+        ttk.Button(ctrl, text="Borrar ultima",
+                   command=lambda: (measurements.pop(), pending.clear(), _redraw(), _refresh_lb())
+                   if measurements else None).pack(side="right")
+        ttk.Button(ctrl, text="Borrar todo",
+                   command=lambda: (measurements.clear(), pending.clear(), _redraw(), _refresh_lb())
+                   ).pack(side="right", padx=(0, 6))
+
+        # ── Lista de mediciones ────────────────────────────────────────────────
+        lb_frame = ttk.LabelFrame(win, text="Mediciones", padding=4)
+        lb_frame.pack(fill="x", padx=8, pady=(0, 4))
+        meas_lb = tk.Listbox(lb_frame, height=4, font=("TkFixedFont", 9))
+        meas_lb.pack(fill="x")
+
+        def _refresh_lb():
+            meas_lb.delete(0, tk.END)
+            for m in measurements:
+                icon = "REF" if m["type"] == "calibration" else " → "
+                meas_lb.insert(tk.END, f"{icon}  {m['label']}")
+
+        # ── Guardar / Cerrar ───────────────────────────────────────────────────
+        br = ttk.Frame(win, padding=(8, 4))
+        br.pack(fill="x")
+
+        def _save():
+            image_item["measurements"] = measurements
+            image_item["px_per_unit"] = cal["px_per_unit"]
+            image_item["meas_unit"] = cal["unit"]
+            self._images_changed()
+            messagebox.showinfo("Mediciones", "Mediciones guardadas en el informe.", parent=win)
+
+        ttk.Button(br, text="Guardar mediciones", command=_save).pack(side="left")
+        ttk.Button(br, text="Cerrar", command=win.destroy).pack(side="right")
+
+        _redraw()
+        _refresh_lb()
+
+    # ── Abrir imagen en ImageJ / Fiji (Opción B) ──────────────────────────────
+
+    def _fiji_path_load(self):
+        try:
+            p = _FIJI_PATH_FILE.read_text(encoding="utf-8").strip()
+            return p if p and Path(p).exists() else None
+        except Exception:
+            return None
+
+    def _fiji_path_save(self, path):
+        try:
+            _FIJI_PATH_FILE.write_text(str(path), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _fiji_find(self):
+        saved = self._fiji_path_load()
+        if saved:
+            return saved
+        candidates = [
+            Path.home() / "Fiji.app" / "ImageJ-win64.exe",
+            Path("C:/Fiji.app/ImageJ-win64.exe"),
+            Path("C:/Program Files/Fiji.app/ImageJ-win64.exe"),
+            Path.home() / "Desktop" / "Fiji.app" / "ImageJ-win64.exe",
+            Path.home() / "Downloads" / "Fiji.app" / "ImageJ-win64.exe",
+        ]
+        for p in candidates:
+            if p.exists():
+                return str(p)
+        return None
+
+    def _open_in_imagej(self):
+        image_item = self._selected_report_image()
+        if image_item is None:
+            messagebox.showinfo("ImageJ", "Selecciona una imagen de la lista primero.", parent=self)
+            return
+        img_path = Path(str(image_item.get("path", "") or ""))
+        if not img_path.exists():
+            messagebox.showinfo("ImageJ", "El archivo de imagen no existe.", parent=self)
+            return
+
+        fiji = self._fiji_find()
+        if fiji is None:
+            fiji = filedialog.askopenfilename(
+                parent=self,
+                title="Localizar ImageJ / Fiji (ImageJ-win64.exe)",
+                filetypes=(("Ejecutables", "*.exe"), ("Todos los archivos", "*.*")),
+            )
+            if not fiji:
+                return
+            self._fiji_path_save(fiji)
+
+        try:
+            subprocess.Popen([fiji, str(img_path)])
+        except Exception as ex:
+            messagebox.showerror("ImageJ", f"No se pudo abrir ImageJ:\n{ex}", parent=self)
 
     def _open_camera_popup(self):
         try:

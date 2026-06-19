@@ -848,6 +848,59 @@ class TabCalidad(ttk.Frame):
         d.mkdir(exist_ok=True)
         return d
 
+    def _ask_image_metadata(self, parent, filename=""):
+        """Muestra un dialogo que pide comentario y calibracion para una imagen.
+        Devuelve (comentario, calibration_id) o (None, None) si se cancela."""
+        cals = self._cal_load()
+        result = {"comment": None, "cal_id": None, "cancelled": True}
+
+        dlg = tk.Toplevel(parent)
+        dlg.title("Datos de la imagen")
+        dlg.transient(parent)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+
+        f = ttk.Frame(dlg, padding=14)
+        f.pack(fill="both")
+        f.columnconfigure(1, weight=1)
+
+        if filename:
+            ttk.Label(f, text=filename, foreground="#555").grid(
+                row=0, column=0, columnspan=2, sticky="w", pady=(0, 8))
+
+        ttk.Label(f, text="Observacion:").grid(row=1, column=0, sticky="w", pady=3)
+        comment_var = tk.StringVar()
+        ttk.Entry(f, textvariable=comment_var, width=34).grid(
+            row=1, column=1, sticky="ew", pady=3, padx=(8, 0))
+
+        ttk.Label(f, text="Calibracion:").grid(row=2, column=0, sticky="w", pady=3)
+        cal_names = ["(ninguna)"] + [c["nombre"] for c in cals]
+        cal_var = tk.StringVar(value=cal_names[1] if len(cal_names) > 1 else "(ninguna)")
+        ttk.Combobox(f, textvariable=cal_var, values=cal_names,
+                     state="readonly", width=28).grid(
+            row=2, column=1, sticky="ew", pady=3, padx=(8, 0))
+
+        bf = ttk.Frame(f)
+        bf.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+
+        def _accept():
+            chosen = cal_var.get()
+            cal_obj = next((c for c in cals if c["nombre"] == chosen), None)
+            result["comment"] = comment_var.get().strip()
+            result["cal_id"] = cal_obj["id"] if cal_obj else None
+            result["cancelled"] = False
+            dlg.destroy()
+
+        ttk.Button(bf, text="Aceptar", command=_accept).pack(side="right")
+        ttk.Button(bf, text="Cancelar", command=dlg.destroy).pack(side="right", padx=6)
+
+        dlg.bind("<Return>", lambda e: _accept())
+        dlg.wait_window()
+
+        if result["cancelled"]:
+            return None, None
+        return result["comment"], result["cal_id"]
+
     def _open_calibrations_manager(self):
         if Image is None or ImageTk is None:
             messagebox.showinfo("Calibraciones", "Pillow no esta disponible.", parent=self)
@@ -1477,18 +1530,22 @@ class TabCalidad(ttk.Frame):
             material = _pick_material()
             if material is None:
                 return
-            comment = simpledialog.askstring("Comentario", "Comentario para la foto:", parent=win) or ""
-            dest_dir = Path(ensure_quality_images_dir())
             fname = f"camara_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.jpg"
+            comment, cal_id = self._ask_image_metadata(win, fname)
+            if comment is None:
+                return
+            dest_dir = Path(ensure_quality_images_dir())
             dest = dest_dir / fname
             cv2.imwrite(str(dest), frame)
             item = {
                 "id": uuid.uuid4().hex,
                 "nombre": fname,
                 "path": str(dest),
-                "comentario": comment.strip(),
+                "comentario": comment,
                 "added_at": datetime.now().isoformat(timespec="seconds"),
             }
+            if cal_id:
+                item["calibration_id"] = cal_id
             if self._selected_index is not None:
                 self._report_images.append(item)
                 self._report_images = self._normalize_report_images(self._report_images)
@@ -1543,13 +1600,12 @@ class TabCalidad(ttk.Frame):
         for path in paths:
             try:
                 item = self._copy_image_attachment(path)
-                comment = simpledialog.askstring(
-                    "Comentario de imagen",
-                    f"Comentario para {Path(path).name}:",
-                    parent=self,
-                )
-                if comment is not None:
-                    item["comentario"] = comment.strip()
+                comment, cal_id = self._ask_image_metadata(self, Path(path).name)
+                if comment is None:
+                    continue
+                item["comentario"] = comment
+                if cal_id:
+                    item["calibration_id"] = cal_id
                 self._report_images.append(item)
                 last_added_id = item["id"]
                 added += 1

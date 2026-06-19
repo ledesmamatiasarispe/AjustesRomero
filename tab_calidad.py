@@ -371,6 +371,7 @@ class TabCalidad(ttk.Frame):
         image_btns.grid(row=0, column=1, sticky="ns", padx=(8, 0))
         ttk.Button(image_btns, text="Importar ImageJ", command=self._import_imagej_analysis).pack(fill="x")
         ttk.Button(image_btns, text="Agregar imagen", command=self._add_images).pack(fill="x")
+        ttk.Button(image_btns, text="Camara", command=self._open_camera_popup).pack(fill="x", pady=(4, 0))
         ttk.Button(image_btns, text="Comentario", command=self._edit_selected_image_comment).pack(fill="x", pady=(4, 0))
         ttk.Button(image_btns, text="Abrir", command=self._open_selected_image).pack(fill="x", pady=(4, 0))
         ttk.Button(image_btns, text="Quitar", command=self._remove_selected_images).pack(fill="x", pady=(4, 0))
@@ -818,6 +819,171 @@ class TabCalidad(ttk.Frame):
         if self._selected_index is not None:
             self._draft_fields.add("imagenes")
             self._schedule_draft_save()
+
+    def _open_camera_popup(self):
+        try:
+            import cv2
+        except ImportError:
+            messagebox.showinfo("Camara",
+                "OpenCV no esta instalado.\nEjecutar en terminal: pip install opencv-python",
+                parent=self)
+            return
+        if Image is None or ImageTk is None:
+            messagebox.showinfo("Camara", "Pillow (PIL) no esta disponible.", parent=self)
+            return
+
+        cap = cv2.VideoCapture(0)
+        if not cap.isOpened():
+            messagebox.showinfo("Camara", "No se pudo abrir la camara.", parent=self)
+            return
+
+        PREVIEW_W, PREVIEW_H = 640, 480
+        captured_frame = [None]
+        live = [True]
+
+        win = tk.Toplevel(self)
+        win.title("Camara — Calidad")
+        win.transient(self.winfo_toplevel())
+        win.resizable(False, False)
+
+        lbl_preview = tk.Label(win, bg="#111", width=PREVIEW_W, height=PREVIEW_H)
+        lbl_preview.pack()
+
+        status_var = tk.StringVar(value="Previsualizacion en vivo")
+        ttk.Label(win, textvariable=status_var, anchor="center").pack(fill="x", pady=(2, 0))
+
+        btn_row = ttk.Frame(win, padding=(8, 6))
+        btn_row.pack(fill="x")
+        btn_cap = ttk.Button(btn_row, text="Capturar")
+        btn_cap.pack(side="left")
+        btn_save = ttk.Button(btn_row, text="Guardar en informe", state="disabled")
+        btn_save.pack(side="left", padx=6)
+        ttk.Button(btn_row, text="Cerrar", command=lambda: _on_close()).pack(side="right")
+
+        def _show_frame(frame_bgr):
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(frame_rgb).resize((PREVIEW_W, PREVIEW_H), Image.LANCZOS)
+            photo = ImageTk.PhotoImage(img)
+            lbl_preview.config(image=photo)
+            lbl_preview.image = photo
+
+        def _update_live():
+            if not live[0] or not win.winfo_exists():
+                return
+            ret, frame = cap.read()
+            if ret:
+                _show_frame(frame)
+            win.after(33, _update_live)
+
+        def _do_capture():
+            ret, frame = cap.read()
+            if not ret:
+                return
+            live[0] = False
+            captured_frame[0] = frame
+            _show_frame(frame)
+            status_var.set("Foto capturada — revisa antes de guardar")
+            btn_cap.config(text="Nueva foto")
+            btn_save.config(state="normal")
+
+        def _do_resume():
+            captured_frame[0] = None
+            live[0] = True
+            btn_cap.config(text="Capturar")
+            btn_save.config(state="disabled")
+            status_var.set("Previsualizacion en vivo")
+            _update_live()
+
+        btn_cap.config(command=lambda: _do_resume() if captured_frame[0] is not None else _do_capture())
+
+        def _pick_material():
+            if self._selected_index is not None:
+                return self.reports[self._selected_index].get("material", "") or None
+            if self._selected_group is None:
+                return None
+            base = self._selected_group["base"]
+            lote = self._selected_group["lote"]
+            indexes = self._group_report_indexes(base, lote)
+            materials = [self.reports[i].get("material", "") for i in indexes
+                         if self.reports[i].get("material", "")]
+            if not materials:
+                return None
+            if len(materials) == 1:
+                return materials[0]
+            picked = {"v": None}
+            dlg = tk.Toplevel(win)
+            dlg.title("Guardar para material")
+            dlg.transient(win)
+            dlg.grab_set()
+            dlg.resizable(False, False)
+            f = ttk.Frame(dlg, padding=14)
+            f.pack(fill="both")
+            ttk.Label(f, text="En que material guardar la foto?").pack(anchor="w", pady=(0, 8))
+            var = tk.StringVar(value=materials[0])
+            for m in materials:
+                ttk.Radiobutton(f, text=m, variable=var, value=m).pack(anchor="w")
+            bf = ttk.Frame(f)
+            bf.pack(fill="x", pady=(10, 0))
+            def _accept():
+                picked["v"] = var.get()
+                dlg.destroy()
+            ttk.Button(bf, text="Guardar aqui", command=_accept).pack(side="right")
+            ttk.Button(bf, text="Cancelar", command=dlg.destroy).pack(side="right", padx=6)
+            dlg.wait_window()
+            return picked["v"]
+
+        def _do_save():
+            frame = captured_frame[0]
+            if frame is None:
+                return
+            material = _pick_material()
+            if material is None:
+                return
+            comment = simpledialog.askstring("Comentario", "Comentario para la foto:", parent=win) or ""
+            dest_dir = Path(ensure_quality_images_dir())
+            fname = f"camara_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.jpg"
+            dest = dest_dir / fname
+            cv2.imwrite(str(dest), frame)
+            item = {
+                "id": uuid.uuid4().hex,
+                "nombre": fname,
+                "path": str(dest),
+                "comentario": comment.strip(),
+                "added_at": datetime.now().isoformat(timespec="seconds"),
+            }
+            if self._selected_index is not None:
+                self._report_images.append(item)
+                self._report_images = self._normalize_report_images(self._report_images)
+                self._refresh_images_ui()
+                self._images_changed()
+            elif self._selected_group is not None:
+                indexes = self._group_report_indexes(
+                    self._selected_group["base"], self._selected_group["lote"])
+                for idx in indexes:
+                    if self.reports[idx].get("material", "") == material:
+                        imgs = self._normalize_report_images(self.reports[idx].get("imagenes", []))
+                        imgs.append(item)
+                        self.reports[idx]["imagenes"] = imgs
+                        save_quality_reports(self.reports)
+                        break
+            status_var.set(f"Guardado en '{material}'")
+            btn_save.config(state="disabled")
+
+        btn_save.config(command=_do_save)
+
+        def _on_close():
+            live[0] = False
+            try:
+                cap.release()
+            except Exception:
+                pass
+            try:
+                win.destroy()
+            except Exception:
+                pass
+
+        win.protocol("WM_DELETE_WINDOW", _on_close)
+        _update_live()
 
     def _add_images(self):
         if self._selected_group is not None and self._selected_index is None:

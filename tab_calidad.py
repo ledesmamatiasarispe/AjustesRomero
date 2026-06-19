@@ -832,7 +832,9 @@ class TabCalidad(ttk.Frame):
             messagebox.showinfo("Camara", "Pillow (PIL) no esta disponible.", parent=self)
             return
 
-        cap = cv2.VideoCapture(0)
+        cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        if not cap.isOpened():
+            cap = cv2.VideoCapture(0)
         if not cap.isOpened():
             messagebox.showinfo("Camara", "No se pudo abrir la camara.", parent=self)
             return

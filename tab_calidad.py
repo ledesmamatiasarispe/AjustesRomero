@@ -18,7 +18,9 @@ from config import BG_ENTRY, FG, ACCENT, ELEMENTS
 from widgets import ScrollFrame
 from ce import ce_from_percent
 
-_FIJI_PATH_FILE = Path.home() / "ajuste_comp_fiji_path.txt"
+_FIJI_PATH_FILE   = Path.home() / "ajuste_comp_fiji_path.txt"
+_CAL_FILE         = Path.home() / "ajuste_comp_calibraciones.json"
+_CAL_IMAGES_SUBDIR = "calibraciones"
 
 try:
     from PIL import Image, ImageOps, ImageTk
@@ -375,6 +377,7 @@ class TabCalidad(ttk.Frame):
         ttk.Button(image_btns, text="Agregar imagen", command=self._add_images).pack(fill="x")
         ttk.Button(image_btns, text="Camara", command=self._open_camera_popup).pack(fill="x", pady=(4, 0))
         ttk.Button(image_btns, text="Medir", command=self._open_measurement_popup).pack(fill="x", pady=(4, 0))
+        ttk.Button(image_btns, text="Calibraciones", command=self._open_calibrations_manager).pack(fill="x", pady=(4, 0))
         ttk.Button(image_btns, text="Abrir en ImageJ", command=self._open_in_imagej).pack(fill="x", pady=(4, 0))
         ttk.Button(image_btns, text="Comentario", command=self._edit_selected_image_comment).pack(fill="x", pady=(4, 0))
         ttk.Button(image_btns, text="Abrir", command=self._open_selected_image).pack(fill="x", pady=(4, 0))
@@ -827,7 +830,321 @@ class TabCalidad(ttk.Frame):
             self._draft_fields.add("imagenes")
             self._schedule_draft_save()
 
-    # ── Herramienta de medición (Opción A) ───────────────────────────────────
+    # ── Calibraciones persistentes ────────────────────────────────────────────
+
+    def _cal_load(self):
+        try:
+            import json as _json
+            return _json.loads(_CAL_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+
+    def _cal_save(self, cals):
+        import json as _json
+        _CAL_FILE.write_text(_json.dumps(cals, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _cal_images_dir(self):
+        d = Path(ensure_quality_images_dir()) / _CAL_IMAGES_SUBDIR
+        d.mkdir(exist_ok=True)
+        return d
+
+    def _open_calibrations_manager(self):
+        if Image is None or ImageTk is None:
+            messagebox.showinfo("Calibraciones", "Pillow no esta disponible.", parent=self)
+            return
+        win = tk.Toplevel(self)
+        win.title("Calibraciones de escala")
+        win.transient(self.winfo_toplevel())
+        win.resizable(True, True)
+
+        frm = ttk.Frame(win, padding=10)
+        frm.pack(fill="both", expand=True)
+        frm.columnconfigure(0, weight=1)
+        frm.rowconfigure(0, weight=1)
+
+        cols = ("nombre", "escala", "unidad", "fecha")
+        tv = ttk.Treeview(frm, columns=cols, show="headings", height=10, selectmode="browse")
+        for cid, title, w in (("nombre","Nombre",200),("escala","Escala (px/unidad)",160),
+                               ("unidad","Unidad",70),("fecha","Creada",130)):
+            tv.heading(cid, text=title)
+            tv.column(cid, width=w, anchor="w")
+        tv_sb = ttk.Scrollbar(frm, orient="vertical", command=tv.yview)
+        tv.configure(yscrollcommand=tv_sb.set)
+        tv.grid(row=0, column=0, sticky="nsew")
+        tv_sb.grid(row=0, column=1, sticky="ns")
+
+        cals = [None]
+
+        def _refresh():
+            tv.delete(*tv.get_children())
+            cals[0] = self._cal_load()
+            for c in cals[0]:
+                tv.insert("", "end", iid=c["id"],
+                          values=(c["nombre"],
+                                  f"{c['px_per_unit']:.4f}" if c.get("px_per_unit") else "—",
+                                  c.get("unit","µm"),
+                                  c.get("created_at","")[:10]))
+
+        def _selected():
+            s = tv.selection()
+            if not s:
+                return None
+            return next((c for c in (cals[0] or []) if c["id"] == s[0]), None)
+
+        def _new():
+            result = self._calibration_wizard(win)
+            if result:
+                data = self._cal_load()
+                data.append(result)
+                self._cal_save(data)
+                _refresh()
+
+        def _delete():
+            c = _selected()
+            if not c:
+                return
+            if not messagebox.askyesno("Calibraciones",
+                    f"Eliminar '{c['nombre']}'?", parent=win):
+                return
+            img = c.get("image_path", "")
+            if img and Path(img).exists():
+                try:
+                    Path(img).unlink()
+                except Exception:
+                    pass
+            data = [x for x in self._cal_load() if x["id"] != c["id"]]
+            self._cal_save(data)
+            _refresh()
+
+        def _rename():
+            c = _selected()
+            if not c:
+                return
+            nuevo = simpledialog.askstring("Renombrar", "Nuevo nombre:",
+                                           initialvalue=c["nombre"], parent=win)
+            if nuevo and nuevo.strip():
+                data = self._cal_load()
+                for x in data:
+                    if x["id"] == c["id"]:
+                        x["nombre"] = nuevo.strip()
+                self._cal_save(data)
+                _refresh()
+
+        def _view_image():
+            c = _selected()
+            if not c:
+                return
+            img_path = c.get("image_path", "")
+            if not img_path or not Path(img_path).exists():
+                messagebox.showinfo("Calibraciones", "Imagen de referencia no encontrada.", parent=win)
+                return
+            self._show_calibration_reference(win, c, img_path)
+
+        btn_row = ttk.Frame(frm)
+        btn_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Button(btn_row, text="Nueva calibracion", command=_new).pack(side="left")
+        ttk.Button(btn_row, text="Renombrar", command=_rename).pack(side="left", padx=6)
+        ttk.Button(btn_row, text="Ver imagen ref.", command=_view_image).pack(side="left")
+        ttk.Button(btn_row, text="Eliminar", command=_delete).pack(side="left", padx=6)
+        ttk.Button(btn_row, text="Cerrar", command=win.destroy).pack(side="right")
+
+        _refresh()
+
+    def _show_calibration_reference(self, parent, cal_data, img_path):
+        try:
+            pil_img = Image.open(img_path).convert("RGB")
+        except Exception as ex:
+            messagebox.showerror("Calibraciones", f"No se pudo abrir la imagen:\n{ex}", parent=parent)
+            return
+        CANVAS_W, CANVAS_H = 820, 560
+        img_w, img_h = pil_img.size
+        ds = min(CANVAS_W / img_w, CANVAS_H / img_h, 1.0)
+        disp_img = pil_img.resize((int(img_w*ds), int(img_h*ds)), Image.LANCZOS)
+        off_x = (CANVAS_W - int(img_w*ds)) // 2
+        off_y = (CANVAS_H - int(img_h*ds)) // 2
+
+        win = tk.Toplevel(parent)
+        win.title(f"Referencia — {cal_data['nombre']}")
+        win.transient(parent)
+        win.resizable(True, True)
+        canvas = tk.Canvas(win, width=CANVAS_W, height=CANVAS_H, bg="#222")
+        canvas.pack(fill="both", expand=True)
+        photo_ref = [None]
+
+        def _draw():
+            canvas.delete("all")
+            photo = ImageTk.PhotoImage(disp_img)
+            photo_ref[0] = photo
+            canvas.create_image(off_x, off_y, anchor="nw", image=photo)
+            for key in ("ref_x1","ref_y1","ref_x2","ref_y2"):
+                if cal_data.get(key) is None:
+                    return
+            x1c = cal_data["ref_x1"]*ds+off_x; y1c = cal_data["ref_y1"]*ds+off_y
+            x2c = cal_data["ref_x2"]*ds+off_x; y2c = cal_data["ref_y2"]*ds+off_y
+            canvas.create_line(x1c,y1c,x2c,y2c, fill="#ffcc00", width=2)
+            for px,py in ((x1c,y1c),(x2c,y2c)):
+                canvas.create_oval(px-4,py-4,px+4,py+4, fill="#ffcc00", outline="")
+            mx,my = (x1c+x2c)/2,(y1c+y2c)/2
+            lbl = (f"{cal_data['ref_real_dist']} {cal_data.get('unit','µm')}  "
+                   f"= {cal_data['ref_px_dist']:.1f} px")
+            canvas.create_text(mx+1,my-11,text=lbl,fill="#000",font=("TkDefaultFont",9,"bold"))
+            canvas.create_text(mx,my-12,text=lbl,fill="#ffcc00",font=("TkDefaultFont",9,"bold"))
+        _draw()
+        info = ttk.Label(win,
+            text=(f"{cal_data['nombre']}  |  {cal_data.get('px_per_unit',0):.4f} px/{cal_data.get('unit','µm')}"
+                  f"  |  {1/cal_data['px_per_unit']:.4f} {cal_data.get('unit','µm')}/px"
+                  if cal_data.get("px_per_unit") else "Sin datos de escala"),
+            anchor="center")
+        info.pack(fill="x", pady=4)
+        ttk.Button(win, text="Cerrar", command=win.destroy).pack(pady=(0,8))
+
+    def _calibration_wizard(self, parent):
+        """Abre el wizard para crear una nueva calibracion. Devuelve el dict o None."""
+        img_path_str = filedialog.askopenfilename(
+            parent=parent,
+            title="Imagen de referencia para calibracion",
+            filetypes=(("Imagenes", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"),
+                       ("Todos los archivos", "*.*")),
+        )
+        if not img_path_str:
+            return None
+        src = Path(img_path_str)
+        try:
+            pil_img = Image.open(src).convert("RGB")
+        except Exception as ex:
+            messagebox.showerror("Calibraciones", f"No se pudo abrir la imagen:\n{ex}", parent=parent)
+            return None
+
+        CANVAS_W, CANVAS_H = 820, 560
+        img_w, img_h = pil_img.size
+        ds = min(CANVAS_W / img_w, CANVAS_H / img_h, 1.0)
+        disp_w, disp_h = int(img_w*ds), int(img_h*ds)
+        off_x = (CANVAS_W-disp_w)//2; off_y = (CANVAS_H-disp_h)//2
+        disp_img = pil_img.resize((disp_w, disp_h), Image.LANCZOS)
+
+        result = [None]
+        pending = []
+        ref = {}
+
+        win = tk.Toplevel(parent)
+        win.title("Nueva calibracion — marca la distancia de referencia")
+        win.transient(parent)
+        win.grab_set()
+        win.resizable(True, True)
+
+        canvas = tk.Canvas(win, width=CANVAS_W, height=CANVAS_H, bg="#222", cursor="crosshair")
+        canvas.pack(fill="both", expand=True)
+        photo_ref_holder = [None]
+
+        instr_var = tk.StringVar(value="Paso 1: clic en el primer punto de la referencia conocida")
+        ttk.Label(win, textvariable=instr_var, anchor="center",
+                  font=("TkDefaultFont",9,"bold")).pack(fill="x", pady=(4,2))
+
+        def _redraw():
+            canvas.delete("all")
+            photo = ImageTk.PhotoImage(disp_img)
+            photo_ref_holder[0] = photo
+            canvas.create_image(off_x, off_y, anchor="nw", image=photo)
+            if pending:
+                px,py = pending[0][0]*ds+off_x, pending[0][1]*ds+off_y
+                canvas.create_oval(px-5,py-5,px+5,py+5,fill="#ff4444",outline="white",width=1)
+            if ref:
+                x1c=ref["x1"]*ds+off_x; y1c=ref["y1"]*ds+off_y
+                x2c=ref["x2"]*ds+off_x; y2c=ref["y2"]*ds+off_y
+                canvas.create_line(x1c,y1c,x2c,y2c,fill="#ffcc00",width=2)
+                for px,py in ((x1c,y1c),(x2c,y2c)):
+                    canvas.create_oval(px-4,py-4,px+4,py+4,fill="#ffcc00",outline="")
+                mx,my=(x1c+x2c)/2,(y1c+y2c)/2
+                lbl = f"{ref.get('real_dist','?')} {ref.get('unit','µm')} = {ref['px_dist']:.1f} px"
+                canvas.create_text(mx+1,my-11,text=lbl,fill="#000",font=("TkDefaultFont",9,"bold"))
+                canvas.create_text(mx,my-12,text=lbl,fill="#ffcc00",font=("TkDefaultFont",9,"bold"))
+
+        unit_var = tk.StringVar(value="µm")
+
+        def _on_click(event):
+            ix = (event.x - off_x) / ds; iy = (event.y - off_y) / ds
+            if not (0 <= ix <= img_w and 0 <= iy <= img_h):
+                return
+            if ref:
+                return
+            pending.append((ix, iy))
+            _redraw()
+            if len(pending) < 2:
+                instr_var.set("Paso 2: clic en el segundo punto")
+                return
+            x1,y1 = pending[0]; x2,y2 = pending[1]
+            pending.clear()
+            px_d = ((x2-x1)**2+(y2-y1)**2)**0.5
+            real = simpledialog.askfloat(
+                "Distancia de referencia",
+                f"Distancia real entre los dos puntos ({unit_var.get()}):",
+                parent=win, minvalue=1e-6)
+            if real is None:
+                instr_var.set("Cancelado. Vuelve a marcar los puntos.")
+                _redraw()
+                return
+            ref.update({"x1":x1,"y1":y1,"x2":x2,"y2":y2,
+                        "px_dist":px_d,"real_dist":real,"unit":unit_var.get()})
+            instr_var.set(f"Referencia marcada: {real} {unit_var.get()} = {px_d:.1f} px  |  Completar arriba y guardar.")
+            _redraw()
+
+        canvas.bind("<Button-1>", _on_click)
+
+        ctrl = ttk.Frame(win, padding=(8,4)); ctrl.pack(fill="x")
+        ttk.Label(ctrl, text="Unidad:").pack(side="left")
+        ttk.Combobox(ctrl, textvariable=unit_var,
+                     values=["µm","mm","cm"], width=5, state="readonly").pack(side="left", padx=(4,0))
+        ttk.Button(ctrl, text="Reiniciar puntos",
+                   command=lambda: (ref.clear(), pending.clear(),
+                                    instr_var.set("Paso 1: clic en el primer punto"),
+                                    _redraw())).pack(side="left", padx=(12,0))
+
+        form = ttk.LabelFrame(win, text="Datos de la calibracion", padding=8)
+        form.pack(fill="x", padx=8, pady=(0,4))
+        nombre_var = tk.StringVar(value="")
+        notas_var  = tk.StringVar(value="")
+        ttk.Label(form, text="Nombre (ej: Objetivo 10x):").grid(row=0,column=0,sticky="w",pady=2)
+        ttk.Entry(form, textvariable=nombre_var, width=28).grid(row=0,column=1,sticky="ew",pady=2,padx=(6,0))
+        ttk.Label(form, text="Notas:").grid(row=1,column=0,sticky="w",pady=2)
+        ttk.Entry(form, textvariable=notas_var, width=28).grid(row=1,column=1,sticky="ew",pady=2,padx=(6,0))
+        form.columnconfigure(1,weight=1)
+
+        def _save():
+            if not ref:
+                messagebox.showinfo("Calibraciones","Marca primero los dos puntos de referencia.",parent=win)
+                return
+            nombre = nombre_var.get().strip()
+            if not nombre:
+                messagebox.showinfo("Calibraciones","Ingresa un nombre para la calibracion.",parent=win)
+                return
+            dest_dir = self._cal_images_dir()
+            dest = dest_dir / f"cal_{uuid.uuid4().hex[:8]}{src.suffix.lower()}"
+            shutil.copy2(str(src), str(dest))
+            px_per_unit = ref["px_dist"] / ref["real_dist"]
+            result[0] = {
+                "id": uuid.uuid4().hex,
+                "nombre": nombre,
+                "px_per_unit": px_per_unit,
+                "unit": ref["unit"],
+                "created_at": datetime.now().isoformat(timespec="seconds"),
+                "image_path": str(dest),
+                "ref_x1": ref["x1"], "ref_y1": ref["y1"],
+                "ref_x2": ref["x2"], "ref_y2": ref["y2"],
+                "ref_px_dist": ref["px_dist"],
+                "ref_real_dist": ref["real_dist"],
+                "notas": notas_var.get().strip(),
+            }
+            win.destroy()
+
+        br = ttk.Frame(win, padding=(8,4)); br.pack(fill="x")
+        ttk.Button(br, text="Guardar calibracion", command=_save).pack(side="left")
+        ttk.Button(br, text="Cancelar", command=win.destroy).pack(side="right")
+
+        _redraw()
+        win.wait_window()
+        return result[0]
+
+    # ── Herramienta de medición (Opción A) ────────────────────────────────────
 
     def _open_measurement_popup(self):
         if Image is None or ImageTk is None:
@@ -847,7 +1164,7 @@ class TabCalidad(ttk.Frame):
             messagebox.showerror("Mediciones", f"No se pudo abrir la imagen:\n{ex}", parent=self)
             return
 
-        CANVAS_W, CANVAS_H = 820, 580
+        CANVAS_W, CANVAS_H = 820, 560
         img_w, img_h = pil_img.size
         ds = min(CANVAS_W / img_w, CANVAS_H / img_h, 1.0)
         disp_w, disp_h = int(img_w * ds), int(img_h * ds)
@@ -856,17 +1173,50 @@ class TabCalidad(ttk.Frame):
         disp_img = pil_img.resize((disp_w, disp_h), Image.LANCZOS)
 
         measurements = list(image_item.get("measurements", []))
-        cal = {
-            "px_per_unit": image_item.get("px_per_unit"),
-            "unit": image_item.get("meas_unit", "µm"),
-        }
-        mode = ["medir"]
         pending = []
+        active_cal = [None]
 
         win = tk.Toplevel(self)
         win.title(f"Mediciones — {path.name}")
         win.transient(self.winfo_toplevel())
         win.resizable(True, True)
+
+        # ── Barra de calibracion ───────────────────────────────────────────────
+        cal_bar = ttk.Frame(win, padding=(8, 4))
+        cal_bar.pack(fill="x")
+        ttk.Label(cal_bar, text="Calibracion:").pack(side="left")
+
+        cals = self._cal_load()
+        saved_id = image_item.get("calibration_id")
+        cal_names = ["(sin calibrar)"] + [c["nombre"] for c in cals]
+        cal_var = tk.StringVar(value="(sin calibrar)")
+        cal_cb = ttk.Combobox(cal_bar, textvariable=cal_var, values=cal_names,
+                              state="readonly", width=24)
+        cal_cb.pack(side="left", padx=(6, 0))
+
+        scale_var = tk.StringVar(value="")
+        ttk.Label(cal_bar, textvariable=scale_var, foreground="#0055aa").pack(side="left", padx=(12, 0))
+
+        def _on_cal_change(*_):
+            name = cal_var.get()
+            found = next((c for c in cals if c["nombre"] == name), None)
+            active_cal[0] = found
+            if found:
+                scale_var.set(
+                    f"{1/found['px_per_unit']:.4f} {found['unit']}/px  "
+                    f"({found['px_per_unit']:.2f} px/{found['unit']})")
+            else:
+                scale_var.set("Sin calibrar — medidas en pixeles")
+
+        cal_var.trace_add("write", _on_cal_change)
+
+        # Pre-seleccionar la calibracion guardada en la imagen
+        if saved_id:
+            pre = next((c for c in cals if c["id"] == saved_id), None)
+            if pre:
+                cal_var.set(pre["nombre"])
+        if cal_var.get() == "(sin calibrar)" and cals:
+            cal_var.set(cals[0]["nombre"])
 
         canvas = tk.Canvas(win, width=CANVAS_W, height=CANVAS_H, bg="#222", cursor="crosshair")
         canvas.pack(fill="both", expand=True)
@@ -878,124 +1228,71 @@ class TabCalidad(ttk.Frame):
             photo_ref[0] = photo
             canvas.create_image(off_x, off_y, anchor="nw", image=photo)
             for m in measurements:
-                col = "#ffcc00" if m.get("type") == "calibration" else "#00ee44"
-                x1c = m["x1"] * ds + off_x
-                y1c = m["y1"] * ds + off_y
-                x2c = m["x2"] * ds + off_x
-                y2c = m["y2"] * ds + off_y
+                col = "#00ee44"
+                x1c = m["x1"]*ds+off_x; y1c = m["y1"]*ds+off_y
+                x2c = m["x2"]*ds+off_x; y2c = m["y2"]*ds+off_y
                 canvas.create_line(x1c, y1c, x2c, y2c, fill=col, width=2)
-                canvas.create_oval(x1c-3, y1c-3, x1c+3, y1c+3, fill=col, outline="")
-                canvas.create_oval(x2c-3, y2c-3, x2c+3, y2c+3, fill=col, outline="")
-                mx, my = (x1c + x2c) / 2, (y1c + y2c) / 2
-                canvas.create_text(mx + 1, my - 9, text=m.get("label", ""), fill="#111",
-                                   font=("TkDefaultFont", 8, "bold"))
-                canvas.create_text(mx, my - 10, text=m.get("label", ""), fill=col,
-                                   font=("TkDefaultFont", 8, "bold"))
+                for px,py in ((x1c,y1c),(x2c,y2c)):
+                    canvas.create_oval(px-3,py-3,px+3,py+3,fill=col,outline="")
+                mx,my = (x1c+x2c)/2,(y1c+y2c)/2
+                lbl = m.get("label","")
+                canvas.create_text(mx+1,my-9,text=lbl,fill="#111",font=("TkDefaultFont",8,"bold"))
+                canvas.create_text(mx,my-10,text=lbl,fill=col,font=("TkDefaultFont",8,"bold"))
             if pending:
-                px, py = pending[0][0] * ds + off_x, pending[0][1] * ds + off_y
-                canvas.create_oval(px-5, py-5, px+5, py+5, fill="#ff4444", outline="white", width=1)
-
-        def _to_img(cx, cy):
-            return (cx - off_x) / ds, (cy - off_y) / ds
+                px,py = pending[0][0]*ds+off_x, pending[0][1]*ds+off_y
+                canvas.create_oval(px-5,py-5,px+5,py+5,fill="#ff4444",outline="white",width=1)
 
         def _on_click(event):
-            ix, iy = _to_img(event.x, event.y)
+            ix = (event.x-off_x)/ds; iy = (event.y-off_y)/ds
             if not (0 <= ix <= img_w and 0 <= iy <= img_h):
                 return
             pending.append((ix, iy))
             if len(pending) < 2:
                 _redraw()
                 return
-            (x1, y1), (x2, y2) = pending[0], pending[1]
+            x1,y1 = pending[0]; x2,y2 = pending[1]
             pending.clear()
-            px_d = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
-            if mode[0] == "calibrar":
-                real = simpledialog.askfloat(
-                    "Calibrar escala",
-                    f"Distancia real entre los dos puntos ({cal['unit']}):",
-                    parent=win, minvalue=1e-6,
-                )
-                if real is None:
-                    _redraw()
-                    return
-                cal["px_per_unit"] = px_d / real
-                scale_var.set(f"Escala: {1 / cal['px_per_unit']:.4f} {cal['unit']}/px  |  "
-                              f"{cal['px_per_unit']:.2f} px/{cal['unit']}")
-                measurements.append({"type": "calibration", "x1": x1, "y1": y1, "x2": x2, "y2": y2,
-                                     "px_dist": px_d, "real_dist": real,
-                                     "label": f"REF {real} {cal['unit']}"})
+            px_d = ((x2-x1)**2+(y2-y1)**2)**0.5
+            cal = active_cal[0]
+            if cal and cal.get("px_per_unit"):
+                real = px_d / cal["px_per_unit"]
+                label = f"{real:.2f} {cal['unit']}"
             else:
-                if cal["px_per_unit"]:
-                    real = px_d / cal["px_per_unit"]
-                    label = f"{real:.2f} {cal['unit']}"
-                else:
-                    real = None
-                    label = f"{px_d:.1f} px (sin calibrar)"
-                measurements.append({"type": "measure", "x1": x1, "y1": y1, "x2": x2, "y2": y2,
-                                     "px_dist": px_d, "real_dist": real, "label": label})
+                label = f"{px_d:.1f} px"
+            measurements.append({"type":"measure","x1":x1,"y1":y1,"x2":x2,"y2":y2,
+                                  "px_dist":px_d,
+                                  "real_dist": real if cal and cal.get("px_per_unit") else None,
+                                  "label":label})
             _redraw()
             _refresh_lb()
 
         canvas.bind("<Button-1>", _on_click)
 
-        # ── Controles ─────────────────────────────────────────────────────────
-        ctrl = ttk.Frame(win, padding=(8, 4))
-        ctrl.pack(fill="x")
-        mode_var = tk.StringVar(value="medir")
-
-        def _set_mode(m):
-            mode[0] = m
-            pending.clear()
-            _redraw()
-
-        ttk.Radiobutton(ctrl, text="Medir", variable=mode_var, value="medir",
-                        command=lambda: _set_mode("medir")).pack(side="left")
-        ttk.Radiobutton(ctrl, text="Calibrar escala", variable=mode_var, value="calibrar",
-                        command=lambda: _set_mode("calibrar")).pack(side="left", padx=(10, 0))
-
-        unit_var = tk.StringVar(value=cal["unit"])
-        ttk.Label(ctrl, text="Unidad:").pack(side="left", padx=(16, 4))
-        ttk.Combobox(ctrl, textvariable=unit_var,
-                     values=["µm", "mm", "cm", "px"], width=5, state="readonly").pack(side="left")
-        unit_var.trace_add("write", lambda *_: cal.update({"unit": unit_var.get()}))
-
-        if cal["px_per_unit"]:
-            _sc = f"Escala: {1/cal['px_per_unit']:.4f} {cal['unit']}/px"
-        else:
-            _sc = "Sin calibrar — usa 'Calibrar escala' primero"
-        scale_var = tk.StringVar(value=_sc)
-        ttk.Label(ctrl, textvariable=scale_var, foreground="#0055aa").pack(side="left", padx=(14, 0))
-
+        ctrl = ttk.Frame(win, padding=(8,4)); ctrl.pack(fill="x")
         ttk.Button(ctrl, text="Borrar ultima",
                    command=lambda: (measurements.pop(), pending.clear(), _redraw(), _refresh_lb())
                    if measurements else None).pack(side="right")
         ttk.Button(ctrl, text="Borrar todo",
                    command=lambda: (measurements.clear(), pending.clear(), _redraw(), _refresh_lb())
-                   ).pack(side="right", padx=(0, 6))
+                   ).pack(side="right", padx=(0,6))
 
-        # ── Lista de mediciones ────────────────────────────────────────────────
         lb_frame = ttk.LabelFrame(win, text="Mediciones", padding=4)
-        lb_frame.pack(fill="x", padx=8, pady=(0, 4))
+        lb_frame.pack(fill="x", padx=8, pady=(0,4))
         meas_lb = tk.Listbox(lb_frame, height=4, font=("TkFixedFont", 9))
         meas_lb.pack(fill="x")
 
         def _refresh_lb():
             meas_lb.delete(0, tk.END)
             for m in measurements:
-                icon = "REF" if m["type"] == "calibration" else " → "
-                meas_lb.insert(tk.END, f"{icon}  {m['label']}")
-
-        # ── Guardar / Cerrar ───────────────────────────────────────────────────
-        br = ttk.Frame(win, padding=(8, 4))
-        br.pack(fill="x")
+                meas_lb.insert(tk.END, f" →  {m['label']}")
 
         def _save():
             image_item["measurements"] = measurements
-            image_item["px_per_unit"] = cal["px_per_unit"]
-            image_item["meas_unit"] = cal["unit"]
+            image_item["calibration_id"] = (active_cal[0] or {}).get("id")
             self._images_changed()
             messagebox.showinfo("Mediciones", "Mediciones guardadas en el informe.", parent=win)
 
+        br = ttk.Frame(win, padding=(8,4)); br.pack(fill="x")
         ttk.Button(br, text="Guardar mediciones", command=_save).pack(side="left")
         ttk.Button(br, text="Cerrar", command=win.destroy).pack(side="right")
 

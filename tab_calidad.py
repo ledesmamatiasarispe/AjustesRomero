@@ -72,7 +72,7 @@ GRAPHITE_SIZE_OPTIONS = (
     "8-7",
 )
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}
-IMAGEJ_RESOLUCION_PX_MM = 1655
+IMAGEJ_RESOLUCION_PX_MM = 1655  # x100 — calibración por defecto
 IMAGEJ_AREA_ANALISIS_PX = 1655 * 820
 IMAGEJ_AREA_UMBRAL = 100
 IMAGEJ_NODULAR_DEFAULT_NODULES = "300"
@@ -366,10 +366,12 @@ class TabCalidad(ttk.Frame):
         images_box = ttk.LabelFrame(form, text="Imagenes del informe", padding=6)
         images_box.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(0, 10), padx=(0, 4))
         images_box.columnconfigure(0, weight=1)
-        self.images_tree = ttk.Treeview(images_box, columns=("archivo", "comentario"), show="headings", height=4, selectmode="extended")
+        self.images_tree = ttk.Treeview(images_box, columns=("archivo", "comentario"), show="tree headings", height=4, selectmode="extended")
+        self.images_tree.heading("#0", text="")
+        self.images_tree.column("#0", width=18, stretch=False, minwidth=18)
         self.images_tree.heading("archivo", text="Archivo")
         self.images_tree.heading("comentario", text="Comentario")
-        self.images_tree.column("archivo", width=170, anchor="w")
+        self.images_tree.column("archivo", width=158, anchor="w")
         self.images_tree.column("comentario", width=190, anchor="w")
         self.images_tree.grid(row=0, column=0, sticky="ew")
         self.images_tree.bind("<<TreeviewSelect>>", lambda e: self._update_image_preview())
@@ -750,9 +752,21 @@ class TabCalidad(ttk.Frame):
     def _refresh_images_ui(self):
         try:
             self.images_tree.delete(*self.images_tree.get_children())
+            seen_groups = {}
             for image in self._report_images:
                 iid = str(image.get("id") or uuid.uuid4().hex)
-                self.images_tree.insert("", "end", iid=iid, values=(image.get("nombre", ""), image.get("comentario", "")))
+                gid = image.get("scan_group_id")
+                nombre = image.get("nombre", "")
+                comentario = image.get("comentario", "")
+                if gid:
+                    if gid not in seen_groups:
+                        label = image.get("scan_group_label", "Grupo")
+                        parent_iid = f"grp:{gid}"
+                        self.images_tree.insert("", "end", iid=parent_iid, text="", values=(label, ""), open=True)
+                        seen_groups[gid] = parent_iid
+                    self.images_tree.insert(seen_groups[gid], "end", iid=iid, values=(nombre, comentario))
+                else:
+                    self.images_tree.insert("", "end", iid=iid, values=(nombre, comentario))
             self._set_image_preview_message("Selecciona una imagen para verla aca." if self._report_images else "Sin imagen seleccionada")
         except Exception:
             pass
@@ -773,6 +787,11 @@ class TabCalidad(ttk.Frame):
         if not selected:
             return None
         target_id = selected[0]
+        if target_id.startswith("grp:"):
+            children = self.images_tree.get_children(target_id)
+            if not children:
+                return None
+            target_id = children[0]
         return next((item for item in self._report_images if str(item.get("id")) == target_id), None)
 
     def _update_image_preview(self):
@@ -848,6 +867,39 @@ class TabCalidad(ttk.Frame):
         d.mkdir(exist_ok=True)
         return d
 
+    def _cal_get_default_id(self):
+        return next((c["id"] for c in self._cal_load() if c.get("is_default")), None)
+
+    def _cal_set_default(self, cal_id):
+        data = self._cal_load()
+        for c in data:
+            c.pop("is_default", None)
+            if c["id"] == cal_id:
+                c["is_default"] = True
+        self._cal_save(data)
+
+    def _cal_default_label(self):
+        default_id = self._cal_get_default_id()
+        if not default_id:
+            return "x100 (por defecto)"
+        cal = next((c for c in self._cal_load() if c.get("id") == default_id), None)
+        return f"{cal['nombre']} (por defecto)" if cal else "x100 (por defecto)"
+
+    def _cal_get_px_per_mm(self, cal_id):
+        effective_id = cal_id or self._cal_get_default_id()
+        if not effective_id:
+            return None
+        cal = next((c for c in self._cal_load() if c.get("id") == effective_id), None)
+        if not cal or not cal.get("px_per_unit"):
+            return None
+        unit = cal.get("unit", "µm")
+        v = float(cal["px_per_unit"])
+        if unit == "µm":
+            return v * 1000.0
+        if unit == "cm":
+            return v / 10.0
+        return v  # mm
+
     def _ask_image_metadata(self, parent, filename=""):
         """Muestra un dialogo que pide comentario y calibracion para una imagen.
         Devuelve (comentario, calibration_id) o (None, None) si se cancela."""
@@ -874,8 +926,9 @@ class TabCalidad(ttk.Frame):
             row=1, column=1, sticky="ew", pady=3, padx=(8, 0))
 
         ttk.Label(f, text="Calibracion:").grid(row=2, column=0, sticky="w", pady=3)
-        cal_names = ["(ninguna)"] + [c["nombre"] for c in cals]
-        cal_var = tk.StringVar(value=cal_names[1] if len(cal_names) > 1 else "(ninguna)")
+        default_label = self._cal_default_label()
+        cal_names = [default_label] + [c["nombre"] for c in cals]
+        cal_var = tk.StringVar(value=cal_names[0])
         ttk.Combobox(f, textvariable=cal_var, values=cal_names,
                      state="readonly", width=28).grid(
             row=2, column=1, sticky="ew", pady=3, padx=(8, 0))
@@ -932,8 +985,9 @@ class TabCalidad(ttk.Frame):
             tv.delete(*tv.get_children())
             cals[0] = self._cal_load()
             for c in cals[0]:
+                nombre = ("★ " if c.get("is_default") else "") + c["nombre"]
                 tv.insert("", "end", iid=c["id"],
-                          values=(c["nombre"],
+                          values=(nombre,
                                   f"{c['px_per_unit']:.4f}" if c.get("px_per_unit") else "—",
                                   c.get("unit","µm"),
                                   c.get("created_at","")[:10]))
@@ -993,12 +1047,21 @@ class TabCalidad(ttk.Frame):
                 return
             self._show_calibration_reference(win, c, img_path)
 
+        def _set_default():
+            c = _selected()
+            if not c:
+                messagebox.showinfo("Calibraciones", "Selecciona una calibracion primero.", parent=win)
+                return
+            self._cal_set_default(c["id"])
+            _refresh()
+
         btn_row = ttk.Frame(frm)
         btn_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Button(btn_row, text="Nueva calibracion", command=_new).pack(side="left")
-        ttk.Button(btn_row, text="Renombrar", command=_rename).pack(side="left", padx=6)
-        ttk.Button(btn_row, text="Ver imagen ref.", command=_view_image).pack(side="left")
-        ttk.Button(btn_row, text="Eliminar", command=_delete).pack(side="left", padx=6)
+        ttk.Button(btn_row, text="Predeterminar ★", command=_set_default).pack(side="left", padx=6)
+        ttk.Button(btn_row, text="Renombrar", command=_rename).pack(side="left")
+        ttk.Button(btn_row, text="Ver imagen ref.", command=_view_image).pack(side="left", padx=6)
+        ttk.Button(btn_row, text="Eliminar", command=_delete).pack(side="left")
         ttk.Button(btn_row, text="Cerrar", command=win.destroy).pack(side="right")
 
         _refresh()
@@ -1219,15 +1282,35 @@ class TabCalidad(ttk.Frame):
 
         CANVAS_W, CANVAS_H = 820, 560
         img_w, img_h = pil_img.size
-        ds = min(CANVAS_W / img_w, CANVAS_H / img_h, 1.0)
-        disp_w, disp_h = int(img_w * ds), int(img_h * ds)
-        off_x = (CANVAS_W - disp_w) // 2
-        off_y = (CANVAS_H - disp_h) // 2
-        disp_img = pil_img.resize((disp_w, disp_h), Image.LANCZOS)
+        view = {"ds": 1.0, "off_x": 0, "off_y": 0, "disp_img": pil_img}
+
+        def _recalc_view():
+            cw = canvas.winfo_width()
+            ch = canvas.winfo_height()
+            if cw < 2: cw = CANVAS_W
+            if ch < 2: ch = CANVAS_H
+            new_ds = min(cw / img_w, ch / img_h, 1.0)
+            dw, dh = int(img_w * new_ds), int(img_h * new_ds)
+            view["ds"] = new_ds
+            view["off_x"] = (cw - dw) // 2
+            view["off_y"] = (ch - dh) // 2
+            view["disp_img"] = pil_img.resize((dw, dh), Image.LANCZOS)
 
         measurements = list(image_item.get("measurements", []))
         pending = []
         active_cal = [None]
+        contours_cache_m = [None]
+        show_contours_m = tk.BooleanVar(value=False)
+
+        def _get_contours_m():
+            if contours_cache_m[0] is None:
+                try:
+                    import cv2 as _cv2
+                    img_bgr = _cv2.imread(str(path))
+                    contours_cache_m[0] = self._get_nodule_contours(img_bgr) if img_bgr is not None else []
+                except Exception:
+                    contours_cache_m[0] = []
+            return contours_cache_m[0]
 
         win = tk.Toplevel(self)
         win.title(f"Mediciones — {path.name}")
@@ -1260,6 +1343,9 @@ class TabCalidad(ttk.Frame):
                     f"({found['px_per_unit']:.2f} px/{found['unit']})")
             else:
                 scale_var.set("Sin calibrar — medidas en pixeles")
+            if show_contours_m.get():
+                stats_cache_m[0] = _compute_stats_m()
+                _update_stats_panel_m(stats_cache_m[0])
 
         cal_var.trace_add("write", _on_cal_change)
 
@@ -1271,15 +1357,93 @@ class TabCalidad(ttk.Frame):
         if cal_var.get() == "(sin calibrar)" and cals:
             cal_var.set(cals[0]["nombre"])
 
-        canvas = tk.Canvas(win, width=CANVAS_W, height=CANVAS_H, bg="#222", cursor="crosshair")
-        canvas.pack(fill="both", expand=True)
+        # ── Layout: stats (izquierda) + canvas (derecha) ────────────────────
+        content_frame = ttk.Frame(win)
+        content_frame.pack(fill="both", expand=True)
+        content_frame.columnconfigure(1, weight=1)
+        content_frame.rowconfigure(0, weight=1)
+
+        stats_panel_m = ttk.LabelFrame(content_frame, text="Conteo de nodulos", padding=(8, 6))
+        stats_panel_m.grid(row=0, column=0, sticky="nsew", padx=(4, 0), pady=4)
+        stats_panel_m.grid_remove()
+
+        _STAT_ROWS_M = [
+            ("n_total",           "Nodulos totales"),
+            ("n_mm2",             "Nodulos/mm²"),
+            ("nodularidad",       "Nodularidad"),
+            ("vermicular",        "Vermicular"),
+            ("tam_grafito_clase", "Tamano grafito"),
+            ("diam_prom_um",      "Diam. promedio"),
+            ("diam_max_um",       "Diam. max"),
+            ("diam_min_um",       "Diam. min"),
+        ]
+        stat_vars_m = {}
+        for _key, _label in _STAT_ROWS_M:
+            _rf = ttk.Frame(stats_panel_m); _rf.pack(fill="x", pady=1)
+            ttk.Label(_rf, text=_label + ":", anchor="w", width=16).pack(side="left")
+            _sv = tk.StringVar(value="—"); stat_vars_m[_key] = _sv
+            ttk.Label(_rf, textvariable=_sv, foreground="#66bbff", anchor="w").pack(side="left")
+
+        ttk.Separator(stats_panel_m, orient="horizontal").pack(fill="x", pady=(8, 4))
+        ttk.Label(stats_panel_m, text="Distribucion por clase:", anchor="w").pack(fill="x")
+        dist_vars_m = {}
+        for _cat, _, _ in IMAGEJ_LIMITS:
+            _rf = ttk.Frame(stats_panel_m); _rf.pack(fill="x", pady=1)
+            ttk.Label(_rf, text=_cat.split("(")[0].strip() + ":", anchor="w", width=9).pack(side="left")
+            _sv = tk.StringVar(value="—"); dist_vars_m[_cat] = _sv
+            ttk.Label(_rf, textvariable=_sv, foreground="#66bbff", anchor="w").pack(side="left")
+
+        stats_cache_m = [None]
+
+        def _update_stats_panel_m(stats):
+            if stats is None:
+                for v in stat_vars_m.values(): v.set("—")
+                for v in dist_vars_m.values(): v.set("—")
+                return
+            fmt = self._format_metric
+            stat_vars_m["n_total"].set(str(stats["n_total"]))
+            stat_vars_m["n_mm2"].set(fmt(stats["n_mm2"], 2))
+            stat_vars_m["nodularidad"].set(f"{fmt(stats['nodularidad'], 1)}%")
+            stat_vars_m["vermicular"].set(f"{fmt(stats['vermicular'], 1)}%")
+            stat_vars_m["tam_grafito_clase"].set(stats.get("tam_grafito_clase", "") or "—")
+            stat_vars_m["diam_prom_um"].set(f"{fmt(stats['diam_prom_um'], 1)} µm")
+            stat_vars_m["diam_max_um"].set(f"{fmt(stats['diam_max_um'], 1)} µm")
+            stat_vars_m["diam_min_um"].set(f"{fmt(stats['diam_min_um'], 1)} µm")
+            counts = stats.get("counts", {})
+            for cat, sv in dist_vars_m.items(): sv.set(str(counts.get(cat, 0)))
+
+        def _compute_stats_m():
+            try:
+                import cv2 as _cv2
+                img_bgr = _cv2.imread(str(path))
+                if img_bgr is None:
+                    return None
+                cal = active_cal[0]
+                px_mm = self._cal_get_px_per_mm(cal.get("id") if cal else None)
+                return self._count_nodules_opencv(img_bgr, px_per_mm=px_mm)
+            except Exception:
+                return None
+
+        canvas = tk.Canvas(content_frame, width=CANVAS_W, height=CANVAS_H, bg="#222", cursor="crosshair")
+        canvas.grid(row=0, column=1, sticky="nsew")
         photo_ref = [None]
 
-        def _redraw():
+        def _redraw(event=None):
+            _recalc_view()
+            ds = view["ds"]; off_x = view["off_x"]; off_y = view["off_y"]
             canvas.delete("all")
-            photo = ImageTk.PhotoImage(disp_img)
+            photo = ImageTk.PhotoImage(view["disp_img"])
             photo_ref[0] = photo
             canvas.create_image(off_x, off_y, anchor="nw", image=photo)
+            if show_contours_m.get():
+                for p in _get_contours_m():
+                    pts = p["contour"].reshape(-1, 2)
+                    color = "#00dd00" if p["circ"] >= 0.5 else "#ff8800"
+                    coords = []
+                    for x, y in pts:
+                        coords.extend([x * ds + off_x, y * ds + off_y])
+                    if len(coords) >= 4:
+                        canvas.create_polygon(coords, outline=color, fill="", width=1)
             for m in measurements:
                 col = "#00ee44"
                 x1c = m["x1"]*ds+off_x; y1c = m["y1"]*ds+off_y
@@ -1295,7 +1459,10 @@ class TabCalidad(ttk.Frame):
                 px,py = pending[0][0]*ds+off_x, pending[0][1]*ds+off_y
                 canvas.create_oval(px-5,py-5,px+5,py+5,fill="#ff4444",outline="white",width=1)
 
+        canvas.bind("<Configure>", _redraw)
+
         def _on_click(event):
+            ds = view["ds"]; off_x = view["off_x"]; off_y = view["off_y"]
             ix = (event.x-off_x)/ds; iy = (event.y-off_y)/ds
             if not (0 <= ix <= img_w and 0 <= iy <= img_h):
                 return
@@ -1322,6 +1489,19 @@ class TabCalidad(ttk.Frame):
         canvas.bind("<Button-1>", _on_click)
 
         ctrl = ttk.Frame(win, padding=(8,4)); ctrl.pack(fill="x")
+        def _toggle_contours_m():
+            contours_cache_m[0] = None
+            stats_cache_m[0] = None
+            if show_contours_m.get():
+                stats_panel_m.grid()
+                stats_cache_m[0] = _compute_stats_m()
+                _update_stats_panel_m(stats_cache_m[0])
+            else:
+                stats_panel_m.grid_remove()
+            _redraw()
+
+        ttk.Checkbutton(ctrl, text="Conteo nodulos",
+                        variable=show_contours_m, command=_toggle_contours_m).pack(side="left")
         ttk.Button(ctrl, text="Borrar ultima",
                    command=lambda: (measurements.pop(), pending.clear(), _redraw(), _refresh_lb())
                    if measurements else None).pack(side="right")
@@ -1421,39 +1601,152 @@ class TabCalidad(ttk.Frame):
             messagebox.showinfo("Camara", "Pillow (PIL) no esta disponible.", parent=self)
             return
 
-        cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-        if not cap.isOpened():
-            cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
+        cap = None
+        for idx in range(5):
+            c = cv2.VideoCapture(idx)
+            if c.isOpened():
+                ret, _ = c.read()
+                if ret:
+                    cap = c
+                    break
+            c.release()
+        if cap is None or not cap.isOpened():
             messagebox.showinfo("Camara", "No se pudo abrir la camara.", parent=self)
             return
 
         PREVIEW_W, PREVIEW_H = 640, 480
         captured_frame = [None]
         live = [True]
+        contours_cache = [None]
+        stats_cache = [None]
+        frame_counter = [0]
+        show_contours_var = tk.BooleanVar(value=False)
 
         win = tk.Toplevel(self)
         win.title("Camara — Calidad")
         win.transient(self.winfo_toplevel())
-        win.resizable(False, False)
+        win.resizable(True, True)
 
-        lbl_preview = tk.Label(win, bg="#111", width=PREVIEW_W, height=PREVIEW_H)
-        lbl_preview.pack()
+        # ── Layout principal: panel de stats (izquierda) + preview (derecha) ──
+        main_pane = ttk.Frame(win)
+        main_pane.pack(fill="both", expand=True)
+        main_pane.columnconfigure(1, weight=1)
+        main_pane.rowconfigure(0, weight=1)
+
+        # Panel de stats (oculto hasta que se activa el conteo)
+        stats_panel = ttk.LabelFrame(main_pane, text="Conteo de nodulos", padding=(8, 6))
+        stats_panel.grid(row=0, column=0, sticky="nsew", padx=(4, 0), pady=4)
+        stats_panel.grid_remove()
+
+        _STAT_ROWS = [
+            ("n_total",          "Nodulos totales"),
+            ("n_mm2",            "Nodulos/mm²"),
+            ("nodularidad",      "Nodularidad"),
+            ("vermicular",       "Vermicular"),
+            ("tam_grafito_clase","Tamano grafito"),
+            ("diam_prom_um",     "Diam. promedio"),
+            ("diam_max_um",      "Diam. max"),
+            ("diam_min_um",      "Diam. min"),
+        ]
+        stat_vars = {}
+        for key, label in _STAT_ROWS:
+            rf = ttk.Frame(stats_panel)
+            rf.pack(fill="x", pady=1)
+            ttk.Label(rf, text=label + ":", anchor="w", width=16).pack(side="left")
+            sv = tk.StringVar(value="—")
+            stat_vars[key] = sv
+            ttk.Label(rf, textvariable=sv, foreground="#66bbff", anchor="w").pack(side="left")
+
+        ttk.Separator(stats_panel, orient="horizontal").pack(fill="x", pady=(8, 4))
+        ttk.Label(stats_panel, text="Distribucion por clase:", anchor="w").pack(fill="x")
+        dist_vars = {}
+        for category, _, _ in IMAGEJ_LIMITS:
+            rf = ttk.Frame(stats_panel)
+            rf.pack(fill="x", pady=1)
+            short = category.split("(")[0].strip()
+            ttk.Label(rf, text=short + ":", anchor="w", width=9).pack(side="left")
+            sv = tk.StringVar(value="—")
+            dist_vars[category] = sv
+            ttk.Label(rf, textvariable=sv, foreground="#66bbff", anchor="w").pack(side="left")
+
+        def _update_stats_panel(stats):
+            dash = "—"
+            if stats is None:
+                for v in stat_vars.values():
+                    v.set("...")
+                for v in dist_vars.values():
+                    v.set("...")
+                return
+            fmt = self._format_metric
+            stat_vars["n_total"].set(str(stats["n_total"]))
+            stat_vars["n_mm2"].set(fmt(stats["n_mm2"], 2))
+            stat_vars["nodularidad"].set(f"{fmt(stats['nodularidad'], 1)}%")
+            stat_vars["vermicular"].set(f"{fmt(stats['vermicular'], 1)}%")
+            stat_vars["tam_grafito_clase"].set(stats.get("tam_grafito_clase", "") or dash)
+            stat_vars["diam_prom_um"].set(f"{fmt(stats['diam_prom_um'], 1)} µm")
+            stat_vars["diam_max_um"].set(f"{fmt(stats['diam_max_um'], 1)} µm")
+            stat_vars["diam_min_um"].set(f"{fmt(stats['diam_min_um'], 1)} µm")
+            counts = stats.get("counts", {})
+            for category, sv in dist_vars.items():
+                sv.set(str(counts.get(category, 0)))
+
+        # Preview
+        lbl_preview = tk.Label(main_pane, bg="#111", width=PREVIEW_W, height=PREVIEW_H)
+        lbl_preview.grid(row=0, column=1, sticky="nsew")
 
         status_var = tk.StringVar(value="Previsualizacion en vivo")
         ttk.Label(win, textvariable=status_var, anchor="center").pack(fill="x", pady=(2, 0))
 
         btn_row = ttk.Frame(win, padding=(8, 6))
         btn_row.pack(fill="x")
-        btn_cap = ttk.Button(btn_row, text="Capturar")
-        btn_cap.pack(side="left")
-        btn_save = ttk.Button(btn_row, text="Guardar en informe", state="disabled")
+        btn_file = ttk.Button(btn_row, text="Abrir archivo")
+        btn_file.pack(side="left")
+        btn_save = ttk.Button(btn_row, text="Guardar en informe")
         btn_save.pack(side="left", padx=6)
+        btn_save_count = ttk.Button(btn_row, text="Guardar y contar nodulos")
+        btn_save_count.pack(side="left")
+        btn_contours = ttk.Checkbutton(btn_row, text="Conteo nodulos", variable=show_contours_var)
+        btn_contours.pack(side="left", padx=6)
         ttk.Button(btn_row, text="Cerrar", command=lambda: _on_close()).pack(side="right")
 
         def _show_frame(frame_bgr):
-            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-            img = Image.fromarray(frame_rgb).resize((PREVIEW_W, PREVIEW_H), Image.LANCZOS)
+            w = lbl_preview.winfo_width()
+            h = lbl_preview.winfo_height()
+            if w < 2: w = PREVIEW_W
+            if h < 2: h = PREVIEW_H
+            display = frame_bgr.copy()
+            if show_contours_var.get():
+                px_mm = self._cal_get_px_per_mm(None)
+                if live[0]:
+                    try:
+                        cnts = self._get_nodule_contours(frame_bgr)
+                    except Exception:
+                        cnts = []
+                    frame_counter[0] += 1
+                    if frame_counter[0] % 15 == 1:
+                        try:
+                            stats_cache[0] = self._count_nodules_opencv(frame_bgr, px_per_mm=px_mm)
+                        except Exception:
+                            stats_cache[0] = None
+                        _update_stats_panel(stats_cache[0])
+                else:
+                    if contours_cache[0] is None:
+                        try:
+                            contours_cache[0] = self._get_nodule_contours(frame_bgr)
+                        except Exception:
+                            contours_cache[0] = []
+                    cnts = contours_cache[0]
+                    if stats_cache[0] is None:
+                        try:
+                            stats_cache[0] = self._count_nodules_opencv(frame_bgr, px_per_mm=px_mm)
+                        except Exception:
+                            stats_cache[0] = None
+                        _update_stats_panel(stats_cache[0])
+                for p in cnts:
+                    color = (0, 220, 0) if p["circ"] >= 0.5 else (0, 140, 255)
+                    cv2.drawContours(display, [p["contour"]], -1, color, 2)
+            frame_rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(frame_rgb).resize((w, h), Image.LANCZOS)
             photo = ImageTk.PhotoImage(img)
             lbl_preview.config(image=photo)
             lbl_preview.image = photo
@@ -1466,26 +1759,46 @@ class TabCalidad(ttk.Frame):
                 _show_frame(frame)
             win.after(33, _update_live)
 
-        def _do_capture():
-            ret, frame = cap.read()
-            if not ret:
+        def _load_from_file():
+            from tkinter import filedialog
+            path = filedialog.askopenfilename(
+                parent=win,
+                title="Seleccionar imagen",
+                filetypes=(
+                    ("Imagenes", "*.jpg *.jpeg *.png *.bmp *.tif *.tiff"),
+                    ("Todos los archivos", "*.*"),
+                ),
+            )
+            if not path:
+                return
+            frame = cv2.imread(path)
+            if frame is None:
+                messagebox.showerror("Error", f"No se pudo leer la imagen:\n{path}", parent=win)
                 return
             live[0] = False
+            contours_cache[0] = None
+            stats_cache[0] = None
             captured_frame[0] = frame
             _show_frame(frame)
-            status_var.set("Foto capturada — revisa antes de guardar")
-            btn_cap.config(text="Nueva foto")
-            btn_save.config(state="normal")
+            status_var.set(f"Archivo: {Path(path).name}")
 
-        def _do_resume():
-            captured_frame[0] = None
-            live[0] = True
-            btn_cap.config(text="Capturar")
-            btn_save.config(state="disabled")
-            status_var.set("Previsualizacion en vivo")
-            _update_live()
+        def _toggle_contours():
+            contours_cache[0] = None
+            stats_cache[0] = None
+            frame_counter[0] = 0
+            if show_contours_var.get():
+                stats_panel.grid()
+                if captured_frame[0] is not None:
+                    _show_frame(captured_frame[0])
+                else:
+                    _update_stats_panel(None)
+            else:
+                stats_panel.grid_remove()
+                if captured_frame[0] is not None:
+                    _show_frame(captured_frame[0])
 
-        btn_cap.config(command=lambda: _do_resume() if captured_frame[0] is not None else _do_capture())
+        btn_file.config(command=_load_from_file)
+        btn_contours.config(command=_toggle_contours)
 
         def _pick_material():
             if self._selected_index is not None:
@@ -1526,7 +1839,10 @@ class TabCalidad(ttk.Frame):
         def _do_save():
             frame = captured_frame[0]
             if frame is None:
-                return
+                ret, frame = cap.read()
+                if not ret:
+                    messagebox.showinfo("Camara", "No se pudo obtener imagen.", parent=win)
+                    return
             material = _pick_material()
             if material is None:
                 return
@@ -1562,9 +1878,187 @@ class TabCalidad(ttk.Frame):
                         save_quality_reports(self.reports)
                         break
             status_var.set(f"Guardado en '{material}'")
-            btn_save.config(state="disabled")
+
+        def _do_save_and_count():
+            frame = captured_frame[0]
+            if frame is None:
+                ret, frame = cap.read()
+                if not ret:
+                    messagebox.showinfo("Camara", "No se pudo obtener imagen.", parent=win)
+                    return
+            material = _pick_material()
+            if material is None:
+                return
+            fname = f"camara_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.jpg"
+            comment, cal_id = self._ask_image_metadata(win, fname)
+            if comment is None:
+                return
+            dest_dir = Path(ensure_quality_images_dir())
+            dest = dest_dir / fname
+            cv2.imwrite(str(dest), frame)
+            sample_item = {
+                "id": uuid.uuid4().hex,
+                "nombre": fname,
+                "path": str(dest),
+                "comentario": comment,
+                "added_at": datetime.now().isoformat(timespec="seconds"),
+            }
+            if cal_id:
+                sample_item["calibration_id"] = cal_id
+            px_per_mm = self._cal_get_px_per_mm(cal_id)
+            status_var.set(f"Analizando nodulos...")
+            win.update_idletasks()
+            try:
+                stats = self._count_nodules_opencv(frame, px_per_mm=px_per_mm)
+            except Exception as ex:
+                messagebox.showerror("Conteo de nodulos", f"Error al analizar la imagen:\n{ex}", parent=win)
+                status_var.set("Error en analisis")
+                return
+            if stats is None:
+                messagebox.showinfo("Conteo de nodulos",
+                    "No se encontraron particulas en la imagen.\n"
+                    "Verificar que la imagen sea de microestructura con fondo claro.",
+                    parent=win)
+                status_var.set("Sin particulas detectadas")
+                return
+
+            sample_item["opencv_stats"] = {
+                "n_total": stats["n_total"],
+                "n_mm2": stats["n_mm2"],
+                "nodularidad": stats["nodularidad"],
+                "vermicular": stats["vermicular"],
+                "diam_prom_um": stats["diam_prom_um"],
+                "diam_max_um": stats["diam_max_um"],
+                "diam_min_um": stats["diam_min_um"],
+                "counts": dict(stats["counts"]),
+                "tam_grafito_clase": stats.get("tam_grafito_clase", ""),
+                "px_per_mm": stats.get("px_per_mm", IMAGEJ_RESOLUCION_PX_MM),
+            }
+
+            attached_ids = []
+            errors = []
+            self._report_images.append(sample_item)
+            attached_ids.append(sample_item["id"])
+            if self._selected_group is not None and self._selected_index is None:
+                indexes = self._group_report_indexes(
+                    self._selected_group["base"], self._selected_group["lote"])
+                for idx in indexes:
+                    if self.reports[idx].get("material", "") == material:
+                        imgs = self._normalize_report_images(self.reports[idx].get("imagenes", []))
+                        imgs.append(sample_item)
+                        self.reports[idx]["imagenes"] = imgs
+                        save_quality_reports(self.reports)
+                        break
+
+            all_opencv = [
+                img["opencv_stats"]
+                for img in self._normalize_report_images(self._report_images)
+                if img.get("opencv_stats")
+            ]
+            n_scans = len(all_opencv)
+            avg_stats = self._merge_imagej_stats(all_opencv, [""] * n_scans) if n_scans > 1 else dict(stats)
+            avg_stats.setdefault("source_count", n_scans)
+
+            scan_group_id = uuid.uuid4().hex[:12]
+            scan_group_label = f"Escaneo {n_scans} — {datetime.now().strftime('%H:%M:%S')}"
+            sample_item["scan_group_id"] = scan_group_id
+            sample_item["scan_group_label"] = scan_group_label
+
+            is_nodular = self._family_for_material(self.var_material.get()) == "Nodular"
+            nodule_count_value = IMAGEJ_NODULAR_DEFAULT_NODULES if is_nodular else self._format_metric(avg_stats["n_mm2"], 2)
+            self.var_conteo_nodulos.set(nodule_count_value)
+            self.var_pct_nod.set(self._format_metric(avg_stats["nodularidad"], 2))
+            self.var_tam_grafito.set(avg_stats.get("tam_grafito_clase", ""))
+            if not is_nodular:
+                self.var_morfologia.set(
+                    f"Nodular {self._format_metric(avg_stats['nodularidad'], 2)}% / "
+                    f"Vermicular {self._format_metric(avg_stats['vermicular'], 2)}%"
+                )
+            self._prompt_quality_value_if_empty(self.var_ce_final, "Carbono equivalente", "CE:")
+            self._prompt_quality_value_if_empty(self.var_c_final, "Carbono total", "C (%):")
+            self._prompt_quality_value_if_empty(self.var_si_final, "Silicio", "Si (%):")
+
+            try:
+                chart = self._create_imagej_distribution_chart(avg_stats, f"Camara {fname[:16]}")
+                if chart:
+                    chart["scan_group_id"] = scan_group_id
+                    chart["scan_group_label"] = scan_group_label
+                    self._report_images.append(chart)
+                    attached_ids.append(chart["id"])
+            except Exception as ex:
+                errors.append(f"Grafico de distribucion: {ex}")
+            try:
+                tbl_img = self._create_opencv_stats_table_image(stats, avg_stats, n_scans)
+                if tbl_img:
+                    tbl_img["scan_group_id"] = scan_group_id
+                    tbl_img["scan_group_label"] = scan_group_label
+                    self._report_images.append(tbl_img)
+                    attached_ids.append(tbl_img["id"])
+            except Exception as ex:
+                errors.append(f"Tabla de resultados: {ex}")
+
+            cal_note = (
+                f"Calibracion: {stats['px_per_mm']:.1f} px/mm (calibracion aplicada)"
+                if px_per_mm
+                else f"Calibracion: {IMAGEJ_RESOLUCION_PX_MM} px/mm (x100 por defecto)"
+            )
+            avg_counts_lines = [
+                f"  {category}: {int(round(float(count)))}"
+                for category, count in avg_stats["counts"].items()
+                if count
+            ]
+            avg_block_lines = [
+                f"Nodulos/mm2: {self._format_metric(avg_stats['n_mm2'], 2)}",
+                f"Nodulos/mm2 informado: {nodule_count_value}" if is_nodular else "",
+                f"Nodularidad: {self._format_metric(avg_stats['nodularidad'], 2)}%",
+                f"Vermiculares: {self._format_metric(avg_stats['vermicular'], 2)}%",
+                f"Tamano grafito: {avg_stats.get('tam_grafito_clase', '')}",
+                f"Diametro promedio: {self._format_metric(avg_stats['diam_prom_um'], 2)} um",
+                f"Max: {self._format_metric(avg_stats['diam_max_um'], 2)} um  Min: {self._format_metric(avg_stats['diam_min_um'], 2)} um",
+                "Distribucion por clase:",
+                *avg_counts_lines,
+            ]
+            self._replace_or_prepend_observation_block(
+                f"=== Promedio OpenCV camara ({n_scans} escaneo{'s' if n_scans > 1 else ''}) ===",
+                avg_block_lines,
+            )
+            self._append_observation_block(
+                f"Analisis OpenCV (camara) — escaneo {n_scans}",
+                [
+                    f"Imagen: {fname}",
+                    cal_note,
+                    f"Area minima: {IMAGEJ_AREA_UMBRAL} px",
+                    f"Nodulos/mm2: {self._format_metric(stats['n_mm2'], 2)}",
+                    f"Nodularidad: {self._format_metric(stats['nodularidad'], 2)}%",
+                    f"Tamano predominante: {stats.get('tam_grafito_clase', '')}",
+                ],
+            )
+
+            self._report_images = self._normalize_report_images(self._report_images)
+            self._refresh_images_ui()
+            if attached_ids:
+                try:
+                    group_iid = f"grp:{scan_group_id}"
+                    self.images_tree.selection_set(group_iid)
+                    self.images_tree.focus(group_iid)
+                    self._update_image_preview()
+                except Exception:
+                    pass
+                self._images_changed()
+            if n_scans == 1:
+                status_var.set(f"Escaneo 1 guardado — {stats['n_total']} nodulos")
+                msg = "Analisis guardado en el informe."
+            else:
+                status_var.set(f"Promedio de {n_scans} escaneos actualizado en el informe")
+                msg = f"Escaneo {n_scans} guardado.\nEl informe fue actualizado con el promedio de {n_scans} escaneos."
+            if errors:
+                messagebox.showwarning("Conteo de nodulos",
+                    msg + "\n\nAvisos:\n" + "\n".join(errors), parent=win)
+            else:
+                messagebox.showinfo("Conteo de nodulos", msg, parent=win)
 
         btn_save.config(command=_do_save)
+        btn_save_count.config(command=_do_save_and_count)
 
         def _on_close():
             live[0] = False
@@ -1653,7 +2147,14 @@ class TabCalidad(ttk.Frame):
         selected = set(self.images_tree.selection())
         if not selected:
             return
-        self._report_images = [image for image in self._report_images if str(image.get("id")) not in selected]
+        ids_to_remove = set()
+        for sel in selected:
+            if sel.startswith("grp:"):
+                for child_iid in self.images_tree.get_children(sel):
+                    ids_to_remove.add(child_iid)
+            else:
+                ids_to_remove.add(sel)
+        self._report_images = [image for image in self._report_images if str(image.get("id")) not in ids_to_remove]
         self._refresh_images_ui()
         self._update_image_preview()
         self._images_changed()
@@ -1663,6 +2164,11 @@ class TabCalidad(ttk.Frame):
         if not selected:
             return
         target_id = selected[0]
+        if target_id.startswith("grp:"):
+            children = self.images_tree.get_children(target_id)
+            if not children:
+                return
+            target_id = children[0]
         image = next((item for item in self._report_images if str(item.get("id")) == target_id), None)
         if not image:
             return
@@ -1692,6 +2198,78 @@ class TabCalidad(ttk.Frame):
             self._draft_fields.add("datos")
             self._schedule_draft_save()
 
+    def _replace_or_prepend_observation_block(self, title, lines):
+        block_lines = [title, *lines]
+        new_block = "\n".join(str(line) for line in block_lines if str(line).strip())
+        current = self.txt_data.get("1.0", tk.END).strip()
+        if current:
+            blocks = current.split("\n\n")
+            blocks = [b for b in blocks if not b.strip().startswith(title)]
+            remaining = "\n\n".join(b for b in blocks if b.strip())
+        else:
+            remaining = ""
+        new_text = f"{new_block}\n\n{remaining}" if remaining else new_block
+        self.txt_data.delete("1.0", tk.END)
+        self.txt_data.insert("1.0", new_text)
+        if self._selected_index is not None:
+            self._draft_fields.add("datos")
+            self._schedule_draft_save()
+
+    def _create_opencv_stats_table_image(self, stats, avg_stats, n_scans):
+        try:
+            import matplotlib
+            matplotlib.use("Agg", force=True)
+            import matplotlib.pyplot as plt
+        except Exception:
+            return None
+
+        display = avg_stats if n_scans > 1 else stats
+        rows = []
+        if n_scans > 1:
+            rows.append(["— Promedio de escaneos —", ""])
+        rows += [
+            ["Nodulos/mm²", f"{display['n_mm2']:.2f}"],
+            ["Nodularidad", f"{display['nodularidad']:.1f}%"],
+            ["Vermiculares", f"{display['vermicular']:.1f}%"],
+            ["Tam. grafito", display.get("tam_grafito_clase", "") or "—"],
+            ["Diám. promedio", f"{display['diam_prom_um']:.1f} µm"],
+            ["Diám. max", f"{display['diam_max_um']:.1f} µm"],
+            ["Diám. min", f"{display['diam_min_um']:.1f} µm"],
+            ["— Distribución —", ""],
+        ]
+        for label, count in display.get("counts", {}).items():
+            if count:
+                rows.append([label, str(int(round(float(count))))])
+        if n_scans > 1:
+            rows += [
+                ["— Este escaneo —", ""],
+                ["Nodulos/mm²", f"{stats['n_mm2']:.2f}"],
+                ["Nodularidad", f"{stats['nodularidad']:.1f}%"],
+            ]
+
+        n_rows = len(rows)
+        fig_h = max(2.5, n_rows * 0.32 + 0.9)
+        fig, ax = plt.subplots(figsize=(5, fig_h))
+        ax.axis("off")
+        tbl = ax.table(cellText=rows, colLabels=["Parámetro", "Valor"], loc="center", cellLoc="left")
+        tbl.auto_set_font_size(False)
+        tbl.set_fontsize(8)
+        tbl.scale(1.0, 1.25)
+        title_txt = f"Resultados conteo — escaneo {n_scans}"
+        if n_scans > 1:
+            title_txt += f"  (promedio {n_scans} esc.)"
+        ax.set_title(title_txt, fontsize=9, pad=6)
+        dest = Path(ensure_quality_images_dir()) / f"opencv_tabla_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.png"
+        fig.savefig(str(dest), dpi=100, bbox_inches="tight", facecolor="white")
+        plt.close(fig)
+        return {
+            "id": uuid.uuid4().hex,
+            "nombre": f"tabla_conteo_esc{n_scans}.png",
+            "path": str(dest),
+            "comentario": f"Tabla de resultados — escaneo {n_scans}",
+            "added_at": datetime.now().isoformat(timespec="seconds"),
+        }
+
     def _prompt_quality_value_if_empty(self, var, title, label):
         if var.get().strip():
             return
@@ -1699,12 +2277,92 @@ class TabCalidad(ttk.Frame):
         if value is not None:
             var.set(self._format_metric(value, 3))
 
-    def _calculate_imagej_stats(self, csv_path):
+    def _get_nodule_contours(self, image_bgr):
+        import numpy as np
+        import cv2 as _cv2
+        gray = _cv2.cvtColor(image_bgr, _cv2.COLOR_BGR2GRAY)
+        blur = _cv2.GaussianBlur(gray, (5, 5), 0)
+        _, thresh = _cv2.threshold(blur, 0, 255, _cv2.THRESH_BINARY_INV + _cv2.THRESH_OTSU)
+        kernel = np.ones((3, 3), np.uint8)
+        thresh = _cv2.morphologyEx(thresh, _cv2.MORPH_OPEN, kernel, iterations=1)
+        thresh = _cv2.morphologyEx(thresh, _cv2.MORPH_CLOSE, kernel, iterations=1)
+        contours, _ = _cv2.findContours(thresh, _cv2.RETR_EXTERNAL, _cv2.CHAIN_APPROX_SIMPLE)
+        result = []
+        for cnt in contours:
+            area = _cv2.contourArea(cnt)
+            if area < IMAGEJ_AREA_UMBRAL:
+                continue
+            perimeter = _cv2.arcLength(cnt, True)
+            circ = (4 * np.pi * area / perimeter ** 2) if perimeter > 0 else 0
+            result.append({"contour": cnt, "circ": float(circ)})
+        return result
+
+    def _count_nodules_opencv(self, image_bgr, px_per_mm=None):
+        import numpy as np
+        import cv2 as _cv2
+
+        scale = float(px_per_mm) if px_per_mm else IMAGEJ_RESOLUCION_PX_MM
+        h, w = image_bgr.shape[:2]
+        analysis_area_mm2 = (w / scale) * (h / scale)
+
+        gray = _cv2.cvtColor(image_bgr, _cv2.COLOR_BGR2GRAY)
+        blur = _cv2.GaussianBlur(gray, (5, 5), 0)
+        _, thresh = _cv2.threshold(blur, 0, 255, _cv2.THRESH_BINARY_INV + _cv2.THRESH_OTSU)
+        kernel = np.ones((3, 3), np.uint8)
+        thresh = _cv2.morphologyEx(thresh, _cv2.MORPH_OPEN, kernel, iterations=1)
+        thresh = _cv2.morphologyEx(thresh, _cv2.MORPH_CLOSE, kernel, iterations=1)
+
+        contours, _ = _cv2.findContours(thresh, _cv2.RETR_EXTERNAL, _cv2.CHAIN_APPROX_SIMPLE)
+        particles = []
+        for cnt in contours:
+            area = _cv2.contourArea(cnt)
+            if area < IMAGEJ_AREA_UMBRAL:
+                continue
+            perimeter = _cv2.arcLength(cnt, True)
+            circularity = (4 * np.pi * area / (perimeter ** 2)) if perimeter > 0 else 0
+            diam_mm = np.sqrt((4 * area) / np.pi) / scale
+            particles.append({"area": area, "circ": float(circularity), "diam_mm": float(diam_mm)})
+
+        if not particles:
+            return None
+
+        area_total = sum(p["area"] for p in particles)
+        nod_area = sum(p["area"] for p in particles if p["circ"] >= 0.5)
+
+        counts = {}
+        for category, min_d, max_d in IMAGEJ_LIMITS:
+            c = sum(1 for p in particles if min_d <= p["diam_mm"] <= max_d)
+            if c:
+                counts[category] = c
+        fuera = sum(
+            1 for p in particles
+            if not any(min_d <= p["diam_mm"] <= max_d for _, min_d, max_d in IMAGEJ_LIMITS)
+        )
+        if fuera:
+            counts["Fuera de clase"] = fuera
+
+        diams = [p["diam_mm"] for p in particles]
+        return {
+            "n_total": len(particles),
+            "n_mm2": round(len(particles) / analysis_area_mm2, 2),
+            "nodularidad": round(nod_area / area_total * 100, 2) if area_total else 0,
+            "vermicular": round((area_total - nod_area) / area_total * 100, 2) if area_total else 0,
+            "diam_prom_um": round(float(np.mean(diams)) * 1000, 2),
+            "diam_max_um": round(float(max(diams)) * 1000, 2),
+            "diam_min_um": round(float(min(diams)) * 1000, 2),
+            "counts": counts,
+            "tam_grafito_clase": self._imagej_majority_size_text(counts),
+            "px_per_mm": round(scale, 4),
+        }
+
+    def _calculate_imagej_stats(self, csv_path, px_per_mm=None):
         try:
             import numpy as np
             import pandas as pd
         except Exception as ex:
             raise RuntimeError(f"Faltan dependencias para leer ImageJ: {ex}") from ex
+
+        scale = float(px_per_mm) if px_per_mm else IMAGEJ_RESOLUCION_PX_MM
 
         df = pd.read_csv(csv_path, sep=None, engine="python")
         missing = [col for col in ("Area", "Circ.") if col not in df.columns]
@@ -1718,7 +2376,7 @@ class TabCalidad(ttk.Frame):
         if df.empty:
             raise ValueError(f"No quedaron particulas con Area >= {IMAGEJ_AREA_UMBRAL}.")
 
-        df["Diametro_mm"] = np.sqrt((4 * df["Area"]) / np.pi) / IMAGEJ_RESOLUCION_PX_MM
+        df["Diametro_mm"] = np.sqrt((4 * df["Area"]) / np.pi) / scale
         df["Categoria"] = ""
         for category, min_d, max_d in IMAGEJ_LIMITS:
             mask = df["Diametro_mm"].between(min_d, max_d, inclusive="both")
@@ -1727,7 +2385,7 @@ class TabCalidad(ttk.Frame):
         area_total = float(df["Area"].sum())
         nodular = df[df["Circ."] >= 0.5]
         vermicular = df[df["Circ."] < 0.5]
-        analysis_area_mm2 = IMAGEJ_AREA_ANALISIS_PX / (IMAGEJ_RESOLUCION_PX_MM ** 2)
+        analysis_area_mm2 = IMAGEJ_AREA_ANALISIS_PX / (scale ** 2)
         counts = {category: int((df["Categoria"] == category).sum()) for category, _, _ in IMAGEJ_LIMITS}
         fuera_clase = int((df["Categoria"] == "").sum())
         if fuera_clase:
@@ -1745,6 +2403,7 @@ class TabCalidad(ttk.Frame):
             "diam_min_um": round(float(df["Diametro_mm"].min()) * 1000, 2),
             "counts": counts,
             "tam_grafito_clase": tam_grafito,
+            "px_per_mm": round(scale, 4),
         }
 
     def _imagej_class_code(self, label):
@@ -1867,8 +2526,38 @@ class TabCalidad(ttk.Frame):
             filetypes=(("Imagenes", "*.png *.jpg *.jpeg *.bmp *.gif *.webp"), ("Todos los archivos", "*.*")),
         )
 
+        cals = self._cal_load()
+        imagej_cal_id = None
+        if cals:
+            default_label = self._cal_default_label()
+            cal_names = [default_label] + [c["nombre"] for c in cals]
+            dlg = tk.Toplevel(self)
+            dlg.title("Calibracion para ImageJ")
+            dlg.transient(self)
+            dlg.grab_set()
+            dlg.resizable(False, False)
+            f = ttk.Frame(dlg, padding=14)
+            f.pack(fill="both")
+            ttk.Label(f, text="Seleccionar calibracion de escala:").pack(anchor="w", pady=(0, 6))
+            cal_var = tk.StringVar(value=cal_names[0])
+            ttk.Combobox(f, textvariable=cal_var, values=cal_names, state="readonly", width=34).pack(anchor="w")
+            ttk.Label(f, text=f"(x100 por defecto: {IMAGEJ_RESOLUCION_PX_MM} px/mm)",
+                      foreground="#888").pack(anchor="w", pady=(4, 10))
+            bf = ttk.Frame(f); bf.pack(fill="x")
+            def _accept_cal():
+                chosen = cal_var.get()
+                obj = next((c for c in cals if c["nombre"] == chosen), None)
+                nonlocal imagej_cal_id
+                imagej_cal_id = obj["id"] if obj else None
+                dlg.destroy()
+            ttk.Button(bf, text="Continuar", command=_accept_cal).pack(side="right")
+            ttk.Button(bf, text="Cancelar", command=lambda: dlg.destroy()).pack(side="right", padx=6)
+            dlg.wait_window()
+
+        imagej_px_per_mm = self._cal_get_px_per_mm(imagej_cal_id)
+
         try:
-            stats_list = [self._calculate_imagej_stats(path) for path in csv_paths]
+            stats_list = [self._calculate_imagej_stats(path, px_per_mm=imagej_px_per_mm) for path in csv_paths]
             stats = self._merge_imagej_stats(stats_list, csv_paths)
         except Exception as ex:
             messagebox.showerror("ImageJ", f"No se pudo analizar el/los CSV.\n\n{ex}", parent=self)
@@ -1927,6 +2616,9 @@ class TabCalidad(ttk.Frame):
                 f"CSV analizados: {len(csv_paths)}" if multiple else f"CSV: {csv_names[0]}",
                 f"Archivos: {csv_text}" if multiple else "",
                 f"Imagen: {Path(img_path).name if img_path else 'sin imagen adjunta'}",
+                (f"Calibracion: {stats['px_per_mm']:.1f} px/mm (calibracion aplicada)"
+                 if imagej_px_per_mm
+                 else f"Calibracion: {IMAGEJ_RESOLUCION_PX_MM} px/mm (x100 por defecto)"),
                 f"Area minima considerada: {IMAGEJ_AREA_UMBRAL} px",
                 f"Nodulos totales promedio: {self._format_metric(stats['n_total'], 2)}" if multiple else f"Nodulos totales: {int(round(float(stats['n_total'])))}",
                 f"Nodulos/mm2 promedio: {self._format_metric(stats['n_mm2'], 2)}" if multiple else f"Nodulos/mm2: {self._format_metric(stats['n_mm2'], 2)}",

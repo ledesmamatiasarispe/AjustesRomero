@@ -2310,12 +2310,7 @@ class TabCalidad(ttk.Frame):
         def _on_canvas_click(event):
             if event.state & 0x0001:   # Shift retenido → no es un clic de línea
                 return
-            # Auto-pausa en el primer clic si estamos en live
-            if live[0]:
-                _do_capture_live()
-            frame = captured_frame[0]
-            if frame is None:
-                return
+            frame = captured_frame[0]   # None si está en live (el overlay se dibuja igual)
             dx, dy = _c2i_prev(event.x, event.y)
             orig_x = dx * cam_w / PREVIEW_W
             orig_y = dy * cam_h / PREVIEW_H
@@ -2323,7 +2318,7 @@ class TabCalidad(ttk.Frame):
                 return
             if not meas_pending_cam:
                 meas_pending_cam.append((orig_x, orig_y))
-                _show_frame(frame)
+                if frame is not None: _show_frame(frame)
                 meas_status_var.set("Clic en el segundo punto…")
                 return
             x1, y1 = meas_pending_cam[0]
@@ -2339,7 +2334,7 @@ class TabCalidad(ttk.Frame):
             meas_list_cam.append({"x1":x1,"y1":y1,"x2":x2,"y2":y2,"px_dist":px_d,"label":label})
             meas_status_var.set(f"{len(meas_list_cam)} medida(s) — {label}")
             _refresh_meas_tv()
-            _show_frame(frame)
+            if frame is not None: _show_frame(frame)
 
         import threading as _threading
         _hover_after = [None]

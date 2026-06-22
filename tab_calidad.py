@@ -1280,8 +1280,17 @@ class TabCalidad(ttk.Frame):
             if ret and test is not None:
                 break
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        _cw = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        _ch = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
         PREV_W, PREV_H = 820, 616
+        _cds = max(PREV_W / _cw, PREV_H / _ch)
+        _csw = int(_cw * _cds); _csh = int(_ch * _cds)
+        _ccx = (_csw - PREV_W) // 2; _ccy = (_csh - PREV_H) // 2
+
+        def _fill_cal(bgr):
+            s = cv2.resize(bgr, (_csw, _csh), interpolation=cv2.INTER_LINEAR)
+            return s[_ccy:_ccy + PREV_H, _ccx:_ccx + PREV_W]
         captured = [None]
         live = [True]
         result_path = [None]
@@ -1316,7 +1325,7 @@ class TabCalidad(ttk.Frame):
         ttk.Button(btn_row, text="Reset zoom", command=_reset_cal).pack(side="right", padx=6)
 
         def _show(frame_bgr):
-            _show_cal(frame_bgr)
+            _show_cal(_fill_cal(frame_bgr))
 
         def _update():
             if not live[0] or not win.winfo_exists():
@@ -1935,6 +1944,14 @@ class TabCalidad(ttk.Frame):
         cam_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
         PREVIEW_W, PREVIEW_H = 820, 616
+        # Escala fill: la imagen siempre llena el canvas sin bordes negros
+        _ds = max(PREVIEW_W / cam_w, PREVIEW_H / cam_h)
+        _sw = int(cam_w * _ds); _sh = int(cam_h * _ds)
+        _cx = (_sw - PREVIEW_W) // 2; _cy = (_sh - PREVIEW_H) // 2
+
+        def _fill(bgr):
+            s = cv2.resize(bgr, (_sw, _sh), interpolation=cv2.INTER_LINEAR)
+            return s[_cy:_cy + PREVIEW_H, _cx:_cx + PREVIEW_W]
         captured_frame = [None]
         live = [True]
         contours_cache = [None]
@@ -2141,14 +2158,17 @@ class TabCalidad(ttk.Frame):
             if show_binary_var.get():
                 blur_sz = 11 if live[0] else 5
                 binary = _make_binary(frame_bgr, blur_sz)
-                display_bgr = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+                display_bgr = _fill(cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR))
             else:
-                display_bgr = frame_bgr.copy()
+                display_bgr = _fill(frame_bgr)
 
             if do_contours:
+                import numpy as np
+                offset = np.array([[[_cx, _cy]]], dtype=np.float32)
                 for p in (contours_cache[0] or []):
+                    cnt = (p["contour"].astype(np.float32) * _ds - offset).astype(np.int32)
                     color = (0, 220, 0) if p["circ"] >= 0.5 else (0, 140, 255)
-                    cv2.drawContours(display_bgr, [p["contour"]], -1, color, 2)
+                    cv2.drawContours(display_bgr, [cnt], -1, color, 2)
 
             _show_preview(display_bgr)
 

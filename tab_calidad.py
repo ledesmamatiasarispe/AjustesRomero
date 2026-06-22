@@ -1954,8 +1954,11 @@ class TabCalidad(ttk.Frame):
         frame_counter = [0]
         show_contours_var = tk.BooleanVar(value=False)
         show_binary_var   = tk.BooleanVar(value=False)
-        thresh_var        = tk.IntVar(value=0)              # 0 = Otsu automático
+        thresh_var        = tk.IntVar(value=0)
         min_area_var      = tk.IntVar(value=getattr(self, "_cam_min_area", IMAGEJ_AREA_UMBRAL))
+        measure_var       = tk.BooleanVar(value=False)
+        meas_pending_cam  = []   # primer punto pendiente (coords originales de cámara)
+        meas_list_cam     = []   # medidas completadas
 
         win = tk.Toplevel(self)
         win.title(f"Camara — Calidad  [{cam_w}×{cam_h}]")
@@ -2042,9 +2045,29 @@ class TabCalidad(ttk.Frame):
             for category, sv in dist_vars.items():
                 sv.set(str(counts.get(category, 0)))
 
+        # on_redraw para overlay de mediciones sobre el canvas
+        def _cam_on_redraw(cv):
+            if not meas_pending_cam and not meas_list_cam:
+                return
+            sx = PREVIEW_W / max(cam_w, 1); sy = PREVIEW_H / max(cam_h, 1)
+            if meas_pending_cam:
+                dx = meas_pending_cam[0][0] * sx; dy = meas_pending_cam[0][1] * sy
+                cx, cy = _i2c_prev(dx, dy)
+                cv.create_oval(cx-5, cy-5, cx+5, cy+5, fill="#ff4444", outline="white", width=1)
+            for m in meas_list_cam:
+                cx1, cy1 = _i2c_prev(m["x1"] * sx, m["y1"] * sy)
+                cx2, cy2 = _i2c_prev(m["x2"] * sx, m["y2"] * sy)
+                cv.create_line(cx1, cy1, cx2, cy2, fill="#00dd88", width=2)
+                for px, py in ((cx1, cy1), (cx2, cy2)):
+                    cv.create_oval(px-3, py-3, px+3, py+3, fill="#00dd88", outline="")
+                mx, my = (cx1 + cx2) / 2, (cy1 + cy2) / 2
+                lbl = m.get("label", "")
+                cv.create_text(mx+1, my-9, text=lbl, fill="#000", font=("TkDefaultFont", 8, "bold"))
+                cv.create_text(mx,   my-10, text=lbl, fill="#00dd88", font=("TkDefaultFont", 8, "bold"))
+
         # Preview con zoom/pan
         lbl_preview, _show_preview, _reset_preview, _c2i_prev, _i2c_prev = self._make_zoom_pan_preview(
-            main_pane, PREVIEW_W, PREVIEW_H)
+            main_pane, PREVIEW_W, PREVIEW_H, on_redraw=_cam_on_redraw)
         lbl_preview.grid(row=0, column=1, sticky="nsew")
 
         status_var = tk.StringVar(value=f"En vivo  {cam_w}×{cam_h}")
@@ -2075,8 +2098,10 @@ class TabCalidad(ttk.Frame):
 
         btn_row = ttk.Frame(win, padding=(8, 6))
         btn_row.pack(fill="x")
+        btn_cap_live = ttk.Button(btn_row, text="Capturar")
+        btn_cap_live.pack(side="left")
         btn_file = ttk.Button(btn_row, text="Abrir archivo")
-        btn_file.pack(side="left")
+        btn_file.pack(side="left", padx=(6, 0))
         btn_save = ttk.Button(btn_row, text="Guardar en informe")
         btn_save.pack(side="left", padx=6)
         btn_save_count = ttk.Button(btn_row, text="Guardar y contar nodulos")
@@ -2086,6 +2111,18 @@ class TabCalidad(ttk.Frame):
         ttk.Checkbutton(btn_row, text="Ver binario", variable=show_binary_var).pack(side="left")
         ttk.Button(btn_row, text="Cerrar", command=lambda: _on_close()).pack(side="right")
         ttk.Button(btn_row, text="Reset zoom", command=_reset_preview).pack(side="right", padx=6)
+
+        meas_row = ttk.Frame(win, padding=(8, 2))
+        meas_row.pack(fill="x")
+        btn_measure_chk = ttk.Checkbutton(meas_row, text="Medir", variable=measure_var,
+                                           state="disabled")
+        btn_measure_chk.pack(side="left")
+        btn_del_meas = ttk.Button(meas_row, text="Borrar ultima medida", state="disabled")
+        btn_del_meas.pack(side="left", padx=(8, 0))
+        btn_del_all_meas = ttk.Button(meas_row, text="Borrar todas", state="disabled")
+        btn_del_all_meas.pack(side="left", padx=(4, 0))
+        meas_status_var = tk.StringVar(value="")
+        ttk.Label(meas_row, textvariable=meas_status_var, foreground="#00dd88").pack(side="left", padx=(12, 0))
 
         thresh_row = ttk.Frame(win, padding=(8, 2))
         thresh_row.pack(fill="x")
@@ -2198,6 +2235,90 @@ class TabCalidad(ttk.Frame):
                 _show_frame(frame)
             win.after(33, _update_live)
 
+        def _enter_frozen():
+            """Activa el estado de frame congelado (captura o archivo)."""
+            live[0] = False
+            btn_cap_live.config(text="Nueva foto")
+            btn_measure_chk.config(state="normal")
+            btn_del_meas.config(state="normal")
+            btn_del_all_meas.config(state="normal")
+
+        def _do_capture_live():
+            if captured_frame[0] is not None:
+                # Ya congelado: volver a live
+                live[0] = True
+                captured_frame[0] = None
+                meas_pending_cam.clear()
+                meas_list_cam.clear()
+                measure_var.set(False)
+                meas_status_var.set("")
+                status_var.set(f"En vivo  {cam_w}×{cam_h}")
+                btn_cap_live.config(text="Capturar")
+                btn_measure_chk.config(state="disabled")
+                btn_del_meas.config(state="disabled")
+                btn_del_all_meas.config(state="disabled")
+                contours_cache[0] = None
+                stats_cache[0] = None
+                _update_live()
+                return
+            # Capturar frame actual
+            frame = None
+            for _ in range(3):
+                ret, f = cap.read()
+                if ret: frame = f
+            if frame is None:
+                return
+            captured_frame[0] = frame
+            _show_frame(frame)
+            h, w = frame.shape[:2]
+            status_var.set(f"Congelado {w}×{h} — usa Medir o guarda")
+            _enter_frozen()
+
+        btn_cap_live.config(command=_do_capture_live)
+
+        def _on_canvas_click(event):
+            if not measure_var.get() or captured_frame[0] is None:
+                return
+            dx, dy = _c2i_prev(event.x, event.y)
+            orig_x = dx * cam_w / PREVIEW_W
+            orig_y = dy * cam_h / PREVIEW_H
+            if not (0 <= orig_x <= cam_w and 0 <= orig_y <= cam_h):
+                return
+            if not meas_pending_cam:
+                meas_pending_cam.append((orig_x, orig_y))
+                _show_frame(captured_frame[0])
+                meas_status_var.set("Clic en el segundo punto…")
+                return
+            x1, y1 = meas_pending_cam[0]
+            meas_pending_cam.clear()
+            x2, y2 = orig_x, orig_y
+            px_d = ((x2-x1)**2 + (y2-y1)**2) ** 0.5
+            cal = next((c for c in _cals_cam if c["nombre"] == cam_cal_var.get()), None)
+            if cal and cal.get("px_per_unit"):
+                real = px_d / cal["px_per_unit"]
+                label = f"{real:.2f} {cal.get('unit','µm')}"
+            else:
+                label = f"{px_d:.1f} px"
+            meas_list_cam.append({"x1":x1,"y1":y1,"x2":x2,"y2":y2,"px_dist":px_d,"label":label})
+            meas_status_var.set(f"{len(meas_list_cam)} medida(s) — {label}")
+            _show_frame(captured_frame[0])
+
+        lbl_preview.bind("<Button-1>", _on_canvas_click)
+        lbl_preview.bind("<Double-Button-1>", lambda e: None)  # sin reset en cámara
+
+        btn_del_meas.config(command=lambda: (
+            meas_list_cam.pop() if meas_list_cam else None,
+            meas_pending_cam.clear(),
+            meas_status_var.set(f"{len(meas_list_cam)} medida(s)") if meas_list_cam else meas_status_var.set(""),
+            _show_frame(captured_frame[0]) if captured_frame[0] is not None else None,
+        ))
+        btn_del_all_meas.config(command=lambda: (
+            meas_list_cam.clear(),
+            meas_pending_cam.clear(),
+            meas_status_var.set(""),
+            _show_frame(captured_frame[0]) if captured_frame[0] is not None else None,
+        ))
+
         def _load_from_file():
             from tkinter import filedialog
             path = filedialog.askopenfilename(
@@ -2220,6 +2341,7 @@ class TabCalidad(ttk.Frame):
             captured_frame[0] = frame
             _show_frame(frame)
             status_var.set(f"Archivo: {Path(path).name}")
+            _enter_frozen()
 
         def _toggle_contours():
             contours_cache[0] = None
@@ -2307,6 +2429,10 @@ class TabCalidad(ttk.Frame):
             }
             if cal_id:
                 item["calibration_id"] = cal_id
+            if meas_list_cam:
+                item["measurements"] = list(meas_list_cam)
+                item["px_per_unit"] = (next((c for c in _cals_cam if c["nombre"] == cam_cal_var.get()), {}) or {}).get("px_per_unit")
+                item["meas_unit"]   = (next((c for c in _cals_cam if c["nombre"] == cam_cal_var.get()), {}) or {}).get("unit", "µm")
             if self._selected_index is not None:
                 self._report_images.append(item)
                 self._report_images = self._normalize_report_images(self._report_images)

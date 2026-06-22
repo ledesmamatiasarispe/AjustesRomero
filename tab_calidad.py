@@ -1284,13 +1284,9 @@ class TabCalidad(ttk.Frame):
         _ch = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
         PREV_W, PREV_H = 820, 616
-        _cds = max(PREV_W / _cw, PREV_H / _ch)
-        _csw = int(_cw * _cds); _csh = int(_ch * _cds)
-        _ccx = (_csw - PREV_W) // 2; _ccy = (_csh - PREV_H) // 2
 
         def _fill_cal(bgr):
-            s = cv2.resize(bgr, (_csw, _csh), interpolation=cv2.INTER_LINEAR)
-            return s[_ccy:_ccy + PREV_H, _ccx:_ccx + PREV_W]
+            return cv2.resize(bgr, (PREV_W, PREV_H), interpolation=cv2.INTER_LINEAR)
         captured = [None]
         live = [True]
         result_path = [None]
@@ -1944,15 +1940,11 @@ class TabCalidad(ttk.Frame):
         cam_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
         PREVIEW_W, PREVIEW_H = 820, 616
-        # Escala fill: la imagen siempre llena el canvas sin bordes negros
-        import math as _math
-        _ds = max(PREVIEW_W / cam_w, PREVIEW_H / cam_h)
-        _sw = _math.ceil(cam_w * _ds); _sh = _math.ceil(cam_h * _ds)
-        _cx = (_sw - PREVIEW_W) // 2; _cy = (_sh - PREVIEW_H) // 2
 
         def _fill(bgr):
-            s = cv2.resize(bgr, (_sw, _sh), interpolation=cv2.INTER_LINEAR)
-            return s[_cy:_cy + PREVIEW_H, _cx:_cx + PREVIEW_W]
+            """Redimensiona el frame al tamaño del canvas sin recortar."""
+            return cv2.resize(bgr, (PREVIEW_W, PREVIEW_H),
+                              interpolation=cv2.INTER_LINEAR)
         captured_frame = [None]
         live = [True]
         contours_cache = [None]
@@ -2186,11 +2178,13 @@ class TabCalidad(ttk.Frame):
 
             if do_contours:
                 import numpy as np
-                offset = np.array([[[_cx, _cy]]], dtype=np.float32)
+                fh, fw = frame_bgr.shape[:2]
+                sx = PREVIEW_W / max(fw, 1); sy = PREVIEW_H / max(fh, 1)
                 for p in (contours_cache[0] or []):
-                    cnt = (p["contour"].astype(np.float32) * _ds - offset).astype(np.int32)
+                    cnt = p["contour"].astype(np.float32).copy()
+                    cnt[..., 0] *= sx; cnt[..., 1] *= sy
                     color = (0, 220, 0) if p["circ"] >= 0.5 else (0, 140, 255)
-                    cv2.drawContours(display_bgr, [cnt], -1, color, 2)
+                    cv2.drawContours(display_bgr, [cnt.astype(np.int32)], -1, color, 2)
 
             _show_preview(display_bgr)
 

@@ -1631,6 +1631,8 @@ class TabCalidad(ttk.Frame):
         stats_cache = [None]
         frame_counter = [0]
         show_contours_var = tk.BooleanVar(value=False)
+        show_binary_var   = tk.BooleanVar(value=False)
+        thresh_var        = tk.IntVar(value=0)   # 0 = Otsu automático
 
         win = tk.Toplevel(self)
         win.title("Camara — Calidad")
@@ -1717,48 +1719,92 @@ class TabCalidad(ttk.Frame):
         btn_save_count.pack(side="left")
         btn_contours = ttk.Checkbutton(btn_row, text="Conteo nodulos", variable=show_contours_var)
         btn_contours.pack(side="left", padx=6)
+        ttk.Checkbutton(btn_row, text="Ver binario", variable=show_binary_var).pack(side="left")
         ttk.Button(btn_row, text="Cerrar", command=lambda: _on_close()).pack(side="right")
+
+        thresh_row = ttk.Frame(win, padding=(8, 2))
+        thresh_row.pack(fill="x")
+        ttk.Label(thresh_row, text="Umbral:").pack(side="left")
+        thresh_scale = ttk.Scale(thresh_row, from_=0, to=255, orient="horizontal",
+                                 variable=thresh_var, length=220)
+        thresh_scale.pack(side="left", padx=(6, 4))
+        thresh_lbl = ttk.Label(thresh_row, text="Auto (Otsu)", width=12)
+        thresh_lbl.pack(side="left")
+
+        def _on_thresh_change(*_):
+            v = thresh_var.get()
+            thresh_lbl.config(text=f"Auto (Otsu)" if v <= 0 else str(v))
+            contours_cache[0] = None
+            stats_cache[0] = None
+
+        thresh_var.trace_add("write", _on_thresh_change)
+        ttk.Button(thresh_row, text="Reset Otsu",
+                   command=lambda: thresh_var.set(0)).pack(side="left", padx=(8, 0))
+
+        def _make_binary(frame_bgr, blur_sz=5):
+            import numpy as np
+            gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+            k = blur_sz if blur_sz % 2 == 1 else blur_sz + 1
+            blurred = cv2.GaussianBlur(gray, (k, k), 0)
+            tval = thresh_var.get()
+            if tval <= 0:
+                _, binary = cv2.threshold(
+                    blurred, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+            else:
+                _, binary = cv2.threshold(blurred, tval, 255, cv2.THRESH_BINARY_INV)
+            return binary
 
         def _show_frame(frame_bgr):
             w = lbl_preview.winfo_width()
             h = lbl_preview.winfo_height()
             if w < 2: w = PREVIEW_W
             if h < 2: h = PREVIEW_H
-            display = frame_bgr.copy()
-            if show_contours_var.get():
-                px_mm = self._cal_get_px_per_mm(None)
-                if live[0]:
-                    frame_counter[0] += 1
-                    if frame_counter[0] % 25 == 1:
-                        try:
-                            contours_cache[0] = self._get_nodule_contours(
-                                frame_bgr, blur_size=11)
-                        except Exception:
-                            contours_cache[0] = []
-                        try:
-                            stats_cache[0] = self._count_nodules_opencv(
-                                frame_bgr, px_per_mm=px_mm)
-                        except Exception:
-                            stats_cache[0] = None
-                        _update_stats_panel(stats_cache[0])
-                    cnts = contours_cache[0] or []
-                else:
-                    if contours_cache[0] is None:
-                        try:
-                            contours_cache[0] = self._get_nodule_contours(frame_bgr)
-                        except Exception:
-                            contours_cache[0] = []
-                    cnts = contours_cache[0]
-                    if stats_cache[0] is None:
-                        try:
-                            stats_cache[0] = self._count_nodules_opencv(frame_bgr, px_per_mm=px_mm)
-                        except Exception:
-                            stats_cache[0] = None
-                        _update_stats_panel(stats_cache[0])
-                for p in cnts:
+
+            px_mm = self._cal_get_px_per_mm(None)
+            do_contours = show_contours_var.get()
+
+            if live[0]:
+                frame_counter[0] += 1
+                if do_contours and frame_counter[0] % 25 == 1:
+                    try:
+                        contours_cache[0] = self._get_nodule_contours(
+                            frame_bgr, blur_size=11, threshold=thresh_var.get())
+                    except Exception:
+                        contours_cache[0] = []
+                    try:
+                        stats_cache[0] = self._count_nodules_opencv(
+                            frame_bgr, px_per_mm=px_mm, threshold=thresh_var.get())
+                    except Exception:
+                        stats_cache[0] = None
+                    _update_stats_panel(stats_cache[0])
+            else:
+                if do_contours and contours_cache[0] is None:
+                    try:
+                        contours_cache[0] = self._get_nodule_contours(
+                            frame_bgr, threshold=thresh_var.get())
+                    except Exception:
+                        contours_cache[0] = []
+                if do_contours and stats_cache[0] is None:
+                    try:
+                        stats_cache[0] = self._count_nodules_opencv(
+                            frame_bgr, px_per_mm=px_mm, threshold=thresh_var.get())
+                    except Exception:
+                        stats_cache[0] = None
+                    _update_stats_panel(stats_cache[0])
+
+            if show_binary_var.get():
+                blur_sz = 11 if live[0] else 5
+                binary = _make_binary(frame_bgr, blur_sz)
+                display_bgr = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+            else:
+                display_bgr = frame_bgr.copy()
+
+            if do_contours:
+                for p in (contours_cache[0] or []):
                     color = (0, 220, 0) if p["circ"] >= 0.5 else (0, 140, 255)
-                    cv2.drawContours(display, [p["contour"]], -1, color, 2)
-            frame_rgb = cv2.cvtColor(display, cv2.COLOR_BGR2RGB)
+                    cv2.drawContours(display_bgr, [p["contour"]], -1, color, 2)
+
+            frame_rgb = cv2.cvtColor(display_bgr, cv2.COLOR_BGR2RGB)
             img = Image.fromarray(frame_rgb).resize((w, h), Image.LANCZOS)
             photo = ImageTk.PhotoImage(img)
             lbl_preview.config(image=photo)
@@ -2290,13 +2336,16 @@ class TabCalidad(ttk.Frame):
         if value is not None:
             var.set(self._format_metric(value, 3))
 
-    def _get_nodule_contours(self, image_bgr, blur_size=5):
+    def _get_nodule_contours(self, image_bgr, blur_size=5, threshold=0):
         import numpy as np
         import cv2 as _cv2
         gray = _cv2.cvtColor(image_bgr, _cv2.COLOR_BGR2GRAY)
         k = blur_size if blur_size % 2 == 1 else blur_size + 1
         blur = _cv2.GaussianBlur(gray, (k, k), 0)
-        _, thresh = _cv2.threshold(blur, 0, 255, _cv2.THRESH_BINARY_INV + _cv2.THRESH_OTSU)
+        if threshold and threshold > 0:
+            _, thresh = _cv2.threshold(blur, int(threshold), 255, _cv2.THRESH_BINARY_INV)
+        else:
+            _, thresh = _cv2.threshold(blur, 0, 255, _cv2.THRESH_BINARY_INV + _cv2.THRESH_OTSU)
         kernel = np.ones((3, 3), np.uint8)
         thresh = _cv2.morphologyEx(thresh, _cv2.MORPH_OPEN, kernel, iterations=1)
         thresh = _cv2.morphologyEx(thresh, _cv2.MORPH_CLOSE, kernel, iterations=1)
@@ -2311,7 +2360,7 @@ class TabCalidad(ttk.Frame):
             result.append({"contour": cnt, "circ": float(circ)})
         return result
 
-    def _count_nodules_opencv(self, image_bgr, px_per_mm=None):
+    def _count_nodules_opencv(self, image_bgr, px_per_mm=None, threshold=0):
         import numpy as np
         import cv2 as _cv2
 
@@ -2321,7 +2370,10 @@ class TabCalidad(ttk.Frame):
 
         gray = _cv2.cvtColor(image_bgr, _cv2.COLOR_BGR2GRAY)
         blur = _cv2.GaussianBlur(gray, (5, 5), 0)
-        _, thresh = _cv2.threshold(blur, 0, 255, _cv2.THRESH_BINARY_INV + _cv2.THRESH_OTSU)
+        if threshold and threshold > 0:
+            _, thresh = _cv2.threshold(blur, int(threshold), 255, _cv2.THRESH_BINARY_INV)
+        else:
+            _, thresh = _cv2.threshold(blur, 0, 255, _cv2.THRESH_BINARY_INV + _cv2.THRESH_OTSU)
         kernel = np.ones((3, 3), np.uint8)
         thresh = _cv2.morphologyEx(thresh, _cv2.MORPH_OPEN, kernel, iterations=1)
         thresh = _cv2.morphologyEx(thresh, _cv2.MORPH_CLOSE, kernel, iterations=1)

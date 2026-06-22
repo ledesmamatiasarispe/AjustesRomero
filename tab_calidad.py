@@ -2115,7 +2115,7 @@ class TabCalidad(ttk.Frame):
 
         # ── Panel derecho: tabla de medidas + info de nódulo hover ─────────────
         meas_panel = ttk.LabelFrame(main_pane, text="Mediciones", padding=4)
-        main_pane.add(meas_panel, weight=0)
+        main_pane.add(meas_panel, weight=1)
         meas_tv = ttk.Treeview(meas_panel, columns=("tipo",), show="headings", height=12,
                                selectmode="browse")
         meas_tv.heading("tipo", text="T")

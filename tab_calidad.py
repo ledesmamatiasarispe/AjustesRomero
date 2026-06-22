@@ -1114,22 +1114,165 @@ class TabCalidad(ttk.Frame):
         info.pack(fill="x", pady=4)
         ttk.Button(win, text="Cerrar", command=win.destroy).pack(pady=(0,8))
 
+    def _capture_for_calibration(self, parent):
+        """Abre un mini-popup de camara y devuelve (PIL Image, Path destino) o (None, None)."""
+        try:
+            import cv2
+        except ImportError:
+            messagebox.showinfo("Camara", "OpenCV no esta instalado.", parent=parent)
+            return None, None
+        if Image is None or ImageTk is None:
+            messagebox.showinfo("Camara", "Pillow no esta disponible.", parent=parent)
+            return None, None
+
+        cap = None
+        for idx in range(3):
+            for backend in [cv2.CAP_DSHOW, cv2.CAP_MSMF, 0]:
+                try:
+                    c = cv2.VideoCapture(idx, backend) if backend else cv2.VideoCapture(idx)
+                    if c.isOpened():
+                        ret, _ = c.read()
+                        if ret:
+                            cap = c
+                            break
+                    c.release()
+                except Exception:
+                    pass
+            if cap:
+                break
+        if cap is None:
+            messagebox.showinfo("Camara", "No se pudo abrir la camara.", parent=parent)
+            return None, None
+
+        PREV_W, PREV_H = 640, 480
+        captured = [None]
+        live = [True]
+        result_path = [None]
+
+        win = tk.Toplevel(parent)
+        win.title("Capturar imagen de referencia")
+        win.transient(parent)
+        win.grab_set()
+        win.resizable(False, False)
+
+        lbl = tk.Label(win, bg="#111", width=PREV_W, height=PREV_H)
+        lbl.pack()
+        status_var = tk.StringVar(value="Previsualizacion en vivo — apunta a la barra de escala")
+        ttk.Label(win, textvariable=status_var, anchor="center").pack(fill="x", pady=(2, 0))
+
+        btn_row = ttk.Frame(win, padding=(8, 6))
+        btn_row.pack(fill="x")
+        btn_cap = ttk.Button(btn_row, text="Capturar")
+        btn_cap.pack(side="left")
+        btn_use = ttk.Button(btn_row, text="Usar esta foto", state="disabled")
+        btn_use.pack(side="left", padx=6)
+        ttk.Button(btn_row, text="Cancelar", command=lambda: _close()).pack(side="right")
+
+        def _show(frame_bgr):
+            rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(rgb).resize((PREV_W, PREV_H), Image.LANCZOS)
+            ph = ImageTk.PhotoImage(img)
+            lbl.config(image=ph); lbl.image = ph
+
+        def _update():
+            if not live[0] or not win.winfo_exists():
+                return
+            ret, frame = cap.read()
+            if ret:
+                _show(frame)
+            win.after(33, _update)
+
+        def _do_capture():
+            ret, frame = cap.read()
+            if not ret:
+                return
+            live[0] = False
+            captured[0] = frame
+            _show(frame)
+            status_var.set("Foto capturada. Usa 'Usar esta foto' o 'Capturar' para repetir.")
+            btn_cap.config(text="Repetir")
+            btn_use.config(state="normal")
+
+        def _do_use():
+            frame = captured[0]
+            if frame is None:
+                return
+            dest = self._cal_images_dir() / \
+                f"cal_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}.jpg"
+            cv2.imwrite(str(dest), frame)
+            result_path[0] = dest
+            _close()
+
+        def _close():
+            live[0] = False
+            try: cap.release()
+            except Exception: pass
+            try: win.destroy()
+            except Exception: pass
+
+        btn_cap.config(command=_do_capture)
+        btn_use.config(command=_do_use)
+        win.protocol("WM_DELETE_WINDOW", _close)
+        _update()
+        win.wait_window()
+
+        if result_path[0] is None:
+            return None, None
+        try:
+            pil = Image.open(result_path[0]).convert("RGB")
+            return pil, result_path[0]
+        except Exception:
+            return None, None
+
     def _calibration_wizard(self, parent):
         """Abre el wizard para crear una nueva calibracion. Devuelve el dict o None."""
-        img_path_str = filedialog.askopenfilename(
-            parent=parent,
-            title="Imagen de referencia para calibracion",
-            filetypes=(("Imagenes", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"),
-                       ("Todos los archivos", "*.*")),
-        )
-        if not img_path_str:
+        # Elegir fuente de imagen
+        source = {"v": None}
+        dlg = tk.Toplevel(parent)
+        dlg.title("Nueva calibracion")
+        dlg.transient(parent)
+        dlg.grab_set()
+        dlg.resizable(False, False)
+        f = ttk.Frame(dlg, padding=18)
+        f.pack()
+        ttk.Label(f, text="Origen de la imagen de referencia:", font=("TkDefaultFont", 9, "bold")).pack(pady=(0, 12))
+        ttk.Button(f, text="Capturar desde camara",
+                   command=lambda: (source.__setitem__("v", "camera"), dlg.destroy()),
+                   width=28).pack(pady=4)
+        ttk.Button(f, text="Cargar desde archivo",
+                   command=lambda: (source.__setitem__("v", "file"), dlg.destroy()),
+                   width=28).pack(pady=4)
+        ttk.Button(f, text="Cancelar",
+                   command=dlg.destroy, width=28).pack(pady=(10, 0))
+        dlg.wait_window()
+
+        if source["v"] is None:
             return None
-        src = Path(img_path_str)
-        try:
-            pil_img = Image.open(src).convert("RGB")
-        except Exception as ex:
-            messagebox.showerror("Calibraciones", f"No se pudo abrir la imagen:\n{ex}", parent=parent)
-            return None
+
+        if source["v"] == "camera":
+            pil_img, src = self._capture_for_calibration(parent)
+            if pil_img is None:
+                return None
+            src = Path(src)
+            already_copied = True
+        else:
+            img_path_str = filedialog.askopenfilename(
+                parent=parent,
+                title="Imagen de referencia para calibracion",
+                filetypes=(("Imagenes", "*.png *.jpg *.jpeg *.bmp *.tif *.tiff"),
+                           ("Todos los archivos", "*.*")),
+            )
+            if not img_path_str:
+                return None
+            src = Path(img_path_str)
+            already_copied = False
+
+        if not already_copied:
+            try:
+                pil_img = Image.open(src).convert("RGB")
+            except Exception as ex:
+                messagebox.showerror("Calibraciones", f"No se pudo abrir la imagen:\n{ex}", parent=parent)
+                return None
 
         CANVAS_W, CANVAS_H = 820, 560
         img_w, img_h = pil_img.size
@@ -1233,9 +1376,12 @@ class TabCalidad(ttk.Frame):
             if not nombre:
                 messagebox.showinfo("Calibraciones","Ingresa un nombre para la calibracion.",parent=win)
                 return
-            dest_dir = self._cal_images_dir()
-            dest = dest_dir / f"cal_{uuid.uuid4().hex[:8]}{src.suffix.lower()}"
-            shutil.copy2(str(src), str(dest))
+            if already_copied:
+                dest = src
+            else:
+                dest_dir = self._cal_images_dir()
+                dest = dest_dir / f"cal_{uuid.uuid4().hex[:8]}{src.suffix.lower()}"
+                shutil.copy2(str(src), str(dest))
             px_per_unit = ref["px_dist"] / ref["real_dist"]
             result[0] = {
                 "id": uuid.uuid4().hex,

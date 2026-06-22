@@ -2149,11 +2149,10 @@ class TabCalidad(ttk.Frame):
 
         meas_row = ttk.Frame(win, padding=(8, 2))
         meas_row.pack(fill="x")
-        btn_measure_chk = ttk.Checkbutton(meas_row, text="Medir", variable=measure_var,
-                                           state="disabled")
-        btn_measure_chk.pack(side="left")
-        btn_del_meas = ttk.Button(meas_row, text="Borrar ultima medida", state="disabled")
-        btn_del_meas.pack(side="left", padx=(8, 0))
+        ttk.Label(meas_row, text="Clic = medir linea  |  Shift+clic = agregar nodulo",
+                  foreground="#666").pack(side="left")
+        btn_del_meas = ttk.Button(meas_row, text="Borrar ultima", state="disabled")
+        btn_del_meas.pack(side="right", padx=(0, 4))
         btn_del_all_meas = ttk.Button(meas_row, text="Borrar todas", state="disabled")
         btn_del_all_meas.pack(side="left", padx=(4, 0))
         meas_status_var = tk.StringVar(value="")
@@ -2274,7 +2273,6 @@ class TabCalidad(ttk.Frame):
             """Activa el estado de frame congelado (captura o archivo)."""
             live[0] = False
             btn_cap_live.config(text="Nueva foto")
-            btn_measure_chk.config(state="normal")
             btn_del_meas.config(state="normal")
             btn_del_all_meas.config(state="normal")
 
@@ -2285,11 +2283,9 @@ class TabCalidad(ttk.Frame):
                 captured_frame[0] = None
                 meas_pending_cam.clear()
                 meas_list_cam.clear()
-                measure_var.set(False)
                 meas_status_var.set("")
                 status_var.set(f"En vivo  {cam_w}×{cam_h}")
                 btn_cap_live.config(text="Capturar")
-                btn_measure_chk.config(state="disabled")
                 btn_del_meas.config(state="disabled")
                 btn_del_all_meas.config(state="disabled")
                 contours_cache[0] = None
@@ -2312,7 +2308,7 @@ class TabCalidad(ttk.Frame):
         btn_cap_live.config(command=_do_capture_live)
 
         def _on_canvas_click(event):
-            if not measure_var.get():
+            if event.state & 0x0001:   # Shift retenido → no es un clic de línea
                 return
             # Auto-pausa en el primer clic si estamos en live
             if live[0]:

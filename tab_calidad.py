@@ -1965,8 +1965,7 @@ class TabCalidad(ttk.Frame):
 
         win = tk.Toplevel(self)
         win.title(f"Camara — Calidad  [{cam_w}×{cam_h}]")
-        win.transient(self.winfo_toplevel())
-        win.resizable(True, True)
+        win.resizable(True, True)   # transient removido: permite el boton de maximizar
 
         hovered_particle = [None]   # índice en contours_cache[0] del nódulo bajo el cursor
 

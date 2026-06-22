@@ -2094,10 +2094,10 @@ class TabCalidad(ttk.Frame):
         # ── Panel derecho: tabla de medidas + info de nódulo hover ─────────────
         meas_panel = ttk.LabelFrame(main_pane, text="Mediciones", padding=4)
         meas_panel.grid(row=0, column=2, sticky="nsew", padx=(4, 0), pady=4)
-        meas_tv = ttk.Treeview(meas_panel, columns=("tipo","valor"), show="headings", height=12,
+        meas_tv = ttk.Treeview(meas_panel, columns=("tipo",), show="headings", height=12,
                                selectmode="browse")
-        meas_tv.heading("tipo", text=""); meas_tv.column("tipo", width=22, minwidth=22, stretch=False, anchor="center")
-        meas_tv.heading("valor", text="Valor"); meas_tv.column("valor", width=170, anchor="w", stretch=True)
+        meas_tv.heading("tipo", text="T")
+        meas_tv.column("tipo", width=22, minwidth=22, stretch=False, anchor="center")
         meas_sb_x = ttk.Scrollbar(meas_panel, orient="horizontal", command=meas_tv.xview)
         meas_tv.configure(xscrollcommand=meas_sb_x.set)
         meas_tv.pack(fill="both", expand=True)
@@ -2110,11 +2110,48 @@ class TabCalidad(ttk.Frame):
                               foreground="#0077cc", wraplength=148)
         hover_lbl.pack(fill="x", pady=(4, 0))
 
-        def _refresh_meas_tv():
+        # Columnas dinámicas según los tipos de datos presentes
+        # Líneas → columna Distancia; Partículas → Diam, Area, Circ, Clase
+        _COL_LINE = [("dist", "Distancia", 90, "w")]
+        _COL_PART = [
+            ("diam",  "Diám",  68, "e"),
+            ("area",  "Área",  72, "e"),
+            ("circ",  "Circ",  46, "e"),
+            ("clase", "Clase", 52, "w"),
+        ]
+
+        def _rebuild_meas_table():
+            has_lines = any(m.get("type") != "particle" for m in meas_list_cam)
+            has_part  = any(m.get("type") == "particle"  for m in meas_list_cam)
+            cols = [("tipo", "T", 22, "center")]
+            if has_lines: cols += _COL_LINE
+            if has_part:  cols += _COL_PART
+            col_ids = [c[0] for c in cols]
+            meas_tv.configure(columns=col_ids)
+            for cid, title, w, anch in cols:
+                meas_tv.heading(cid, text=title)
+                meas_tv.column(cid, width=w, minwidth=w, anchor=anch,
+                               stretch=(cid == col_ids[-1]))
             meas_tv.delete(*meas_tv.get_children())
             for m in meas_list_cam:
-                tipo = "P" if m.get("type") == "particle" else "→"
-                meas_tv.insert("", "end", values=(tipo, m.get("label", "")))
+                is_p  = m.get("type") == "particle"
+                tipo  = "P" if is_p else "→"
+                row   = {"tipo": tipo}
+                if has_lines:
+                    row["dist"] = "" if is_p else m.get("label", "")
+                if has_part:
+                    if is_p:
+                        unit = m.get("unit", "")
+                        row["diam"]  = f"{m.get('diam',0):.2f}{unit}"
+                        row["area"]  = f"{m.get('area',0):.3f}"
+                        row["circ"]  = f"{m.get('circ',0):.2f}"
+                        row["clase"] = m.get("clase", "")
+                    else:
+                        row["diam"] = row["area"] = row["circ"] = row["clase"] = ""
+                meas_tv.insert("", "end", values=[row.get(c, "") for c in col_ids])
+
+        def _refresh_meas_tv():
+            _rebuild_meas_table()
 
         status_var = tk.StringVar(value=f"En vivo  {cam_w}×{cam_h}")
         ttk.Label(win, textvariable=status_var, anchor="center").pack(fill="x", pady=(2, 0))
@@ -2445,16 +2482,19 @@ class TabCalidad(ttk.Frame):
             cal = next((c for c in _cals_cam if c["nombre"] == cam_cal_var.get()), None)
             if cal and cal.get("px_per_unit"):
                 pu = cal["px_per_unit"]; unit = cal.get("unit", "µm")
-                diam = p.get("diam_px", 0) / pu
-                area = p.get("area_px", 0) / (pu ** 2)
-                label = (f"D:{diam:.2f}{unit}  A:{area:.3f}{unit}²  "
-                         f"C:{p['circ']:.2f}  "
-                         f"{'Nod' if p['circ']>=0.5 else 'Verm'}")
+                diam_v = p.get("diam_px", 0) / pu
+                area_v = p.get("area_px", 0) / (pu ** 2)
             else:
-                label = (f"D:{p.get('diam_px',0):.1f}px  "
-                         f"A:{p.get('area_px',0):.0f}px²  "
-                         f"C:{p['circ']:.2f}")
-            meas_list_cam.append({"type": "particle", "label": label})
+                unit = "px"
+                diam_v = p.get("diam_px", 0)
+                area_v = p.get("area_px", 0)
+            clase = "Nod" if p["circ"] >= 0.5 else "Verm"
+            meas_list_cam.append({
+                "type": "particle",
+                "diam": diam_v, "area": area_v,
+                "circ": p["circ"], "clase": clase, "unit": unit,
+                "label": f"D:{diam_v:.2f}{unit}",
+            })
             meas_status_var.set(f"{len(meas_list_cam)} entrada(s)")
             _refresh_meas_tv()
             return "break"   # evita que <Button-1> también se dispare

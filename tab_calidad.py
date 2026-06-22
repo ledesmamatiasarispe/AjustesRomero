@@ -2051,21 +2051,10 @@ class TabCalidad(ttk.Frame):
                 sv.set(str(counts.get(category, 0)))
 
         # on_redraw para overlay de mediciones y nódulo hover
+        # Las medidas van PRIMERO: si el hover lanza excepción las medidas siguen visibles
         def _cam_on_redraw(cv):
             sx = PREVIEW_W / max(cam_w, 1); sy = PREVIEW_H / max(cam_h, 1)
-            # Nódulo resaltado (hover)
-            hi = hovered_particle[0]
-            cnts = contours_cache[0] or []
-            if hi is not None and 0 <= hi < len(cnts):
-                import numpy as np
-                p = cnts[hi]
-                scaled = p["contour"].astype(np.float32).copy()
-                scaled[..., 0] *= sx; scaled[..., 1] *= sy
-                pts_canvas = [_i2c_prev(x, y) for x, y in scaled.reshape(-1, 2)]
-                flat = [c for xy in pts_canvas for c in xy]
-                if len(flat) >= 4:
-                    cv.create_polygon(flat, outline="#ffff00", fill="#ffff0022", width=2)
-            # Medidas
+            # ── Medidas (siempre se dibujan primero) ──────────────────────────
             if meas_pending_cam:
                 dx = meas_pending_cam[0][0] * sx; dy = meas_pending_cam[0][1] * sy
                 cx, cy = _i2c_prev(dx, dy)
@@ -2080,6 +2069,21 @@ class TabCalidad(ttk.Frame):
                 lbl = m.get("label", "")
                 cv.create_text(mx+1, my-9, text=lbl, fill="#000", font=("TkDefaultFont", 8, "bold"))
                 cv.create_text(mx,   my-10, text=lbl, fill="#00dd88", font=("TkDefaultFont", 8, "bold"))
+            # ── Nódulo resaltado (hover) ───────────────────────────────────────
+            try:
+                hi = hovered_particle[0]
+                cnts = contours_cache[0] or []
+                if hi is not None and 0 <= hi < len(cnts):
+                    import numpy as np
+                    p = cnts[hi]
+                    scaled = p["contour"].astype(np.float32).copy()
+                    scaled[..., 0] *= sx; scaled[..., 1] *= sy
+                    pts_canvas = [_i2c_prev(x, y) for x, y in scaled.reshape(-1, 2)]
+                    flat = [c for xy in pts_canvas for c in xy]
+                    if len(flat) >= 4:
+                        cv.create_polygon(flat, outline="#ffff00", fill="", width=2)
+            except Exception:
+                pass
 
         # Preview con zoom/pan
         lbl_preview, _show_preview, _reset_preview, _c2i_prev, _i2c_prev = self._make_zoom_pan_preview(
@@ -2154,9 +2158,9 @@ class TabCalidad(ttk.Frame):
         meas_row.pack(fill="x")
         ttk.Label(meas_row, text="Clic = medir linea  |  Shift+clic = agregar nodulo",
                   foreground="#666").pack(side="left")
-        btn_del_meas = ttk.Button(meas_row, text="Borrar ultima", state="disabled")
+        btn_del_meas = ttk.Button(meas_row, text="Borrar ultima")
         btn_del_meas.pack(side="right", padx=(0, 4))
-        btn_del_all_meas = ttk.Button(meas_row, text="Borrar todas", state="disabled")
+        btn_del_all_meas = ttk.Button(meas_row, text="Borrar todas")
         btn_del_all_meas.pack(side="left", padx=(4, 0))
         meas_status_var = tk.StringVar(value="")
         ttk.Label(meas_row, textvariable=meas_status_var, foreground="#00dd88").pack(side="left", padx=(12, 0))
@@ -2298,8 +2302,6 @@ class TabCalidad(ttk.Frame):
             """Activa el estado de frame congelado (captura o archivo)."""
             live[0] = False
             btn_cap_live.config(text="Nueva foto")
-            btn_del_meas.config(state="normal")
-            btn_del_all_meas.config(state="normal")
 
         def _do_capture_live():
             if captured_frame[0] is not None:
@@ -2311,8 +2313,6 @@ class TabCalidad(ttk.Frame):
                 meas_status_var.set("")
                 status_var.set(f"En vivo  {cam_w}×{cam_h}")
                 btn_cap_live.config(text="Capturar")
-                btn_del_meas.config(state="disabled")
-                btn_del_all_meas.config(state="disabled")
                 contours_cache[0] = None
                 stats_cache[0] = None
                 _update_live()

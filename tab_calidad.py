@@ -1965,7 +1965,9 @@ class TabCalidad(ttk.Frame):
         win.transient(self.winfo_toplevel())
         win.resizable(True, True)
 
-        # ── Layout principal: panel de stats (izquierda) + preview (derecha) ──
+        hovered_particle = [None]   # índice en contours_cache[0] del nódulo bajo el cursor
+
+        # ── Layout principal: stats (izq) + preview (centro) + medidas (der) ──
         main_pane = ttk.Frame(win)
         main_pane.pack(fill="both", expand=True)
         main_pane.columnconfigure(1, weight=1)
@@ -2045,11 +2047,22 @@ class TabCalidad(ttk.Frame):
             for category, sv in dist_vars.items():
                 sv.set(str(counts.get(category, 0)))
 
-        # on_redraw para overlay de mediciones sobre el canvas
+        # on_redraw para overlay de mediciones y nódulo hover
         def _cam_on_redraw(cv):
-            if not meas_pending_cam and not meas_list_cam:
-                return
             sx = PREVIEW_W / max(cam_w, 1); sy = PREVIEW_H / max(cam_h, 1)
+            # Nódulo resaltado (hover)
+            hi = hovered_particle[0]
+            cnts = contours_cache[0] or []
+            if hi is not None and 0 <= hi < len(cnts):
+                import numpy as np
+                p = cnts[hi]
+                scaled = p["contour"].astype(np.float32).copy()
+                scaled[..., 0] *= sx; scaled[..., 1] *= sy
+                pts_canvas = [_i2c_prev(x, y) for x, y in scaled.reshape(-1, 2)]
+                flat = [c for xy in pts_canvas for c in xy]
+                if len(flat) >= 4:
+                    cv.create_polygon(flat, outline="#ffff00", fill="#ffff0022", width=2)
+            # Medidas
             if meas_pending_cam:
                 dx = meas_pending_cam[0][0] * sx; dy = meas_pending_cam[0][1] * sy
                 cx, cy = _i2c_prev(dx, dy)
@@ -2069,6 +2082,24 @@ class TabCalidad(ttk.Frame):
         lbl_preview, _show_preview, _reset_preview, _c2i_prev, _i2c_prev = self._make_zoom_pan_preview(
             main_pane, PREVIEW_W, PREVIEW_H, on_redraw=_cam_on_redraw)
         lbl_preview.grid(row=0, column=1, sticky="nsew")
+
+        # ── Panel derecho: tabla de medidas + info de nódulo hover ─────────────
+        meas_panel = ttk.LabelFrame(main_pane, text="Mediciones", padding=4)
+        meas_panel.grid(row=0, column=2, sticky="nsew", padx=(4, 0), pady=4)
+        meas_tv = ttk.Treeview(meas_panel, columns=("n","valor"), show="headings", height=12,
+                               selectmode="browse")
+        meas_tv.heading("n", text="#"); meas_tv.column("n", width=24, anchor="center")
+        meas_tv.heading("valor", text="Distancia"); meas_tv.column("valor", width=120, anchor="w")
+        meas_tv.pack(fill="both", expand=True)
+
+        hover_lbl = ttk.Label(meas_panel, text="", justify="left",
+                              foreground="#0077cc", wraplength=148)
+        hover_lbl.pack(fill="x", pady=(6, 0))
+
+        def _refresh_meas_tv():
+            meas_tv.delete(*meas_tv.get_children())
+            for i, m in enumerate(meas_list_cam, 1):
+                meas_tv.insert("", "end", values=(str(i), m.get("label", "")))
 
         status_var = tk.StringVar(value=f"En vivo  {cam_w}×{cam_h}")
         ttk.Label(win, textvariable=status_var, anchor="center").pack(fill="x", pady=(2, 0))
@@ -2277,7 +2308,13 @@ class TabCalidad(ttk.Frame):
         btn_cap_live.config(command=_do_capture_live)
 
         def _on_canvas_click(event):
-            if not measure_var.get() or captured_frame[0] is None:
+            if not measure_var.get():
+                return
+            # Auto-pausa en el primer clic si estamos en live
+            if live[0]:
+                _do_capture_live()
+            frame = captured_frame[0]
+            if frame is None:
                 return
             dx, dy = _c2i_prev(event.x, event.y)
             orig_x = dx * cam_w / PREVIEW_W
@@ -2286,7 +2323,7 @@ class TabCalidad(ttk.Frame):
                 return
             if not meas_pending_cam:
                 meas_pending_cam.append((orig_x, orig_y))
-                _show_frame(captured_frame[0])
+                _show_frame(frame)
                 meas_status_var.set("Clic en el segundo punto…")
                 return
             x1, y1 = meas_pending_cam[0]
@@ -2301,23 +2338,79 @@ class TabCalidad(ttk.Frame):
                 label = f"{px_d:.1f} px"
             meas_list_cam.append({"x1":x1,"y1":y1,"x2":x2,"y2":y2,"px_dist":px_d,"label":label})
             meas_status_var.set(f"{len(meas_list_cam)} medida(s) — {label}")
-            _show_frame(captured_frame[0])
+            _refresh_meas_tv()
+            _show_frame(frame)
+
+        _hover_after = [None]
+        def _on_canvas_motion(event):
+            if _hover_after[0]:
+                lbl_preview.after_cancel(_hover_after[0])
+            _hover_after[0] = lbl_preview.after(60, lambda: _check_hover(event.x, event.y))
+
+        def _check_hover(ex, ey):
+            cnts = contours_cache[0] or []
+            if not cnts:
+                if hovered_particle[0] is not None:
+                    hovered_particle[0] = None
+                    hover_lbl.config(text="")
+                    if captured_frame[0] is not None: _show_frame(captured_frame[0])
+                return
+            import cv2 as _cv2
+            import numpy as np
+            dx, dy = _c2i_prev(ex, ey)
+            ox = dx * cam_w / PREVIEW_W; oy = dy * cam_h / PREVIEW_H
+            best_idx = None; best_dist = -1
+            for i, p in enumerate(cnts):
+                d = _cv2.pointPolygonTest(p["contour"], (float(ox), float(oy)), True)
+                if d >= 0:
+                    best_idx = i; best_dist = d; break
+                if best_idx is None or d > best_dist:
+                    best_idx = i; best_dist = d
+            # Solo resaltar si el cursor está dentro o muy cerca del contorno
+            idx = best_idx if (best_dist is not None and best_dist >= -15) else None
+            if idx != hovered_particle[0]:
+                hovered_particle[0] = idx
+                if idx is not None:
+                    p = cnts[idx]
+                    cal = next((c for c in _cals_cam if c["nombre"] == cam_cal_var.get()), None)
+                    if cal and cal.get("px_per_unit"):
+                        pu = cal["px_per_unit"]
+                        unit = cal.get("unit", "µm")
+                        diam = p.get("diam_px", 0) / pu
+                        area = p.get("area_px", 0) / (pu ** 2)
+                        hover_lbl.config(text=(
+                            f"Diam: {diam:.2f} {unit}\n"
+                            f"Area: {area:.4f} {unit}²\n"
+                            f"Circ: {p['circ']:.3f}\n"
+                            f"Clase: {'Nodular' if p['circ']>=0.5 else 'Vermicular'}"
+                        ))
+                    else:
+                        hover_lbl.config(text=(
+                            f"Diam: {p.get('diam_px',0):.1f} px\n"
+                            f"Area: {p.get('area_px',0):.0f} px²\n"
+                            f"Circ: {p['circ']:.3f}"
+                        ))
+                else:
+                    hover_lbl.config(text="")
+                if captured_frame[0] is not None:
+                    _show_frame(captured_frame[0])
 
         lbl_preview.bind("<Button-1>", _on_canvas_click)
-        lbl_preview.bind("<Double-Button-1>", lambda e: None)  # sin reset en cámara
+        lbl_preview.bind("<Double-Button-1>", lambda e: None)
+        lbl_preview.bind("<Motion>", _on_canvas_motion)
 
-        btn_del_meas.config(command=lambda: (
-            meas_list_cam.pop() if meas_list_cam else None,
-            meas_pending_cam.clear(),
-            meas_status_var.set(f"{len(meas_list_cam)} medida(s)") if meas_list_cam else meas_status_var.set(""),
-            _show_frame(captured_frame[0]) if captured_frame[0] is not None else None,
-        ))
-        btn_del_all_meas.config(command=lambda: (
-            meas_list_cam.clear(),
-            meas_pending_cam.clear(),
-            meas_status_var.set(""),
-            _show_frame(captured_frame[0]) if captured_frame[0] is not None else None,
-        ))
+        def _del_last():
+            if meas_list_cam: meas_list_cam.pop()
+            meas_pending_cam.clear()
+            meas_status_var.set(f"{len(meas_list_cam)} medida(s)" if meas_list_cam else "")
+            _refresh_meas_tv()
+            if captured_frame[0] is not None: _show_frame(captured_frame[0])
+        def _del_all():
+            meas_list_cam.clear(); meas_pending_cam.clear()
+            meas_status_var.set(""); _refresh_meas_tv()
+            if captured_frame[0] is not None: _show_frame(captured_frame[0])
+        btn_del_meas.config(command=_del_last)
+        btn_del_all_meas.config(command=_del_all)
 
         def _load_from_file():
             from tkinter import filedialog
@@ -2871,7 +2964,8 @@ class TabCalidad(ttk.Frame):
                 continue
             perimeter = _cv2.arcLength(cnt, True)
             circ = (4 * np.pi * area / perimeter ** 2) if perimeter > 0 else 0
-            result.append({"contour": cnt, "circ": float(circ)})
+            result.append({"contour": cnt, "circ": float(circ),
+                           "area_px": area, "diam_px": (4 * area / np.pi) ** 0.5})
         return result
 
     def _count_nodules_opencv(self, image_bgr, px_per_mm=None, threshold=0, min_area=None):

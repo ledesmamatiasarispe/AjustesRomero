@@ -2389,9 +2389,6 @@ class TabCalidad(ttk.Frame):
         btn_cap_live.config(command=_do_capture_live)
 
         def _on_canvas_click(event):
-            if _suppress_next_click[0]:
-                _suppress_next_click[0] = False
-                return
             frame = captured_frame[0]   # None si está en live (el overlay se dibuja igual)
             dx, dy = _c2i_prev(event.x, event.y)
             orig_x = dx * cam_w / PREVIEW_W
@@ -2420,7 +2417,6 @@ class TabCalidad(ttk.Frame):
 
         import threading as _threading
         _hover_computing = [False]
-        _suppress_next_click = [False]   # flag para ignorar Button-1 tras Shift+Button-1
 
         def _launch_hover(ex, ey):
             """Lanza detección de hover en hilo de fondo con las coords dadas."""
@@ -2488,7 +2484,6 @@ class TabCalidad(ttk.Frame):
 
         def _on_shift_click(event):
             """Shift+clic: agrega el nódulo bajo el cursor a la tabla sin pausar."""
-            _suppress_next_click[0] = True   # evita que Button-1 también corra
             idx = hovered_particle[0]
             cnts = contours_cache[0] or []
             if idx is None or idx >= len(cnts):

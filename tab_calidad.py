@@ -2272,6 +2272,15 @@ class TabCalidad(ttk.Frame):
             ret, frame = cap.read()
             if ret:
                 _show_frame(frame)
+            # Hover: sondear posición del mouse cada 3 frames (~100ms) sin <Motion>
+            if show_contours_var.get() and frame_counter[0] % 3 == 0:
+                try:
+                    mx = lbl_preview.winfo_pointerx() - lbl_preview.winfo_rootx()
+                    my = lbl_preview.winfo_pointery() - lbl_preview.winfo_rooty()
+                    if 0 <= mx < PREVIEW_W and 0 <= my < PREVIEW_H:
+                        _launch_hover(mx, my)
+                except Exception:
+                    pass
             win.after(33, _update_live)
 
         def _enter_frozen():
@@ -2313,7 +2322,8 @@ class TabCalidad(ttk.Frame):
         btn_cap_live.config(command=_do_capture_live)
 
         def _on_canvas_click(event):
-            if event.state & 0x0001:   # Shift retenido → no es un clic de línea
+            if _suppress_next_click[0]:
+                _suppress_next_click[0] = False
                 return
             frame = captured_frame[0]   # None si está en live (el overlay se dibuja igual)
             dx, dy = _c2i_prev(event.x, event.y)
@@ -2342,26 +2352,25 @@ class TabCalidad(ttk.Frame):
             if frame is not None: _show_frame(frame)
 
         import threading as _threading
-        _hover_after = [None]
         _hover_computing = [False]
-
-        def _on_canvas_motion(event):
-            if _hover_after[0]:
-                lbl_preview.after_cancel(_hover_after[0])
-            ex, ey = event.x, event.y
-            _hover_after[0] = lbl_preview.after(50, lambda: _launch_hover(ex, ey))
+        _suppress_next_click = [False]   # flag para ignorar Button-1 tras Shift+Button-1
 
         def _launch_hover(ex, ey):
+            """Lanza detección de hover en hilo de fondo con las coords dadas."""
             if _hover_computing[0]:
                 return
             cnts = list(contours_cache[0] or [])
             if not cnts:
-                _apply_hover(None, cnts)
+                if hovered_particle[0] is not None:
+                    hovered_particle[0] = None
+                    hover_lbl.config(text="")
                 return
-            # Capturar estado de zoom/pan en el hilo principal antes de pasarlo
-            dx0, dy0 = _c2i_prev(ex, ey)
-            ox = dx0 * cam_w / PREVIEW_W
-            oy = dy0 * cam_h / PREVIEW_H
+            try:
+                dx0, dy0 = _c2i_prev(ex, ey)
+                ox = dx0 * cam_w / PREVIEW_W
+                oy = dy0 * cam_h / PREVIEW_H
+            except Exception:
+                return
             _hover_computing[0] = True
             def _worker():
                 try:
@@ -2378,41 +2387,41 @@ class TabCalidad(ttk.Frame):
                     idx = None
                 finally:
                     _hover_computing[0] = False
-                if win.winfo_exists():
-                    win.after(0, lambda: _apply_hover(idx, cnts))
+                if idx == hovered_particle[0]:
+                    return
+                hovered_particle[0] = idx
+                if not win.winfo_exists():
+                    return
+                def _ui():
+                    if idx is not None and 0 <= idx < len(cnts):
+                        p = cnts[idx]
+                        cal = next((c for c in _cals_cam if c["nombre"] == cam_cal_var.get()), None)
+                        if cal and cal.get("px_per_unit"):
+                            pu = cal["px_per_unit"]; unit = cal.get("unit", "µm")
+                            diam = p.get("diam_px", 0) / pu
+                            area = p.get("area_px", 0) / (pu ** 2)
+                            hover_lbl.config(text=(
+                                f"Diam: {diam:.2f} {unit}\n"
+                                f"Area: {area:.4f} {unit}²\n"
+                                f"Circ: {p['circ']:.3f}  "
+                                f"{'Nodular' if p['circ']>=0.5 else 'Vermicular'}"
+                            ))
+                        else:
+                            hover_lbl.config(text=(
+                                f"Diam: {p.get('diam_px',0):.1f} px\n"
+                                f"Area: {p.get('area_px',0):.0f} px²\n"
+                                f"Circ: {p['circ']:.3f}"
+                            ))
+                    else:
+                        hover_lbl.config(text="")
+                    if captured_frame[0] is not None:
+                        _show_frame(captured_frame[0])
+                win.after(0, _ui)
             _threading.Thread(target=_worker, daemon=True).start()
-
-        def _apply_hover(idx, cnts):
-            if idx == hovered_particle[0]:
-                return
-            hovered_particle[0] = idx
-            if idx is not None and 0 <= idx < len(cnts):
-                p = cnts[idx]
-                cal = next((c for c in _cals_cam if c["nombre"] == cam_cal_var.get()), None)
-                if cal and cal.get("px_per_unit"):
-                    pu = cal["px_per_unit"]; unit = cal.get("unit", "µm")
-                    diam = p.get("diam_px", 0) / pu
-                    area = p.get("area_px", 0) / (pu ** 2)
-                    hover_lbl.config(text=(
-                        f"Diam: {diam:.2f} {unit}\n"
-                        f"Area: {area:.4f} {unit}²\n"
-                        f"Circ: {p['circ']:.3f}\n"
-                        f"{'Nodular' if p['circ']>=0.5 else 'Vermicular'}"
-                    ))
-                else:
-                    hover_lbl.config(text=(
-                        f"Diam: {p.get('diam_px',0):.1f} px\n"
-                        f"Area: {p.get('area_px',0):.0f} px²\n"
-                        f"Circ: {p['circ']:.3f}"
-                    ))
-            else:
-                hover_lbl.config(text="")
-            # Redibujar solo si está congelado (en live el loop lo hace solo)
-            if captured_frame[0] is not None:
-                _show_frame(captured_frame[0])
 
         def _on_shift_click(event):
             """Shift+clic: agrega el nódulo bajo el cursor a la tabla sin pausar."""
+            _suppress_next_click[0] = True   # evita que Button-1 también corra
             idx = hovered_particle[0]
             cnts = contours_cache[0] or []
             if idx is None or idx >= len(cnts):
@@ -2438,7 +2447,7 @@ class TabCalidad(ttk.Frame):
         lbl_preview.bind("<Button-1>", _on_canvas_click)
         lbl_preview.bind("<Shift-Button-1>", _on_shift_click)
         lbl_preview.bind("<Double-Button-1>", lambda e: None)
-        lbl_preview.bind("<Motion>", _on_canvas_motion)
+        # <Motion> eliminado: hover se sondea dentro de _update_live
 
         def _del_last():
             if meas_list_cam: meas_list_cam.pop()

@@ -1728,17 +1728,20 @@ class TabCalidad(ttk.Frame):
             if show_contours_var.get():
                 px_mm = self._cal_get_px_per_mm(None)
                 if live[0]:
-                    try:
-                        cnts = self._get_nodule_contours(frame_bgr)
-                    except Exception:
-                        cnts = []
                     frame_counter[0] += 1
-                    if frame_counter[0] % 15 == 1:
+                    if frame_counter[0] % 25 == 1:
                         try:
-                            stats_cache[0] = self._count_nodules_opencv(frame_bgr, px_per_mm=px_mm)
+                            contours_cache[0] = self._get_nodule_contours(
+                                frame_bgr, blur_size=11)
+                        except Exception:
+                            contours_cache[0] = []
+                        try:
+                            stats_cache[0] = self._count_nodules_opencv(
+                                frame_bgr, px_per_mm=px_mm)
                         except Exception:
                             stats_cache[0] = None
                         _update_stats_panel(stats_cache[0])
+                    cnts = contours_cache[0] or []
                 else:
                     if contours_cache[0] is None:
                         try:
@@ -2287,11 +2290,12 @@ class TabCalidad(ttk.Frame):
         if value is not None:
             var.set(self._format_metric(value, 3))
 
-    def _get_nodule_contours(self, image_bgr):
+    def _get_nodule_contours(self, image_bgr, blur_size=5):
         import numpy as np
         import cv2 as _cv2
         gray = _cv2.cvtColor(image_bgr, _cv2.COLOR_BGR2GRAY)
-        blur = _cv2.GaussianBlur(gray, (5, 5), 0)
+        k = blur_size if blur_size % 2 == 1 else blur_size + 1
+        blur = _cv2.GaussianBlur(gray, (k, k), 0)
         _, thresh = _cv2.threshold(blur, 0, 255, _cv2.THRESH_BINARY_INV + _cv2.THRESH_OTSU)
         kernel = np.ones((3, 3), np.uint8)
         thresh = _cv2.morphologyEx(thresh, _cv2.MORPH_OPEN, kernel, iterations=1)

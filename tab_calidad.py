@@ -1973,10 +1973,28 @@ class TabCalidad(ttk.Frame):
         main_pane.columnconfigure(1, weight=1)
         main_pane.rowconfigure(0, weight=1)
 
-        # Panel de stats (oculto hasta que se activa el conteo)
+        # Panel de stats (visible siempre, muestra area; conteo se agrega al activar)
         stats_panel = ttk.LabelFrame(main_pane, text="Conteo de nodulos", padding=(8, 6))
         stats_panel.grid(row=0, column=0, sticky="nsew", padx=(4, 0), pady=4)
-        stats_panel.grid_remove()
+
+        # Fila siempre visible: área analizada (depende solo de calibración)
+        area_row = ttk.Frame(stats_panel)
+        area_row.pack(fill="x", pady=(0, 4))
+        ttk.Label(area_row, text="Area analizada:", anchor="w", width=16).pack(side="left")
+        area_var = tk.StringVar(value="Sin calibrar")
+        ttk.Label(area_row, textvariable=area_var, foreground="#ffcc44", anchor="w").pack(side="left")
+        ttk.Separator(stats_panel, orient="horizontal").pack(fill="x", pady=(0, 4))
+
+        def _update_area_var():
+            px_mm = _cam_px_mm()
+            if px_mm:
+                area = (cam_w / px_mm) * (cam_h / px_mm)
+                area_var.set(f"{area:.2f} mm²  ({cam_w}×{cam_h} px)")
+            else:
+                area_var.set("Sin calibrar")
+
+        cam_cal_var.trace_add("write", lambda *_: _update_area_var())
+        _update_area_var()
 
         _STAT_ROWS = [
             ("n_total",          "Nodulos totales"),
@@ -2207,16 +2225,12 @@ class TabCalidad(ttk.Frame):
             contours_cache[0] = None
             stats_cache[0] = None
             frame_counter[0] = 0
-            if show_contours_var.get():
-                stats_panel.grid()
-                if captured_frame[0] is not None:
-                    _show_frame(captured_frame[0])
-                else:
-                    _update_stats_panel(None)
-            else:
-                stats_panel.grid_remove()
-                if captured_frame[0] is not None:
-                    _show_frame(captured_frame[0])
+            # El panel siempre queda visible (muestra el área analizada)
+            stats_panel.grid()
+            if captured_frame[0] is not None:
+                _show_frame(captured_frame[0])
+            elif not show_contours_var.get():
+                _update_stats_panel(None)
 
         btn_file.config(command=_load_from_file)
         btn_contours.config(command=_toggle_contours)

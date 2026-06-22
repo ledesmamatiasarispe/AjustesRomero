@@ -1632,7 +1632,8 @@ class TabCalidad(ttk.Frame):
         frame_counter = [0]
         show_contours_var = tk.BooleanVar(value=False)
         show_binary_var   = tk.BooleanVar(value=False)
-        thresh_var        = tk.IntVar(value=0)   # 0 = Otsu automático
+        thresh_var        = tk.IntVar(value=0)              # 0 = Otsu automático
+        min_area_var      = tk.IntVar(value=IMAGEJ_AREA_UMBRAL)
 
         win = tk.Toplevel(self)
         win.title("Camara — Calidad")
@@ -1741,6 +1742,17 @@ class TabCalidad(ttk.Frame):
         ttk.Button(thresh_row, text="Reset Otsu",
                    command=lambda: thresh_var.set(0)).pack(side="left", padx=(8, 0))
 
+        ttk.Label(thresh_row, text="Area min (px):").pack(side="left", padx=(20, 4))
+        min_area_sb = tk.Spinbox(thresh_row, from_=1, to=10000, increment=10,
+                                 textvariable=min_area_var, width=7, justify="center")
+        min_area_sb.pack(side="left")
+
+        def _on_min_area_change(*_):
+            contours_cache[0] = None
+            stats_cache[0] = None
+
+        min_area_var.trace_add("write", _on_min_area_change)
+
         def _make_binary(frame_bgr, blur_sz=5):
             import numpy as np
             gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
@@ -1768,12 +1780,14 @@ class TabCalidad(ttk.Frame):
                 if do_contours and frame_counter[0] % 25 == 1:
                     try:
                         contours_cache[0] = self._get_nodule_contours(
-                            frame_bgr, blur_size=11, threshold=thresh_var.get())
+                            frame_bgr, blur_size=11, threshold=thresh_var.get(),
+                            min_area=min_area_var.get())
                     except Exception:
                         contours_cache[0] = []
                     try:
                         stats_cache[0] = self._count_nodules_opencv(
-                            frame_bgr, px_per_mm=px_mm, threshold=thresh_var.get())
+                            frame_bgr, px_per_mm=px_mm, threshold=thresh_var.get(),
+                            min_area=min_area_var.get())
                     except Exception:
                         stats_cache[0] = None
                     _update_stats_panel(stats_cache[0])
@@ -1781,13 +1795,15 @@ class TabCalidad(ttk.Frame):
                 if do_contours and contours_cache[0] is None:
                     try:
                         contours_cache[0] = self._get_nodule_contours(
-                            frame_bgr, threshold=thresh_var.get())
+                            frame_bgr, threshold=thresh_var.get(),
+                            min_area=min_area_var.get())
                     except Exception:
                         contours_cache[0] = []
                 if do_contours and stats_cache[0] is None:
                     try:
                         stats_cache[0] = self._count_nodules_opencv(
-                            frame_bgr, px_per_mm=px_mm, threshold=thresh_var.get())
+                            frame_bgr, px_per_mm=px_mm, threshold=thresh_var.get(),
+                            min_area=min_area_var.get())
                     except Exception:
                         stats_cache[0] = None
                     _update_stats_panel(stats_cache[0])
@@ -2336,9 +2352,10 @@ class TabCalidad(ttk.Frame):
         if value is not None:
             var.set(self._format_metric(value, 3))
 
-    def _get_nodule_contours(self, image_bgr, blur_size=5, threshold=0):
+    def _get_nodule_contours(self, image_bgr, blur_size=5, threshold=0, min_area=None):
         import numpy as np
         import cv2 as _cv2
+        area_min = int(min_area) if min_area is not None else IMAGEJ_AREA_UMBRAL
         gray = _cv2.cvtColor(image_bgr, _cv2.COLOR_BGR2GRAY)
         k = blur_size if blur_size % 2 == 1 else blur_size + 1
         blur = _cv2.GaussianBlur(gray, (k, k), 0)
@@ -2353,17 +2370,18 @@ class TabCalidad(ttk.Frame):
         result = []
         for cnt in contours:
             area = _cv2.contourArea(cnt)
-            if area < IMAGEJ_AREA_UMBRAL:
+            if area < area_min:
                 continue
             perimeter = _cv2.arcLength(cnt, True)
             circ = (4 * np.pi * area / perimeter ** 2) if perimeter > 0 else 0
             result.append({"contour": cnt, "circ": float(circ)})
         return result
 
-    def _count_nodules_opencv(self, image_bgr, px_per_mm=None, threshold=0):
+    def _count_nodules_opencv(self, image_bgr, px_per_mm=None, threshold=0, min_area=None):
         import numpy as np
         import cv2 as _cv2
 
+        area_min = int(min_area) if min_area is not None else IMAGEJ_AREA_UMBRAL
         scale = float(px_per_mm) if px_per_mm else IMAGEJ_RESOLUCION_PX_MM
         h, w = image_bgr.shape[:2]
         analysis_area_mm2 = (w / scale) * (h / scale)
@@ -2382,7 +2400,7 @@ class TabCalidad(ttk.Frame):
         particles = []
         for cnt in contours:
             area = _cv2.contourArea(cnt)
-            if area < IMAGEJ_AREA_UMBRAL:
+            if area < area_min:
                 continue
             perimeter = _cv2.arcLength(cnt, True)
             circularity = (4 * np.pi * area / (perimeter ** 2)) if perimeter > 0 else 0

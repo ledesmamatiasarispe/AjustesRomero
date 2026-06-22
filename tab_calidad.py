@@ -1945,8 +1945,9 @@ class TabCalidad(ttk.Frame):
 
         PREVIEW_W, PREVIEW_H = 820, 616
         # Escala fill: la imagen siempre llena el canvas sin bordes negros
+        import math as _math
         _ds = max(PREVIEW_W / cam_w, PREVIEW_H / cam_h)
-        _sw = int(cam_w * _ds); _sh = int(cam_h * _ds)
+        _sw = _math.ceil(cam_w * _ds); _sh = _math.ceil(cam_h * _ds)
         _cx = (_sw - PREVIEW_W) // 2; _cy = (_sh - PREVIEW_H) // 2
 
         def _fill(bgr):
@@ -1993,8 +1994,7 @@ class TabCalidad(ttk.Frame):
             else:
                 area_var.set("Sin calibrar")
 
-        cam_cal_var.trace_add("write", lambda *_: _update_area_var())
-        _update_area_var()
+        # _update_area_var() se llama después de que cam_cal_var y _cam_px_mm estén definidos
 
         _STAT_ROWS = [
             ("n_total",          "Nodulos totales"),
@@ -2068,6 +2068,10 @@ class TabCalidad(ttk.Frame):
 
         def _cam_px_mm():
             return self._cal_get_px_per_mm(_cam_cal_id())
+
+        # Ahora que cam_cal_var y _cam_px_mm están definidos, conectar el trace del área
+        cam_cal_var.trace_add("write", lambda *_: _update_area_var())
+        _update_area_var()
 
         cal_row = ttk.Frame(win, padding=(8, 2))
         cal_row.pack(fill="x")

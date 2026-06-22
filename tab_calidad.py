@@ -851,6 +851,96 @@ class TabCalidad(ttk.Frame):
 
     # ── Calibraciones persistentes ────────────────────────────────────────────
 
+    def _make_zoom_pan_preview(self, parent, preview_w, preview_h, cursor="crosshair"):
+        """Canvas con zoom (rueda) y pan (botón derecho arrastrado).
+        Devuelve (canvas, show_frame_fn, reset_fn).
+        show_frame acepta un array BGR de OpenCV o una PIL Image."""
+        canvas = tk.Canvas(parent, width=preview_w, height=preview_h,
+                           bg="#111", cursor=cursor)
+        zoom   = [1.0]
+        pan    = [0.0, 0.0]
+        last   = [None]   # PIL Image
+        photo  = [None]
+
+        def _clamp(fw, fh):
+            vw = preview_w / zoom[0]; vh = preview_h / zoom[0]
+            pan[0] = max(0.0, min(pan[0], max(0.0, fw - vw)))
+            pan[1] = max(0.0, min(pan[1], max(0.0, fh - vh)))
+
+        def _render(pil_img):
+            fw, fh = pil_img.size
+            _clamp(fw, fh)
+            vw = preview_w / zoom[0]; vh = preview_h / zoom[0]
+            box = (pan[0], pan[1], pan[0] + vw, pan[1] + vh)
+            resample = Image.NEAREST if zoom[0] > 3 else Image.LANCZOS
+            cropped = pil_img.crop(box).resize((preview_w, preview_h), resample)
+            ph = ImageTk.PhotoImage(cropped)
+            canvas.delete("all")
+            canvas.create_image(0, 0, anchor="nw", image=ph)
+            photo[0] = ph
+
+        def show_frame(frame):
+            if frame is None:
+                return
+            if isinstance(frame, Image.Image):
+                pil = frame.convert("RGB")
+            else:
+                import cv2 as _cv2
+                pil = Image.fromarray(_cv2.cvtColor(frame, _cv2.COLOR_BGR2RGB))
+            last[0] = pil
+            _render(pil)
+
+        def reset():
+            zoom[0] = 1.0; pan[0] = 0.0; pan[1] = 0.0
+            if last[0]:
+                _render(last[0])
+
+        def on_scroll(event):
+            if last[0] is None:
+                return
+            up = (event.num == 4) or (getattr(event, "delta", 0) > 0)
+            factor = 1.2 if up else 1 / 1.2
+            fw, fh = last[0].size
+            mx = pan[0] + event.x / zoom[0]
+            my = pan[1] + event.y / zoom[0]
+            zoom[0] = max(0.5, min(20.0, zoom[0] * factor))
+            pan[0] = mx - event.x / zoom[0]
+            pan[1] = my - event.y / zoom[0]
+            _clamp(fw, fh)
+            _render(last[0])
+
+        drag = [None]
+        pan0 = [None]
+
+        def on_r_press(event):
+            drag[0] = (event.x, event.y)
+            pan0[0] = (pan[0], pan[1])
+            canvas.config(cursor="fleur")
+
+        def on_r_drag(event):
+            if drag[0] is None or last[0] is None:
+                return
+            dx = (event.x - drag[0][0]) / zoom[0]
+            dy = (event.y - drag[0][1]) / zoom[0]
+            pan[0] = pan0[0][0] - dx
+            pan[1] = pan0[0][1] - dy
+            _clamp(*last[0].size)
+            _render(last[0])
+
+        def on_r_release(event):
+            drag[0] = None
+            canvas.config(cursor=cursor)
+
+        canvas.bind("<MouseWheel>", on_scroll)
+        canvas.bind("<Button-4>",   on_scroll)
+        canvas.bind("<Button-5>",   on_scroll)
+        canvas.bind("<Button-3>",   on_r_press)
+        canvas.bind("<B3-Motion>",  on_r_drag)
+        canvas.bind("<ButtonRelease-3>", on_r_release)
+        canvas.bind("<Double-Button-1>", lambda e: reset())
+
+        return canvas, show_frame, reset
+
     def _cal_load(self):
         try:
             import json as _json
@@ -1183,7 +1273,7 @@ class TabCalidad(ttk.Frame):
         win.grab_set()
         win.resizable(False, False)
 
-        lbl = tk.Label(win, bg="#111", width=PREV_W, height=PREV_H)
+        lbl, _show_cal, _reset_cal = self._make_zoom_pan_preview(win, PREV_W, PREV_H)
         lbl.pack()
         status_var = tk.StringVar(value="Previsualizacion en vivo — apunta a la barra de escala")
         ttk.Label(win, textvariable=status_var, anchor="center").pack(fill="x", pady=(2, 0))
@@ -1195,12 +1285,10 @@ class TabCalidad(ttk.Frame):
         btn_use = ttk.Button(btn_row, text="Usar esta foto", state="disabled")
         btn_use.pack(side="left", padx=6)
         ttk.Button(btn_row, text="Cancelar", command=lambda: _close()).pack(side="right")
+        ttk.Button(btn_row, text="Reset zoom", command=_reset_cal).pack(side="right", padx=6)
 
         def _show(frame_bgr):
-            rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-            img = Image.fromarray(rgb).resize((PREV_W, PREV_H), Image.LANCZOS)
-            ph = ImageTk.PhotoImage(img)
-            lbl.config(image=ph); lbl.image = ph
+            _show_cal(frame_bgr)
 
         def _update():
             if not live[0] or not win.winfo_exists():
@@ -1877,8 +1965,9 @@ class TabCalidad(ttk.Frame):
             for category, sv in dist_vars.items():
                 sv.set(str(counts.get(category, 0)))
 
-        # Preview
-        lbl_preview = tk.Label(main_pane, bg="#111", width=PREVIEW_W, height=PREVIEW_H)
+        # Preview con zoom/pan
+        lbl_preview, _show_preview, _reset_preview = self._make_zoom_pan_preview(
+            main_pane, PREVIEW_W, PREVIEW_H)
         lbl_preview.grid(row=0, column=1, sticky="nsew")
 
         status_var = tk.StringVar(value="Previsualizacion en vivo")
@@ -1896,6 +1985,7 @@ class TabCalidad(ttk.Frame):
         btn_contours.pack(side="left", padx=6)
         ttk.Checkbutton(btn_row, text="Ver binario", variable=show_binary_var).pack(side="left")
         ttk.Button(btn_row, text="Cerrar", command=lambda: _on_close()).pack(side="right")
+        ttk.Button(btn_row, text="Reset zoom", command=_reset_preview).pack(side="right", padx=6)
 
         thresh_row = ttk.Frame(win, padding=(8, 2))
         thresh_row.pack(fill="x")
@@ -1941,11 +2031,6 @@ class TabCalidad(ttk.Frame):
             return binary
 
         def _show_frame(frame_bgr):
-            w = lbl_preview.winfo_width()
-            h = lbl_preview.winfo_height()
-            if w < 2: w = PREVIEW_W
-            if h < 2: h = PREVIEW_H
-
             px_mm = self._cal_get_px_per_mm(None)
             do_contours = show_contours_var.get()
 
@@ -1994,11 +2079,7 @@ class TabCalidad(ttk.Frame):
                     color = (0, 220, 0) if p["circ"] >= 0.5 else (0, 140, 255)
                     cv2.drawContours(display_bgr, [p["contour"]], -1, color, 2)
 
-            frame_rgb = cv2.cvtColor(display_bgr, cv2.COLOR_BGR2RGB)
-            img = Image.fromarray(frame_rgb).resize((w, h), Image.LANCZOS)
-            photo = ImageTk.PhotoImage(img)
-            lbl_preview.config(image=photo)
-            lbl_preview.image = photo
+            _show_preview(display_bgr)
 
         def _update_live():
             if not live[0] or not win.winfo_exists():

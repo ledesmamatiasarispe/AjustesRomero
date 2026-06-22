@@ -2061,6 +2061,8 @@ class TabCalidad(ttk.Frame):
                 cx, cy = _i2c_prev(dx, dy)
                 cv.create_oval(cx-5, cy-5, cx+5, cy+5, fill="#ff4444", outline="white", width=1)
             for m in meas_list_cam:
+                if m.get("type") == "particle" or "x1" not in m:
+                    continue   # partículas no tienen coordenadas de línea
                 cx1, cy1 = _i2c_prev(m["x1"] * sx, m["y1"] * sy)
                 cx2, cy2 = _i2c_prev(m["x2"] * sx, m["y2"] * sy)
                 cv.create_line(cx1, cy1, cx2, cy2, fill="#00dd88", width=2)
@@ -2149,6 +2151,19 @@ class TabCalidad(ttk.Frame):
                     else:
                         row["diam"] = row["area"] = row["circ"] = row["clase"] = ""
                 meas_tv.insert("", "end", values=[row.get(c, "") for c in col_ids])
+
+            # Auto-sizing: ajustar ancho de cada columna al contenido
+            try:
+                import tkinter.font as _tkfont
+                f = _tkfont.nametofont("TkDefaultFont")
+                for cid, title, min_w, anch in cols:
+                    max_w = f.measure(title) + 14
+                    for iid in meas_tv.get_children():
+                        cell = str(meas_tv.set(iid, cid))
+                        max_w = max(max_w, f.measure(cell) + 14)
+                    meas_tv.column(cid, width=max(min_w, max_w))
+            except Exception:
+                pass
 
         def _refresh_meas_tv():
             _rebuild_meas_table()

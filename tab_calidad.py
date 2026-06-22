@@ -1449,14 +1449,16 @@ class TabCalidad(ttk.Frame):
         ttk.Label(win, textvariable=instr_var, anchor="center",
                   font=("TkDefaultFont", 9, "bold")).pack(fill="x", pady=(4, 2))
 
-        # Anotaciones dibujadas encima del canvas tras cada render
+        # Anotaciones dibujadas encima del canvas tras cada render.
+        # ref y pending almacenan coords en espacio de imagen original.
+        # _i2c espera coords en espacio disp_img (= original × ds).
         def _draw_annotations(cv):
             if pending:
-                px, py = _i2c(pending[0][0], pending[0][1])
+                px, py = _i2c(pending[0][0] * ds, pending[0][1] * ds)
                 cv.create_oval(px-5, py-5, px+5, py+5, fill="#ff4444", outline="white", width=1)
             if ref:
-                x1c, y1c = _i2c(ref["x1"], ref["y1"])
-                x2c, y2c = _i2c(ref["x2"], ref["y2"])
+                x1c, y1c = _i2c(ref["x1"] * ds, ref["y1"] * ds)
+                x2c, y2c = _i2c(ref["x2"] * ds, ref["y2"] * ds)
                 cv.create_line(x1c, y1c, x2c, y2c, fill="#ffcc00", width=2)
                 for px, py in ((x1c, y1c), (x2c, y2c)):
                     cv.create_oval(px-4, py-4, px+4, py+4, fill="#ffcc00", outline="")

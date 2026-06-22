@@ -1738,7 +1738,7 @@ class TabInformes(ttk.Frame):
             # Total cucharas al final de la barra
             if total_cucharas > 0:
                 x_end = min(e + 2, WIN_SPAN - 2)
-                ax.text(x_end, y, f"  {total_cucharas}🥄",
+                ax.text(x_end, y, f"  {total_cucharas} cuch.",
                         va="center", fontsize=7, color="#d4ac0d", zorder=5)
 
         # Eje X: FuncFormatter dinámico HH:MM:SS → funciona bien con zoom/pan

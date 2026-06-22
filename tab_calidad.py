@@ -1602,16 +1602,26 @@ class TabCalidad(ttk.Frame):
             return
 
         cap = None
-        for idx in range(5):
-            c = cv2.VideoCapture(idx)
-            if c.isOpened():
-                ret, _ = c.read()
-                if ret:
-                    cap = c
-                    break
-            c.release()
-        if cap is None or not cap.isOpened():
-            messagebox.showinfo("Camara", "No se pudo abrir la camara.", parent=self)
+        backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, 0]
+        for idx in range(3):
+            for backend in backends:
+                try:
+                    c = cv2.VideoCapture(idx, backend) if backend else cv2.VideoCapture(idx)
+                    if c.isOpened():
+                        ret, _ = c.read()
+                        if ret:
+                            cap = c
+                            break
+                    c.release()
+                except Exception:
+                    pass
+            if cap is not None:
+                break
+        if cap is None:
+            messagebox.showinfo("Camara",
+                "No se pudo abrir la camara.\n"
+                "Verificar que no este siendo usada por otra aplicacion.",
+                parent=self)
             return
 
         PREVIEW_W, PREVIEW_H = 640, 480

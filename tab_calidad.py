@@ -2069,6 +2069,28 @@ class TabCalidad(ttk.Frame):
                 lbl = m.get("label", "")
                 cv.create_text(mx+1, my-9, text=lbl, fill="#000", font=("TkDefaultFont", 8, "bold"))
                 cv.create_text(mx,   my-10, text=lbl, fill="#00dd88", font=("TkDefaultFont", 8, "bold"))
+            # ── Nódulos guardados en tabla (contorno + número de fila) ───────────
+            try:
+                import numpy as np
+                for row_n, m in enumerate(meas_list_cam, 1):
+                    cnt = m.get("contour")
+                    if m.get("type") != "particle" or cnt is None:
+                        continue
+                    scaled = cnt.astype(np.float32).copy()
+                    scaled[..., 0] *= sx; scaled[..., 1] *= sy
+                    pts = [_i2c_prev(float(x), float(y)) for x, y in scaled.reshape(-1, 2)]
+                    flat = [c for xy in pts for c in xy]
+                    if len(flat) >= 4:
+                        cv.create_polygon(flat, outline="#44aaff", fill="", width=2)
+                    if pts:
+                        cx = sum(p[0] for p in pts) / len(pts)
+                        cy = sum(p[1] for p in pts) / len(pts)
+                        cv.create_text(cx+1, cy+1, text=str(row_n), fill="#000",
+                                       font=("TkDefaultFont", 8, "bold"))
+                        cv.create_text(cx,   cy,   text=str(row_n), fill="#44aaff",
+                                       font=("TkDefaultFont", 8, "bold"))
+            except Exception:
+                pass
             # ── Nódulo resaltado (hover) ───────────────────────────────────────
             try:
                 hi = hovered_particle[0]
@@ -2502,6 +2524,7 @@ class TabCalidad(ttk.Frame):
                 "diam": diam_v, "area": area_v,
                 "circ": p["circ"], "clase": clase, "unit": unit,
                 "label": f"D:{diam_v:.2f}{unit}",
+                "contour": p["contour"].copy(),   # para dibujar en canvas con número
             })
             meas_status_var.set(f"{len(meas_list_cam)} entrada(s)")
             _refresh_meas_tv()

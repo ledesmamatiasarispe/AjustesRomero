@@ -1970,16 +1970,13 @@ class TabCalidad(ttk.Frame):
 
         hovered_particle = [None]   # índice en contours_cache[0] del nódulo bajo el cursor
 
-        # ── Layout principal: stats (izq) + preview (centro) + medidas (der) ──
-        main_pane = ttk.Frame(win)
+        # ── Layout principal: PanedWindow → stats | preview | medidas ──────────
+        main_pane = ttk.PanedWindow(win, orient="horizontal")
         main_pane.pack(fill="both", expand=True)
-        main_pane.columnconfigure(1, weight=1)
-        main_pane.columnconfigure(2, weight=0, minsize=210)
-        main_pane.rowconfigure(0, weight=1)
 
         # Panel de stats (visible siempre, muestra area; conteo se agrega al activar)
         stats_panel = ttk.LabelFrame(main_pane, text="Conteo de nodulos", padding=(8, 6))
-        stats_panel.grid(row=0, column=0, sticky="nsew", padx=(4, 0), pady=4)
+        main_pane.add(stats_panel, weight=0)
 
         # Fila siempre visible: área analizada (depende solo de calibración)
         area_row = ttk.Frame(stats_panel)
@@ -2089,13 +2086,15 @@ class TabCalidad(ttk.Frame):
                 pass
 
         # Preview con zoom/pan
+        preview_frame = ttk.Frame(main_pane)
+        main_pane.add(preview_frame, weight=1)
         lbl_preview, _show_preview, _reset_preview, _c2i_prev, _i2c_prev = self._make_zoom_pan_preview(
-            main_pane, PREVIEW_W, PREVIEW_H, on_redraw=_cam_on_redraw)
-        lbl_preview.grid(row=0, column=1, sticky="nsew")
+            preview_frame, PREVIEW_W, PREVIEW_H, on_redraw=_cam_on_redraw)
+        lbl_preview.pack(fill="both", expand=True)
 
         # ── Panel derecho: tabla de medidas + info de nódulo hover ─────────────
         meas_panel = ttk.LabelFrame(main_pane, text="Mediciones", padding=4)
-        meas_panel.grid(row=0, column=2, sticky="nsew", padx=(4, 0), pady=4)
+        main_pane.add(meas_panel, weight=0)
         meas_tv = ttk.Treeview(meas_panel, columns=("tipo",), show="headings", height=12,
                                selectmode="browse")
         meas_tv.heading("tipo", text="T")
@@ -2132,8 +2131,7 @@ class TabCalidad(ttk.Frame):
             meas_tv.configure(columns=col_ids)
             for cid, title, w, anch in cols:
                 meas_tv.heading(cid, text=title)
-                meas_tv.column(cid, width=w, minwidth=w, anchor=anch,
-                               stretch=(cid == col_ids[-1]))
+                meas_tv.column(cid, width=w, minwidth=w, anchor=anch, stretch=False)
             meas_tv.delete(*meas_tv.get_children())
             for m in meas_list_cam:
                 is_p  = m.get("type") == "particle"

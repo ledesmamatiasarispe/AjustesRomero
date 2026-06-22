@@ -1055,13 +1055,41 @@ class TabCalidad(ttk.Frame):
             self._cal_set_default(c["id"])
             _refresh()
 
+        def _recalibrate():
+            c = _selected()
+            if not c:
+                messagebox.showinfo("Calibraciones",
+                    "Selecciona una calibracion para recalibrar.", parent=win)
+                return
+            new_data = self._calibration_wizard(win)
+            if new_data is None:
+                return
+            # Eliminar imagen anterior si se reemplazó
+            old_img = c.get("image_path", "")
+            new_img = new_data.get("image_path", "")
+            if old_img and old_img != new_img and Path(old_img).exists():
+                try:
+                    Path(old_img).unlink()
+                except Exception:
+                    pass
+            # Actualizar preservando ID y nombre original
+            data = self._cal_load()
+            for x in data:
+                if x["id"] == c["id"]:
+                    x.update({k: v for k, v in new_data.items()
+                               if k not in ("id", "nombre")})
+                    break
+            self._cal_save(data)
+            _refresh()
+
         btn_row = ttk.Frame(frm)
         btn_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         ttk.Button(btn_row, text="Nueva calibracion", command=_new).pack(side="left")
-        ttk.Button(btn_row, text="Predeterminar ★", command=_set_default).pack(side="left", padx=6)
-        ttk.Button(btn_row, text="Renombrar", command=_rename).pack(side="left")
-        ttk.Button(btn_row, text="Ver imagen ref.", command=_view_image).pack(side="left", padx=6)
-        ttk.Button(btn_row, text="Eliminar", command=_delete).pack(side="left")
+        ttk.Button(btn_row, text="Recalibrar", command=_recalibrate).pack(side="left", padx=6)
+        ttk.Button(btn_row, text="Predeterminar ★", command=_set_default).pack(side="left")
+        ttk.Button(btn_row, text="Renombrar", command=_rename).pack(side="left", padx=6)
+        ttk.Button(btn_row, text="Ver imagen ref.", command=_view_image).pack(side="left")
+        ttk.Button(btn_row, text="Eliminar", command=_delete).pack(side="left", padx=6)
         ttk.Button(btn_row, text="Cerrar", command=win.destroy).pack(side="right")
 
         _refresh()

@@ -851,16 +851,20 @@ class TabCalidad(ttk.Frame):
 
     # ── Calibraciones persistentes ────────────────────────────────────────────
 
-    def _make_zoom_pan_preview(self, parent, preview_w, preview_h, cursor="crosshair"):
+    def _make_zoom_pan_preview(self, parent, preview_w, preview_h,
+                               cursor="crosshair", on_redraw=None):
         """Canvas con zoom (rueda) y pan (botón derecho arrastrado).
-        Devuelve (canvas, show_frame_fn, reset_fn).
-        show_frame acepta un array BGR de OpenCV o una PIL Image."""
+        Devuelve (canvas, show_frame_fn, reset_fn, canvas_to_img_fn, img_to_canvas_fn).
+        - show_frame: BGR numpy array o PIL Image
+        - on_redraw(canvas): callback opcional llamado después de cada render
+          para dibujar anotaciones encima de la imagen
+        El zoom mínimo es 1.0 para evitar márgenes negros."""
         canvas = tk.Canvas(parent, width=preview_w, height=preview_h,
                            bg="#111", cursor=cursor)
-        zoom   = [1.0]
-        pan    = [0.0, 0.0]
-        last   = [None]   # PIL Image
-        photo  = [None]
+        zoom  = [1.0]
+        pan   = [0.0, 0.0]
+        last  = [None]
+        photo = [None]
 
         def _clamp(fw, fh):
             vw = preview_w / zoom[0]; vh = preview_h / zoom[0]
@@ -878,6 +882,8 @@ class TabCalidad(ttk.Frame):
             canvas.delete("all")
             canvas.create_image(0, 0, anchor="nw", image=ph)
             photo[0] = ph
+            if on_redraw:
+                on_redraw(canvas)
 
         def show_frame(frame):
             if frame is None:
@@ -895,6 +901,12 @@ class TabCalidad(ttk.Frame):
             if last[0]:
                 _render(last[0])
 
+        def canvas_to_img(cx, cy):
+            return pan[0] + cx / zoom[0], pan[1] + cy / zoom[0]
+
+        def img_to_canvas(ix, iy):
+            return (ix - pan[0]) * zoom[0], (iy - pan[1]) * zoom[0]
+
         def on_scroll(event):
             if last[0] is None:
                 return
@@ -903,14 +915,14 @@ class TabCalidad(ttk.Frame):
             fw, fh = last[0].size
             mx = pan[0] + event.x / zoom[0]
             my = pan[1] + event.y / zoom[0]
-            zoom[0] = max(0.5, min(20.0, zoom[0] * factor))
+            # mínimo 1.0 para que la imagen siempre llene el canvas sin márgenes
+            zoom[0] = max(1.0, min(20.0, zoom[0] * factor))
             pan[0] = mx - event.x / zoom[0]
             pan[1] = my - event.y / zoom[0]
             _clamp(fw, fh)
             _render(last[0])
 
-        drag = [None]
-        pan0 = [None]
+        drag = [None]; pan0 = [None]
 
         def on_r_press(event):
             drag[0] = (event.x, event.y)
@@ -931,15 +943,15 @@ class TabCalidad(ttk.Frame):
             drag[0] = None
             canvas.config(cursor=cursor)
 
-        canvas.bind("<MouseWheel>", on_scroll)
-        canvas.bind("<Button-4>",   on_scroll)
-        canvas.bind("<Button-5>",   on_scroll)
-        canvas.bind("<Button-3>",   on_r_press)
-        canvas.bind("<B3-Motion>",  on_r_drag)
-        canvas.bind("<ButtonRelease-3>", on_r_release)
-        canvas.bind("<Double-Button-1>", lambda e: reset())
+        canvas.bind("<MouseWheel>",       on_scroll)
+        canvas.bind("<Button-4>",         on_scroll)
+        canvas.bind("<Button-5>",         on_scroll)
+        canvas.bind("<Button-3>",         on_r_press)
+        canvas.bind("<B3-Motion>",        on_r_drag)
+        canvas.bind("<ButtonRelease-3>",  on_r_release)
+        canvas.bind("<Double-Button-1>",  lambda e: reset())
 
-        return canvas, show_frame, reset
+        return canvas, show_frame, reset, canvas_to_img, img_to_canvas
 
     def _cal_load(self):
         try:
@@ -1194,43 +1206,42 @@ class TabCalidad(ttk.Frame):
         img_w, img_h = pil_img.size
         ds = min(CANVAS_W / img_w, CANVAS_H / img_h, 1.0)
         disp_img = pil_img.resize((int(img_w*ds), int(img_h*ds)), Image.LANCZOS)
-        off_x = (CANVAS_W - int(img_w*ds)) // 2
-        off_y = (CANVAS_H - int(img_h*ds)) // 2
 
         win = tk.Toplevel(parent)
         win.title(f"Referencia — {cal_data['nombre']}")
         win.transient(parent)
         win.resizable(True, True)
-        canvas = tk.Canvas(win, width=CANVAS_W, height=CANVAS_H, bg="#222")
-        canvas.pack(fill="both", expand=True)
-        photo_ref = [None]
 
-        def _draw():
-            canvas.delete("all")
-            photo = ImageTk.PhotoImage(disp_img)
-            photo_ref[0] = photo
-            canvas.create_image(off_x, off_y, anchor="nw", image=photo)
-            for key in ("ref_x1","ref_y1","ref_x2","ref_y2"):
+        def _draw_ref(cv):
+            for key in ("ref_x1", "ref_y1", "ref_x2", "ref_y2"):
                 if cal_data.get(key) is None:
                     return
-            x1c = cal_data["ref_x1"]*ds+off_x; y1c = cal_data["ref_y1"]*ds+off_y
-            x2c = cal_data["ref_x2"]*ds+off_x; y2c = cal_data["ref_y2"]*ds+off_y
-            canvas.create_line(x1c,y1c,x2c,y2c, fill="#ffcc00", width=2)
-            for px,py in ((x1c,y1c),(x2c,y2c)):
-                canvas.create_oval(px-4,py-4,px+4,py+4, fill="#ffcc00", outline="")
-            mx,my = (x1c+x2c)/2,(y1c+y2c)/2
-            lbl = (f"{cal_data['ref_real_dist']} {cal_data.get('unit','µm')}  "
-                   f"= {cal_data['ref_px_dist']:.1f} px")
-            canvas.create_text(mx+1,my-11,text=lbl,fill="#000",font=("TkDefaultFont",9,"bold"))
-            canvas.create_text(mx,my-12,text=lbl,fill="#ffcc00",font=("TkDefaultFont",9,"bold"))
-        _draw()
-        info = ttk.Label(win,
+            x1c, y1c = _i2c_ref(cal_data["ref_x1"] * ds, cal_data["ref_y1"] * ds)
+            x2c, y2c = _i2c_ref(cal_data["ref_x2"] * ds, cal_data["ref_y2"] * ds)
+            cv.create_line(x1c, y1c, x2c, y2c, fill="#ffcc00", width=2)
+            for px, py in ((x1c, y1c), (x2c, y2c)):
+                cv.create_oval(px-4, py-4, px+4, py+4, fill="#ffcc00", outline="")
+            mx, my = (x1c + x2c) / 2, (y1c + y2c) / 2
+            lbl = (f"{cal_data['ref_real_dist']} {cal_data.get('unit','µm')}"
+                   f" = {cal_data['ref_px_dist']:.1f} px")
+            cv.create_text(mx+1, my-11, text=lbl, fill="#000", font=("TkDefaultFont", 9, "bold"))
+            cv.create_text(mx,   my-12, text=lbl, fill="#ffcc00", font=("TkDefaultFont", 9, "bold"))
+
+        canvas, _show_ref, _reset_ref, _c2i_ref, _i2c_ref = self._make_zoom_pan_preview(
+            win, CANVAS_W, CANVAS_H, on_redraw=_draw_ref)
+        canvas.pack(fill="both", expand=True)
+
+        info_row = ttk.Frame(win, padding=(8, 4))
+        info_row.pack(fill="x")
+        ttk.Label(info_row,
             text=(f"{cal_data['nombre']}  |  {cal_data.get('px_per_unit',0):.4f} px/{cal_data.get('unit','µm')}"
                   f"  |  {1/cal_data['px_per_unit']:.4f} {cal_data.get('unit','µm')}/px"
                   if cal_data.get("px_per_unit") else "Sin datos de escala"),
-            anchor="center")
-        info.pack(fill="x", pady=4)
-        ttk.Button(win, text="Cerrar", command=win.destroy).pack(pady=(0,8))
+            anchor="w").pack(side="left")
+        ttk.Button(info_row, text="Reset zoom", command=_reset_ref).pack(side="right")
+        ttk.Button(info_row, text="Cerrar", command=win.destroy).pack(side="right", padx=6)
+
+        _show_ref(disp_img)
 
     def _capture_for_calibration(self, parent):
         """Abre un mini-popup de camara y devuelve (PIL Image, Path destino) o (None, None)."""
@@ -1273,7 +1284,7 @@ class TabCalidad(ttk.Frame):
         win.grab_set()
         win.resizable(False, False)
 
-        lbl, _show_cal, _reset_cal = self._make_zoom_pan_preview(win, PREV_W, PREV_H)
+        lbl, _show_cal, _reset_cal, _c2i_cal, _i2c_cal = self._make_zoom_pan_preview(win, PREV_W, PREV_H)
         lbl.pack()
         status_var = tk.StringVar(value="Previsualizacion en vivo — apunta a la barra de escala")
         ttk.Label(win, textvariable=status_var, anchor="center").pack(fill="x", pady=(2, 0))
@@ -1393,13 +1404,12 @@ class TabCalidad(ttk.Frame):
         CANVAS_W, CANVAS_H = 820, 560
         img_w, img_h = pil_img.size
         ds = min(CANVAS_W / img_w, CANVAS_H / img_h, 1.0)
-        disp_w, disp_h = int(img_w*ds), int(img_h*ds)
-        off_x = (CANVAS_W-disp_w)//2; off_y = (CANVAS_H-disp_h)//2
+        disp_w, disp_h = int(img_w * ds), int(img_h * ds)
         disp_img = pil_img.resize((disp_w, disp_h), Image.LANCZOS)
 
-        result = [None]
+        result  = [None]
         pending = []
-        ref = {}
+        ref     = {}
 
         win = tk.Toplevel(parent)
         win.title("Nueva calibracion — marca la distancia de referencia")
@@ -1407,49 +1417,51 @@ class TabCalidad(ttk.Frame):
         win.grab_set()
         win.resizable(True, True)
 
-        canvas = tk.Canvas(win, width=CANVAS_W, height=CANVAS_H, bg="#222", cursor="crosshair")
-        canvas.pack(fill="both", expand=True)
-        photo_ref_holder = [None]
-
         instr_var = tk.StringVar(value="Paso 1: clic en el primer punto de la referencia conocida")
         ttk.Label(win, textvariable=instr_var, anchor="center",
-                  font=("TkDefaultFont",9,"bold")).pack(fill="x", pady=(4,2))
+                  font=("TkDefaultFont", 9, "bold")).pack(fill="x", pady=(4, 2))
+
+        # Anotaciones dibujadas encima del canvas tras cada render
+        def _draw_annotations(cv):
+            if pending:
+                px, py = _i2c(pending[0][0], pending[0][1])
+                cv.create_oval(px-5, py-5, px+5, py+5, fill="#ff4444", outline="white", width=1)
+            if ref:
+                x1c, y1c = _i2c(ref["x1"], ref["y1"])
+                x2c, y2c = _i2c(ref["x2"], ref["y2"])
+                cv.create_line(x1c, y1c, x2c, y2c, fill="#ffcc00", width=2)
+                for px, py in ((x1c, y1c), (x2c, y2c)):
+                    cv.create_oval(px-4, py-4, px+4, py+4, fill="#ffcc00", outline="")
+                mx, my = (x1c + x2c) / 2, (y1c + y2c) / 2
+                lbl = f"{ref.get('real_dist','?')} {ref.get('unit','µm')} = {ref['px_dist']:.1f} px"
+                cv.create_text(mx+1, my-11, text=lbl, fill="#000", font=("TkDefaultFont", 9, "bold"))
+                cv.create_text(mx,   my-12, text=lbl, fill="#ffcc00", font=("TkDefaultFont", 9, "bold"))
+
+        canvas, _show_wiz, _reset_wiz, _c2i, _i2c = self._make_zoom_pan_preview(
+            win, CANVAS_W, CANVAS_H, on_redraw=_draw_annotations)
+        canvas.pack(fill="both", expand=True)
 
         def _redraw():
-            canvas.delete("all")
-            photo = ImageTk.PhotoImage(disp_img)
-            photo_ref_holder[0] = photo
-            canvas.create_image(off_x, off_y, anchor="nw", image=photo)
-            if pending:
-                px,py = pending[0][0]*ds+off_x, pending[0][1]*ds+off_y
-                canvas.create_oval(px-5,py-5,px+5,py+5,fill="#ff4444",outline="white",width=1)
-            if ref:
-                x1c=ref["x1"]*ds+off_x; y1c=ref["y1"]*ds+off_y
-                x2c=ref["x2"]*ds+off_x; y2c=ref["y2"]*ds+off_y
-                canvas.create_line(x1c,y1c,x2c,y2c,fill="#ffcc00",width=2)
-                for px,py in ((x1c,y1c),(x2c,y2c)):
-                    canvas.create_oval(px-4,py-4,px+4,py+4,fill="#ffcc00",outline="")
-                mx,my=(x1c+x2c)/2,(y1c+y2c)/2
-                lbl = f"{ref.get('real_dist','?')} {ref.get('unit','µm')} = {ref['px_dist']:.1f} px"
-                canvas.create_text(mx+1,my-11,text=lbl,fill="#000",font=("TkDefaultFont",9,"bold"))
-                canvas.create_text(mx,my-12,text=lbl,fill="#ffcc00",font=("TkDefaultFont",9,"bold"))
+            _show_wiz(disp_img)
 
         unit_var = tk.StringVar(value="µm")
 
         def _on_click(event):
-            ix = (event.x - off_x) / ds; iy = (event.y - off_y) / ds
-            if not (0 <= ix <= img_w and 0 <= iy <= img_h):
-                return
             if ref:
+                return
+            # Convertir coords del canvas a coords en disp_img, luego a imagen original
+            dx, dy = _c2i(event.x, event.y)
+            ix, iy = dx / ds, dy / ds
+            if not (0 <= ix <= img_w and 0 <= iy <= img_h):
                 return
             pending.append((ix, iy))
             _redraw()
             if len(pending) < 2:
                 instr_var.set("Paso 2: clic en el segundo punto")
                 return
-            x1,y1 = pending[0]; x2,y2 = pending[1]
+            x1, y1 = pending[0]; x2, y2 = pending[1]
             pending.clear()
-            px_d = ((x2-x1)**2+(y2-y1)**2)**0.5
+            px_d = ((x2-x1)**2 + (y2-y1)**2) ** 0.5
             real = simpledialog.askfloat(
                 "Distancia de referencia",
                 f"Distancia real entre los dos puntos ({unit_var.get()}):",
@@ -1458,21 +1470,23 @@ class TabCalidad(ttk.Frame):
                 instr_var.set("Cancelado. Vuelve a marcar los puntos.")
                 _redraw()
                 return
-            ref.update({"x1":x1,"y1":y1,"x2":x2,"y2":y2,
-                        "px_dist":px_d,"real_dist":real,"unit":unit_var.get()})
-            instr_var.set(f"Referencia marcada: {real} {unit_var.get()} = {px_d:.1f} px  |  Completar arriba y guardar.")
+            ref.update({"x1": x1, "y1": y1, "x2": x2, "y2": y2,
+                        "px_dist": px_d, "real_dist": real, "unit": unit_var.get()})
+            instr_var.set(
+                f"Referencia marcada: {real} {unit_var.get()} = {px_d:.1f} px  |  Completar y guardar.")
             _redraw()
 
         canvas.bind("<Button-1>", _on_click)
 
-        ctrl = ttk.Frame(win, padding=(8,4)); ctrl.pack(fill="x")
+        ctrl = ttk.Frame(win, padding=(8, 4)); ctrl.pack(fill="x")
         ttk.Label(ctrl, text="Unidad:").pack(side="left")
         ttk.Combobox(ctrl, textvariable=unit_var,
-                     values=["µm","mm","cm"], width=5, state="readonly").pack(side="left", padx=(4,0))
+                     values=["µm", "mm", "cm"], width=5, state="readonly").pack(side="left", padx=(4, 0))
         ttk.Button(ctrl, text="Reiniciar puntos",
                    command=lambda: (ref.clear(), pending.clear(),
                                     instr_var.set("Paso 1: clic en el primer punto"),
-                                    _redraw())).pack(side="left", padx=(12,0))
+                                    _redraw())).pack(side="left", padx=(12, 0))
+        ttk.Button(ctrl, text="Reset zoom", command=_reset_wiz).pack(side="left", padx=(12, 0))
 
         form = ttk.LabelFrame(win, text="Datos de la calibracion", padding=8)
         form.pack(fill="x", padx=8, pady=(0,4))
@@ -1966,7 +1980,7 @@ class TabCalidad(ttk.Frame):
                 sv.set(str(counts.get(category, 0)))
 
         # Preview con zoom/pan
-        lbl_preview, _show_preview, _reset_preview = self._make_zoom_pan_preview(
+        lbl_preview, _show_preview, _reset_preview, _c2i_prev, _i2c_prev = self._make_zoom_pan_preview(
             main_pane, PREVIEW_W, PREVIEW_H)
         lbl_preview.grid(row=0, column=1, sticky="nsew")
 

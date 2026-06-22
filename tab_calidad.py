@@ -1918,7 +1918,7 @@ class TabCalidad(ttk.Frame):
         show_contours_var = tk.BooleanVar(value=False)
         show_binary_var   = tk.BooleanVar(value=False)
         thresh_var        = tk.IntVar(value=0)              # 0 = Otsu automático
-        min_area_var      = tk.IntVar(value=IMAGEJ_AREA_UMBRAL)
+        min_area_var      = tk.IntVar(value=getattr(self, "_cam_min_area", IMAGEJ_AREA_UMBRAL))
 
         win = tk.Toplevel(self)
         win.title("Camara — Calidad")
@@ -2056,6 +2056,10 @@ class TabCalidad(ttk.Frame):
         def _on_min_area_change(*_):
             contours_cache[0] = None
             stats_cache[0] = None
+            try:
+                self._cam_min_area = int(min_area_var.get())
+            except Exception:
+                pass
 
         min_area_var.trace_add("write", _on_min_area_change)
 

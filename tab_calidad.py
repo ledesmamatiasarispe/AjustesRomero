@@ -1974,6 +1974,7 @@ class TabCalidad(ttk.Frame):
         main_pane = ttk.Frame(win)
         main_pane.pack(fill="both", expand=True)
         main_pane.columnconfigure(1, weight=1)
+        main_pane.columnconfigure(2, weight=0, minsize=210)
         main_pane.rowconfigure(0, weight=1)
 
         # Panel de stats (visible siempre, muestra area; conteo se agrega al activar)
@@ -2095,9 +2096,12 @@ class TabCalidad(ttk.Frame):
         meas_panel.grid(row=0, column=2, sticky="nsew", padx=(4, 0), pady=4)
         meas_tv = ttk.Treeview(meas_panel, columns=("tipo","valor"), show="headings", height=12,
                                selectmode="browse")
-        meas_tv.heading("tipo", text=""); meas_tv.column("tipo", width=20, anchor="center")
-        meas_tv.heading("valor", text="Valor"); meas_tv.column("valor", width=130, anchor="w")
+        meas_tv.heading("tipo", text=""); meas_tv.column("tipo", width=22, minwidth=22, stretch=False, anchor="center")
+        meas_tv.heading("valor", text="Valor"); meas_tv.column("valor", width=170, anchor="w", stretch=True)
+        meas_sb_x = ttk.Scrollbar(meas_panel, orient="horizontal", command=meas_tv.xview)
+        meas_tv.configure(xscrollcommand=meas_sb_x.set)
         meas_tv.pack(fill="both", expand=True)
+        meas_sb_x.pack(fill="x")
 
         ttk.Label(meas_panel, text="Shift+clic = agregar nodulo", foreground="#888",
                   font=("TkDefaultFont", 7)).pack(anchor="w")

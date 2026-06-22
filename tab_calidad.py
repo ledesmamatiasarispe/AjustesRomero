@@ -2086,20 +2086,24 @@ class TabCalidad(ttk.Frame):
         # ── Panel derecho: tabla de medidas + info de nódulo hover ─────────────
         meas_panel = ttk.LabelFrame(main_pane, text="Mediciones", padding=4)
         meas_panel.grid(row=0, column=2, sticky="nsew", padx=(4, 0), pady=4)
-        meas_tv = ttk.Treeview(meas_panel, columns=("n","valor"), show="headings", height=12,
+        meas_tv = ttk.Treeview(meas_panel, columns=("tipo","valor"), show="headings", height=12,
                                selectmode="browse")
-        meas_tv.heading("n", text="#"); meas_tv.column("n", width=24, anchor="center")
-        meas_tv.heading("valor", text="Distancia"); meas_tv.column("valor", width=120, anchor="w")
+        meas_tv.heading("tipo", text=""); meas_tv.column("tipo", width=20, anchor="center")
+        meas_tv.heading("valor", text="Valor"); meas_tv.column("valor", width=130, anchor="w")
         meas_tv.pack(fill="both", expand=True)
+
+        ttk.Label(meas_panel, text="Shift+clic = agregar nodulo", foreground="#888",
+                  font=("TkDefaultFont", 7)).pack(anchor="w")
 
         hover_lbl = ttk.Label(meas_panel, text="", justify="left",
                               foreground="#0077cc", wraplength=148)
-        hover_lbl.pack(fill="x", pady=(6, 0))
+        hover_lbl.pack(fill="x", pady=(4, 0))
 
         def _refresh_meas_tv():
             meas_tv.delete(*meas_tv.get_children())
-            for i, m in enumerate(meas_list_cam, 1):
-                meas_tv.insert("", "end", values=(str(i), m.get("label", "")))
+            for m in meas_list_cam:
+                tipo = "P" if m.get("type") == "particle" else "→"
+                meas_tv.insert("", "end", values=(tipo, m.get("label", "")))
 
         status_var = tk.StringVar(value=f"En vivo  {cam_w}×{cam_h}")
         ttk.Label(win, textvariable=status_var, anchor="center").pack(fill="x", pady=(2, 0))
@@ -2341,66 +2345,101 @@ class TabCalidad(ttk.Frame):
             _refresh_meas_tv()
             _show_frame(frame)
 
+        import threading as _threading
         _hover_after = [None]
+        _hover_computing = [False]
+
         def _on_canvas_motion(event):
-            # Solo procesar hover cuando el frame está congelado
-            if live[0]:
-                return
             if _hover_after[0]:
                 lbl_preview.after_cancel(_hover_after[0])
-            _hover_after[0] = lbl_preview.after(60, lambda: _check_hover(event.x, event.y))
+            ex, ey = event.x, event.y
+            _hover_after[0] = lbl_preview.after(50, lambda: _launch_hover(ex, ey))
 
-        def _check_hover(ex, ey):
-            if live[0]:
+        def _launch_hover(ex, ey):
+            if _hover_computing[0]:
                 return
-            cnts = contours_cache[0] or []
+            cnts = list(contours_cache[0] or [])
             if not cnts:
-                if hovered_particle[0] is not None:
-                    hovered_particle[0] = None
-                    hover_lbl.config(text="")
-                    if captured_frame[0] is not None: _show_frame(captured_frame[0])
+                _apply_hover(None, cnts)
                 return
-            import cv2 as _cv2
-            import numpy as np
-            dx, dy = _c2i_prev(ex, ey)
-            ox = dx * cam_w / PREVIEW_W; oy = dy * cam_h / PREVIEW_H
-            best_idx = None; best_dist = -1
-            for i, p in enumerate(cnts):
-                d = _cv2.pointPolygonTest(p["contour"], (float(ox), float(oy)), True)
-                if d >= 0:
-                    best_idx = i; best_dist = d; break
-                if best_idx is None or d > best_dist:
-                    best_idx = i; best_dist = d
-            # Solo resaltar si el cursor está dentro o muy cerca del contorno
-            idx = best_idx if (best_dist is not None and best_dist >= -15) else None
-            if idx != hovered_particle[0]:
-                hovered_particle[0] = idx
-                if idx is not None:
-                    p = cnts[idx]
-                    cal = next((c for c in _cals_cam if c["nombre"] == cam_cal_var.get()), None)
-                    if cal and cal.get("px_per_unit"):
-                        pu = cal["px_per_unit"]
-                        unit = cal.get("unit", "µm")
-                        diam = p.get("diam_px", 0) / pu
-                        area = p.get("area_px", 0) / (pu ** 2)
-                        hover_lbl.config(text=(
-                            f"Diam: {diam:.2f} {unit}\n"
-                            f"Area: {area:.4f} {unit}²\n"
-                            f"Circ: {p['circ']:.3f}\n"
-                            f"Clase: {'Nodular' if p['circ']>=0.5 else 'Vermicular'}"
-                        ))
-                    else:
-                        hover_lbl.config(text=(
-                            f"Diam: {p.get('diam_px',0):.1f} px\n"
-                            f"Area: {p.get('area_px',0):.0f} px²\n"
-                            f"Circ: {p['circ']:.3f}"
-                        ))
+            # Capturar estado de zoom/pan en el hilo principal antes de pasarlo
+            dx0, dy0 = _c2i_prev(ex, ey)
+            ox = dx0 * cam_w / PREVIEW_W
+            oy = dy0 * cam_h / PREVIEW_H
+            _hover_computing[0] = True
+            def _worker():
+                try:
+                    import cv2 as _cv2
+                    best_idx = None; best_dist = -9999.0
+                    for i, p in enumerate(cnts):
+                        d = _cv2.pointPolygonTest(p["contour"], (float(ox), float(oy)), True)
+                        if d >= 0:
+                            best_idx = i; best_dist = d; break
+                        if d > best_dist:
+                            best_idx = i; best_dist = d
+                    idx = best_idx if best_dist is not None and best_dist >= -15 else None
+                except Exception:
+                    idx = None
+                finally:
+                    _hover_computing[0] = False
+                if win.winfo_exists():
+                    win.after(0, lambda: _apply_hover(idx, cnts))
+            _threading.Thread(target=_worker, daemon=True).start()
+
+        def _apply_hover(idx, cnts):
+            if idx == hovered_particle[0]:
+                return
+            hovered_particle[0] = idx
+            if idx is not None and 0 <= idx < len(cnts):
+                p = cnts[idx]
+                cal = next((c for c in _cals_cam if c["nombre"] == cam_cal_var.get()), None)
+                if cal and cal.get("px_per_unit"):
+                    pu = cal["px_per_unit"]; unit = cal.get("unit", "µm")
+                    diam = p.get("diam_px", 0) / pu
+                    area = p.get("area_px", 0) / (pu ** 2)
+                    hover_lbl.config(text=(
+                        f"Diam: {diam:.2f} {unit}\n"
+                        f"Area: {area:.4f} {unit}²\n"
+                        f"Circ: {p['circ']:.3f}\n"
+                        f"{'Nodular' if p['circ']>=0.5 else 'Vermicular'}"
+                    ))
                 else:
-                    hover_lbl.config(text="")
-                if captured_frame[0] is not None:
-                    _show_frame(captured_frame[0])
+                    hover_lbl.config(text=(
+                        f"Diam: {p.get('diam_px',0):.1f} px\n"
+                        f"Area: {p.get('area_px',0):.0f} px²\n"
+                        f"Circ: {p['circ']:.3f}"
+                    ))
+            else:
+                hover_lbl.config(text="")
+            # Redibujar solo si está congelado (en live el loop lo hace solo)
+            if captured_frame[0] is not None:
+                _show_frame(captured_frame[0])
+
+        def _on_shift_click(event):
+            """Shift+clic: agrega el nódulo bajo el cursor a la tabla sin pausar."""
+            idx = hovered_particle[0]
+            cnts = contours_cache[0] or []
+            if idx is None or idx >= len(cnts):
+                return
+            p = cnts[idx]
+            cal = next((c for c in _cals_cam if c["nombre"] == cam_cal_var.get()), None)
+            if cal and cal.get("px_per_unit"):
+                pu = cal["px_per_unit"]; unit = cal.get("unit", "µm")
+                diam = p.get("diam_px", 0) / pu
+                area = p.get("area_px", 0) / (pu ** 2)
+                label = (f"D:{diam:.2f}{unit}  A:{area:.3f}{unit}²  "
+                         f"C:{p['circ']:.2f}  "
+                         f"{'Nod' if p['circ']>=0.5 else 'Verm'}")
+            else:
+                label = (f"D:{p.get('diam_px',0):.1f}px  "
+                         f"A:{p.get('area_px',0):.0f}px²  "
+                         f"C:{p['circ']:.2f}")
+            meas_list_cam.append({"type": "particle", "label": label})
+            meas_status_var.set(f"{len(meas_list_cam)} entrada(s)")
+            _refresh_meas_tv()
 
         lbl_preview.bind("<Button-1>", _on_canvas_click)
+        lbl_preview.bind("<Shift-Button-1>", _on_shift_click)
         lbl_preview.bind("<Double-Button-1>", lambda e: None)
         lbl_preview.bind("<Motion>", _on_canvas_motion)
 

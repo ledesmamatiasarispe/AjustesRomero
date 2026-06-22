@@ -2553,8 +2553,6 @@ class TabCalidad(ttk.Frame):
             contours_cache[0] = None
             stats_cache[0] = None
             frame_counter[0] = 0
-            # El panel siempre queda visible (muestra el área analizada)
-            stats_panel.grid()
             if captured_frame[0] is not None:
                 _show_frame(captured_frame[0])
             elif not show_contours_var.get():

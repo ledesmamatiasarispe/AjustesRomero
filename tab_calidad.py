@@ -1960,6 +1960,8 @@ class TabCalidad(ttk.Frame):
         meas_pending_cam  = []   # primer punto pendiente (coords originales de cámara)
         meas_list_cam     = []   # medidas completadas
         _cnt_computing    = [False]   # flag hilo de detección de contornos
+        import queue as _queue
+        _stats_queue = _queue.Queue()   # resultados de stats pasan por queue (thread-safe)
 
         win = tk.Toplevel(self)
         win.title(f"Camara — Calidad  [{cam_w}×{cam_h}]")
@@ -2226,9 +2228,8 @@ class TabCalidad(ttk.Frame):
                             cnts = []; sts = None
                         finally:
                             _cnt_computing[0] = False
-                        contours_cache[0] = cnts; stats_cache[0] = sts
-                        if win.winfo_exists():
-                            win.after(0, lambda: _update_stats_panel(sts))
+                        contours_cache[0] = cnts
+                        _stats_queue.put(sts)   # main thread lo lee en _update_live
                     import threading as _th; _th.Thread(target=_cnt_worker, daemon=True).start()
             else:
                 if do_contours and contours_cache[0] is None:
@@ -2271,7 +2272,17 @@ class TabCalidad(ttk.Frame):
                 return
             ret, frame = cap.read()
             if ret:
-                _show_frame(frame)
+                try:
+                    _show_frame(frame)
+                except Exception:
+                    pass   # nunca dejar morir el loop por una excepción en _show_frame
+            # Leer stats que vienen del hilo de detección (thread-safe via queue)
+            try:
+                sts = _stats_queue.get_nowait()
+                stats_cache[0] = sts
+                _update_stats_panel(sts)
+            except _queue.Empty:
+                pass
             # Hover: sondear posición del mouse cada 3 frames (~100ms) sin <Motion>
             if show_contours_var.get() and frame_counter[0] % 3 == 0:
                 try:

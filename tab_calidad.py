@@ -1959,6 +1959,7 @@ class TabCalidad(ttk.Frame):
         measure_var       = tk.BooleanVar(value=False)
         meas_pending_cam  = []   # primer punto pendiente (coords originales de cámara)
         meas_list_cam     = []   # medidas completadas
+        _cnt_computing    = [False]   # flag hilo de detección de contornos
 
         win = tk.Toplevel(self)
         win.title(f"Camara — Calidad  [{cam_w}×{cam_h}]")
@@ -2211,20 +2212,24 @@ class TabCalidad(ttk.Frame):
 
             if live[0]:
                 frame_counter[0] += 1
-                if do_contours and frame_counter[0] % 25 == 1:
-                    try:
-                        contours_cache[0] = self._get_nodule_contours(
-                            frame_bgr, blur_size=11, threshold=thresh_var.get(),
-                            min_area=min_area_var.get())
-                    except Exception:
-                        contours_cache[0] = []
-                    try:
-                        stats_cache[0] = self._count_nodules_opencv(
-                            frame_bgr, px_per_mm=px_mm, threshold=thresh_var.get(),
-                            min_area=min_area_var.get())
-                    except Exception:
-                        stats_cache[0] = None
-                    _update_stats_panel(stats_cache[0])
+                if do_contours and frame_counter[0] % 25 == 1 and not _cnt_computing[0]:
+                    _cnt_computing[0] = True
+                    _fbg = frame_bgr.copy()
+                    _t = thresh_var.get(); _ma = min_area_var.get(); _pmm = px_mm
+                    def _cnt_worker():
+                        try:
+                            cnts = self._get_nodule_contours(_fbg, blur_size=11,
+                                                             threshold=_t, min_area=_ma)
+                            sts  = self._count_nodules_opencv(_fbg, px_per_mm=_pmm,
+                                                              threshold=_t, min_area=_ma)
+                        except Exception:
+                            cnts = []; sts = None
+                        finally:
+                            _cnt_computing[0] = False
+                        contours_cache[0] = cnts; stats_cache[0] = sts
+                        if win.winfo_exists():
+                            win.after(0, lambda: _update_stats_panel(sts))
+                    import threading as _th; _th.Thread(target=_cnt_worker, daemon=True).start()
             else:
                 if do_contours and contours_cache[0] is None:
                     try:
@@ -2428,6 +2433,7 @@ class TabCalidad(ttk.Frame):
             meas_list_cam.append({"type": "particle", "label": label})
             meas_status_var.set(f"{len(meas_list_cam)} entrada(s)")
             _refresh_meas_tv()
+            return "break"   # evita que <Button-1> también se dispare
 
         lbl_preview.bind("<Button-1>", _on_canvas_click)
         lbl_preview.bind("<Shift-Button-1>", _on_shift_click)

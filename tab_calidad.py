@@ -1289,6 +1289,15 @@ class TabCalidad(ttk.Frame):
         status_var = tk.StringVar(value="Previsualizacion en vivo — apunta a la barra de escala")
         ttk.Label(win, textvariable=status_var, anchor="center").pack(fill="x", pady=(2, 0))
 
+        _cals_cap  = self._cal_load()
+        _cap_names = ["(nueva calibracion)"] + [c["nombre"] for c in _cals_cap]
+        cap_cal_var = tk.StringVar(value=_cap_names[0])
+        cal_row_cap = ttk.Frame(win, padding=(8, 2))
+        cal_row_cap.pack(fill="x")
+        ttk.Label(cal_row_cap, text="Aumento / calibracion:").pack(side="left")
+        ttk.Combobox(cal_row_cap, textvariable=cap_cal_var, values=_cap_names,
+                     state="readonly", width=28).pack(side="left", padx=(6, 0))
+
         btn_row = ttk.Frame(win, padding=(8, 6))
         btn_row.pack(fill="x")
         btn_cap = ttk.Button(btn_row, text="Capturar")
@@ -1987,6 +1996,25 @@ class TabCalidad(ttk.Frame):
         status_var = tk.StringVar(value="Previsualizacion en vivo")
         ttk.Label(win, textvariable=status_var, anchor="center").pack(fill="x", pady=(2, 0))
 
+        # ── Selector de calibración ──────────────────────────────────────────
+        _cals_cam  = self._cal_load()
+        _cal_names = ["(sin calibrar)"] + [c["nombre"] for c in _cals_cam]
+        cam_cal_var = tk.StringVar(value=_cal_names[1] if len(_cal_names) > 1 else _cal_names[0])
+
+        def _cam_cal_id():
+            name = cam_cal_var.get()
+            c = next((x for x in _cals_cam if x["nombre"] == name), None)
+            return c["id"] if c else None
+
+        def _cam_px_mm():
+            return self._cal_get_px_per_mm(_cam_cal_id())
+
+        cal_row = ttk.Frame(win, padding=(8, 2))
+        cal_row.pack(fill="x")
+        ttk.Label(cal_row, text="Aumento / calibracion:").pack(side="left")
+        ttk.Combobox(cal_row, textvariable=cam_cal_var, values=_cal_names,
+                     state="readonly", width=28).pack(side="left", padx=(6, 0))
+
         btn_row = ttk.Frame(win, padding=(8, 6))
         btn_row.pack(fill="x")
         btn_file = ttk.Button(btn_row, text="Abrir archivo")
@@ -2045,7 +2073,7 @@ class TabCalidad(ttk.Frame):
             return binary
 
         def _show_frame(frame_bgr):
-            px_mm = self._cal_get_px_per_mm(None)
+            px_mm = _cam_px_mm()
             do_contours = show_contours_var.get()
 
             if live[0]:
@@ -2191,17 +2219,18 @@ class TabCalidad(ttk.Frame):
             if material is None:
                 return
             fname = f"camara_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.jpg"
-            comment, cal_id = self._ask_image_metadata(win, fname)
+            comment = simpledialog.askstring("Observacion", "Comentario para la foto:", parent=win)
             if comment is None:
                 return
             dest_dir = Path(ensure_quality_images_dir())
             dest = dest_dir / fname
             cv2.imwrite(str(dest), frame)
+            cal_id = _cam_cal_id()
             item = {
                 "id": uuid.uuid4().hex,
                 "nombre": fname,
                 "path": str(dest),
-                "comentario": comment,
+                "comentario": comment.strip(),
                 "added_at": datetime.now().isoformat(timespec="seconds"),
             }
             if cal_id:
@@ -2234,22 +2263,23 @@ class TabCalidad(ttk.Frame):
             if material is None:
                 return
             fname = f"camara_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.jpg"
-            comment, cal_id = self._ask_image_metadata(win, fname)
+            comment = simpledialog.askstring("Observacion", "Comentario para la foto:", parent=win)
             if comment is None:
                 return
             dest_dir = Path(ensure_quality_images_dir())
             dest = dest_dir / fname
             cv2.imwrite(str(dest), frame)
+            cal_id = _cam_cal_id()
             sample_item = {
                 "id": uuid.uuid4().hex,
                 "nombre": fname,
                 "path": str(dest),
-                "comentario": comment,
+                "comentario": comment.strip(),
                 "added_at": datetime.now().isoformat(timespec="seconds"),
             }
             if cal_id:
                 sample_item["calibration_id"] = cal_id
-            px_per_mm = self._cal_get_px_per_mm(cal_id)
+            px_per_mm = _cam_px_mm()
             status_var.set(f"Analizando nodulos...")
             win.update_idletasks()
             try:

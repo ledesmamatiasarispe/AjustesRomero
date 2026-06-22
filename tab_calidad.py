@@ -1273,7 +1273,15 @@ class TabCalidad(ttk.Frame):
             messagebox.showinfo("Camara", "No se pudo abrir la camara.", parent=parent)
             return None, None
 
-        PREV_W, PREV_H = 640, 480
+        for res in ((3840, 2160), (1920, 1080), (1280, 720)):
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH,  res[0])
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, res[1])
+            ret, test = cap.read()
+            if ret and test is not None:
+                break
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        PREV_W, PREV_H = 820, 616
         captured = [None]
         live = [True]
         result_path = [None]
@@ -1319,13 +1327,19 @@ class TabCalidad(ttk.Frame):
             win.after(33, _update)
 
         def _do_capture():
-            ret, frame = cap.read()
-            if not ret:
+            # Vaciar buffer para obtener el frame mas reciente
+            frame = None
+            for _ in range(3):
+                ret, f = cap.read()
+                if ret:
+                    frame = f
+            if frame is None:
                 return
             live[0] = False
             captured[0] = frame
+            h, w = frame.shape[:2]
             _show(frame)
-            status_var.set("Foto capturada. Usa 'Usar esta foto' o 'Capturar' para repetir.")
+            status_var.set(f"Capturada {w}×{h}. Usa 'Usar esta foto' o 'Repetir'.")
             btn_cap.config(text="Repetir")
             btn_use.config(state="normal")
 
@@ -1335,7 +1349,7 @@ class TabCalidad(ttk.Frame):
                 return
             dest = self._cal_images_dir() / \
                 f"cal_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}.jpg"
-            cv2.imwrite(str(dest), frame)
+            cv2.imwrite(str(dest), frame, [cv2.IMWRITE_JPEG_QUALITY, 97])
             result_path[0] = dest
             _close()
 
@@ -1909,7 +1923,18 @@ class TabCalidad(ttk.Frame):
                 parent=self)
             return
 
-        PREVIEW_W, PREVIEW_H = 640, 480
+        # Solicitar máxima resolución y buffer mínimo
+        for res in ((3840, 2160), (1920, 1080), (1280, 720)):
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH,  res[0])
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, res[1])
+            ret, test = cap.read()
+            if ret and test is not None:
+                break
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        cam_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        cam_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+
+        PREVIEW_W, PREVIEW_H = 820, 616
         captured_frame = [None]
         live = [True]
         contours_cache = [None]
@@ -1921,7 +1946,7 @@ class TabCalidad(ttk.Frame):
         min_area_var      = tk.IntVar(value=getattr(self, "_cam_min_area", IMAGEJ_AREA_UMBRAL))
 
         win = tk.Toplevel(self)
-        win.title("Camara — Calidad")
+        win.title(f"Camara — Calidad  [{cam_w}×{cam_h}]")
         win.transient(self.winfo_toplevel())
         win.resizable(True, True)
 
@@ -1993,7 +2018,7 @@ class TabCalidad(ttk.Frame):
             main_pane, PREVIEW_W, PREVIEW_H)
         lbl_preview.grid(row=0, column=1, sticky="nsew")
 
-        status_var = tk.StringVar(value="Previsualizacion en vivo")
+        status_var = tk.StringVar(value=f"En vivo  {cam_w}×{cam_h}")
         ttk.Label(win, textvariable=status_var, anchor="center").pack(fill="x", pady=(2, 0))
 
         # ── Selector de calibración ──────────────────────────────────────────
@@ -2212,11 +2237,20 @@ class TabCalidad(ttk.Frame):
             dlg.wait_window()
             return picked["v"]
 
+        def _fresh_frame():
+            """Lee 3 frames para vaciar el buffer y devuelve el más reciente."""
+            f = None
+            for _ in range(3):
+                ret, fr = cap.read()
+                if ret:
+                    f = fr
+            return f
+
         def _do_save():
             frame = captured_frame[0]
             if frame is None:
-                ret, frame = cap.read()
-                if not ret:
+                frame = _fresh_frame()
+                if frame is None:
                     messagebox.showinfo("Camara", "No se pudo obtener imagen.", parent=win)
                     return
             material = _pick_material()
@@ -2228,7 +2262,7 @@ class TabCalidad(ttk.Frame):
                 return
             dest_dir = Path(ensure_quality_images_dir())
             dest = dest_dir / fname
-            cv2.imwrite(str(dest), frame)
+            cv2.imwrite(str(dest), frame, [cv2.IMWRITE_JPEG_QUALITY, 97])
             cal_id = _cam_cal_id()
             item = {
                 "id": uuid.uuid4().hex,
@@ -2259,8 +2293,8 @@ class TabCalidad(ttk.Frame):
         def _do_save_and_count():
             frame = captured_frame[0]
             if frame is None:
-                ret, frame = cap.read()
-                if not ret:
+                frame = _fresh_frame()
+                if frame is None:
                     messagebox.showinfo("Camara", "No se pudo obtener imagen.", parent=win)
                     return
             material = _pick_material()
@@ -2272,7 +2306,7 @@ class TabCalidad(ttk.Frame):
                 return
             dest_dir = Path(ensure_quality_images_dir())
             dest = dest_dir / fname
-            cv2.imwrite(str(dest), frame)
+            cv2.imwrite(str(dest), frame, [cv2.IMWRITE_JPEG_QUALITY, 97])
             cal_id = _cam_cal_id()
             sample_item = {
                 "id": uuid.uuid4().hex,

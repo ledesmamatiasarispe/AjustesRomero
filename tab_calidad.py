@@ -2343,11 +2343,16 @@ class TabCalidad(ttk.Frame):
 
         _hover_after = [None]
         def _on_canvas_motion(event):
+            # Solo procesar hover cuando el frame está congelado
+            if live[0]:
+                return
             if _hover_after[0]:
                 lbl_preview.after_cancel(_hover_after[0])
             _hover_after[0] = lbl_preview.after(60, lambda: _check_hover(event.x, event.y))
 
         def _check_hover(ex, ey):
+            if live[0]:
+                return
             cnts = contours_cache[0] or []
             if not cnts:
                 if hovered_particle[0] is not None:

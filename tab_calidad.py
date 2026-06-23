@@ -1771,7 +1771,7 @@ class TabCalidad(ttk.Frame):
         for key, label, color in _MAT_ROWS:
             rf = ttk.Frame(nod_section)
             rf.pack(fill="x", pady=1)
-            tk.Label(rf, text="■", fg=color, bg=stats_panel.cget("background"),
+            tk.Label(rf, text="■", fg=color,
                      font=("TkDefaultFont", 10)).pack(side="left")
             ttk.Label(rf, text=label + ":", anchor="w", width=13).pack(side="left")
             sv = tk.StringVar(value="—")

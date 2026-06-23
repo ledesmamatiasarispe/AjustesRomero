@@ -1758,25 +1758,7 @@ class TabCalidad(ttk.Frame):
             dist_vars[category] = sv
             ttk.Label(rf, textvariable=sv, foreground="#66bbff", anchor="w").pack(side="left")
 
-        # ── Clasificación por material (color) ────────────────────────────────
-        ttk.Separator(nod_section, orient="horizontal").pack(fill="x", pady=(6, 4))
-        ttk.Label(nod_section, text="Por material (color):", anchor="w",
-                  font=("TkDefaultFont", 8, "bold")).pack(fill="x")
-        mat_vars = {}
-        _MAT_ROWS = [
-            ("C",       "Grafito C",       self._MAT_COLOR_HEX["C"]),
-            ("MnS",     "Inclus. MnS",     self._MAT_COLOR_HEX["MnS"]),
-            ("rechupe", "Rechupes",        self._MAT_COLOR_HEX["rechupe"]),
-        ]
-        for key, label, color in _MAT_ROWS:
-            rf = ttk.Frame(nod_section)
-            rf.pack(fill="x", pady=1)
-            tk.Label(rf, text="■", fg=color,
-                     font=("TkDefaultFont", 10)).pack(side="left")
-            ttk.Label(rf, text=label + ":", anchor="w", width=13).pack(side="left")
-            sv = tk.StringVar(value="—")
-            mat_vars[key] = sv
-            ttk.Label(rf, textvariable=sv, foreground="#66bbff", anchor="w").pack(side="left")
+        mat_vars = {}   # se rellena desde lam_section (ver más abajo)
 
         # ── Sección stats Laminar (ISO 945) ───────────────────────────────────
         lam_section = ttk.Frame(stats_panel)
@@ -1810,6 +1792,25 @@ class TabCalidad(ttk.Frame):
             ttk.Label(rf, text=short + ":", anchor="w", width=9).pack(side="left")
             sv = tk.StringVar(value="—")
             lam_dist_vars[category] = sv
+            ttk.Label(rf, textvariable=sv, foreground="#66bbff", anchor="w").pack(side="left")
+
+        # ── Clasificación por color (solo en laminar) ──────────────────────────
+        ttk.Separator(lam_section, orient="horizontal").pack(fill="x", pady=(6, 4))
+        ttk.Label(lam_section, text="Por color de imagen:", anchor="w",
+                  font=("TkDefaultFont", 8, "bold")).pack(fill="x")
+        _MAT_ROWS = [
+            ("C",       "Grafito C",    self._MAT_COLOR_HEX["C"]),
+            ("MnS",     "Inclus. MnS",  self._MAT_COLOR_HEX["MnS"]),
+            ("rechupe", "Rechupes",     self._MAT_COLOR_HEX["rechupe"]),
+        ]
+        for key, label, color in _MAT_ROWS:
+            rf = ttk.Frame(lam_section)
+            rf.pack(fill="x", pady=1)
+            tk.Label(rf, text="■", fg=color,
+                     font=("TkDefaultFont", 10)).pack(side="left")
+            ttk.Label(rf, text=label + ":", anchor="w", width=13).pack(side="left")
+            sv = tk.StringVar(value="—")
+            mat_vars[key] = sv
             ttk.Label(rf, textvariable=sv, foreground="#66bbff", anchor="w").pack(side="left")
 
         def _update_stats_panel(stats):
@@ -1859,6 +1860,9 @@ class TabCalidad(ttk.Frame):
             counts = stats.get("counts", {})
             for category, sv in lam_dist_vars.items():
                 sv.set(str(counts.get(category, 0)))
+            mat_counts = stats.get("mat_counts", {})
+            for key, sv in mat_vars.items():
+                sv.set(str(mat_counts.get(key, "—")))
 
         def _switch_analysis_mode(mode):
             analysis_mode_var.set(mode)
@@ -3463,6 +3467,8 @@ class TabCalidad(ttk.Frame):
             "n_mns_mm2":         round(n_mns_mm2, 2),
             "px_per_mm":         round(scale, 4),
             "flakes":            flakes,   # incluye grafito + MnS para el overlay
+            "mat_counts":        {k: sum(1 for f in flakes if f.get("classification") == k)
+                                  for k in ("C", "MnS", "rechupe")},
         }
 
     def _imagej_class_code(self, label):

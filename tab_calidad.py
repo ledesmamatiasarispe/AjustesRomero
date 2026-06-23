@@ -1697,6 +1697,7 @@ class TabCalidad(ttk.Frame):
         win.resizable(True, True)   # transient removido: permite el boton de maximizar
 
         hovered_particle = [None]   # índice en contours_cache[0] del nódulo bajo el cursor
+        _last_mouse      = [None]   # (x, y) relativo al canvas, actualizado por <Motion>
 
         # ── Layout principal: PanedWindow → stats | preview | medidas ──────────
         main_pane = ttk.PanedWindow(win, orient="horizontal")
@@ -2242,15 +2243,11 @@ class TabCalidad(ttk.Frame):
                     _update_stats_panel(sts)
             except _queue.Empty:
                 pass
-            # Hover: sondear posición del mouse cada 3 frames (~100ms) sin <Motion>
+            # Hover: usar posición guardada por <Motion> (compatible con Wayland/Linux)
             if show_contours_var.get() and frame_counter[0] % 3 == 0:
-                try:
-                    mx = lbl_preview.winfo_pointerx() - lbl_preview.winfo_rootx()
-                    my = lbl_preview.winfo_pointery() - lbl_preview.winfo_rooty()
-                    if 0 <= mx < PREVIEW_W and 0 <= my < PREVIEW_H:
-                        _launch_hover(mx, my)
-                except Exception:
-                    pass
+                pos = _last_mouse[0]
+                if pos is not None:
+                    _launch_hover(pos[0], pos[1])
             win.after(33, _update_live)
 
         def _enter_frozen():
@@ -2458,7 +2455,10 @@ class TabCalidad(ttk.Frame):
         lbl_preview.bind("<Button-1>", _on_canvas_click)
         lbl_preview.bind("<Shift-Button-1>", _on_shift_click)
         lbl_preview.bind("<Double-Button-1>", lambda e: None)
-        # <Motion> eliminado: hover se sondea dentro de _update_live
+        lbl_preview.bind("<Motion>", lambda e: _last_mouse.__setitem__(0, (e.x, e.y)))
+        lbl_preview.bind("<Leave>",  lambda e: (_last_mouse.__setitem__(0, None),
+                                                hovered_particle.__setitem__(0, None),
+                                                hover_lbl.config(text="")))
 
         def _del_last():
             if meas_list_cam: meas_list_cam.pop()

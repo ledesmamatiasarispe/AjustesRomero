@@ -1769,6 +1769,7 @@ class TabCalidad(ttk.Frame):
             ("aspect_ratio_prom",  "Largo/ancho"),
             ("morfologia_iso",     "Morfología ISO"),
             ("tam_clase",          "Tamaño clase"),
+            ("n_mns",              "Posibles MnS"),
         ]
         lam_stat_vars = {}
         for key, label in _LAM_ROWS:
@@ -1829,6 +1830,8 @@ class TabCalidad(ttk.Frame):
             morph = stats.get("morfologia_iso", "—")
             lam_stat_vars["morfologia_iso"].set(morph)
             lam_stat_vars["tam_clase"].set(stats.get("tam_clase", "") or dash)
+            n_mns = stats.get("n_mns", 0)
+            lam_stat_vars["n_mns"].set(f"{n_mns}  ({stats.get('n_mns_mm2', 0):.1f}/mm²)" if n_mns else "0")
             counts = stats.get("counts", {})
             for category, sv in lam_dist_vars.items():
                 sv.set(str(counts.get(category, 0)))
@@ -2099,7 +2102,9 @@ class TabCalidad(ttk.Frame):
             return binary
 
         def _lam_contour_color(flake):
-            """Colorea laminillas por tamaño (igual paleta que overlay nodular pero por longitud)."""
+            """Colorea por tipo: amarillo=MnS, rojo/verde/azul/gris=grafito por tamaño."""
+            if flake.get("particle_type") == "mns":
+                return (0, 220, 220)   # amarillo (BGR) — posible MnS
             length_um = flake.get("length_um") or (flake["length_px"] / max(_cam_px_mm() or IMAGEJ_RESOLUCION_PX_MM, 1)) * 1000
             if length_um >= 250:   # Clase 3
                 return (0, 60, 220)    # rojo-anaranjado (grandes)
@@ -2590,6 +2595,8 @@ class TabCalidad(ttk.Frame):
                     "morfologia_label":  stats.get("morfologia_label", ""),
                     "tam_clase":         stats.get("tam_clase", ""),
                     "counts":            dict(stats["counts"]),
+                    "n_mns":             stats.get("n_mns", 0),
+                    "n_mns_mm2":         stats.get("n_mns_mm2", 0),
                     "px_per_mm":         stats.get("px_per_mm", IMAGEJ_RESOLUCION_PX_MM),
                     # campos que _merge_imagej_stats necesita (dummy para compatibilidad)
                     "nodularidad": 0, "vermicular": 0,
@@ -2686,6 +2693,9 @@ class TabCalidad(ttk.Frame):
                     f"=== Promedio laminar camara ({n_scans} escaneo{'s' if n_scans > 1 else ''}) ===",
                     avg_block_lines,
                 )
+                mns_line = (f"Posibles inclusiones MnS: {stats.get('n_mns', 0)}"
+                            f"  ({stats.get('n_mns_mm2', 0):.1f}/mm²)"
+                            if stats.get("n_mns") else "")
                 self._append_observation_block(
                     f"Analisis laminar ISO 945 (camara) — escaneo {n_scans}",
                     [
@@ -2695,6 +2705,7 @@ class TabCalidad(ttk.Frame):
                         f"Laminillas/mm2: {fmt(stats['n_mm2'], 2)}",
                         f"Long. promedio: {fmt(stats.get('long_prom_um', 0), 1)} um",
                         f"Tamano predominante: {stats.get('tam_clase', '')}",
+                        mns_line,
                     ],
                 )
                 title_msg = "Analisis laminar"
@@ -3187,14 +3198,21 @@ class TabCalidad(ttk.Frame):
                 angle = angle + 90
             angle = float(angle % 180)
             aspect = length_px / max(width_px, 1.0)
+            # Clasificacion preliminar por forma:
+            # MnS son compactas/redondas; el grafito laminar es alargado
+            if circ >= 0.5 and aspect < 2.0:
+                ptype = "mns"
+            else:
+                ptype = "graphite"
             result.append({
-                "contour":     cnt,
-                "circ":        float(circ),
-                "length_px":   length_px,
-                "width_px":    width_px,
-                "aspect_ratio": float(aspect),
-                "angle":       angle,
-                "area_px":     float(area),
+                "contour":       cnt,
+                "circ":          float(circ),
+                "length_px":     length_px,
+                "width_px":      width_px,
+                "aspect_ratio":  float(aspect),
+                "angle":         angle,
+                "area_px":       float(area),
+                "particle_type": ptype,
             })
         return result
 
@@ -3237,39 +3255,57 @@ class TabCalidad(ttk.Frame):
                                             min_area=min_area, blur_size=5)
         if not flakes:
             return None
+        MNS_MAX_DIAM_UM = 30.0   # inclusiones MnS tipicas < 30 µm de diametro equivalente
         for f in flakes:
             f["length_um"] = (f["length_px"] / scale) * 1000.0
             f["width_um"]  = (f["width_px"]  / scale) * 1000.0
-        n_total = len(flakes)
+            equiv_diam_um  = 2.0 * (f["area_px"] / 3.14159) ** 0.5 / scale * 1000.0
+            f["equiv_diam_um"] = equiv_diam_um
+            # Refinamiento por tamaño: solo son MnS si son pequeñas
+            if f["particle_type"] == "mns" and equiv_diam_um > MNS_MAX_DIAM_UM:
+                f["particle_type"] = "graphite"
+
+        graphite = [f for f in flakes if f["particle_type"] == "graphite"]
+        mns      = [f for f in flakes if f["particle_type"] == "mns"]
+
+        # Si no hay grafito laminar pero si hay MnS, devolver igual con n_total=0
+        if not graphite:
+            return None
+
+        n_total = len(graphite)
         n_mm2   = n_total / area_mm2 if area_mm2 > 0 else 0
-        lengths = [f["length_um"] for f in flakes]
+        lengths = [f["length_um"] for f in graphite]
         counts  = {}
         for label, lo, hi in IMAGEJ_LIMITS:
             lo_um = lo * 1000; hi_um = hi * 1000
-            n = sum(1 for f in flakes if lo_um <= f["length_um"] < hi_um)
+            n = sum(1 for f in graphite if lo_um <= f["length_um"] < hi_um)
             if n:
                 counts[label] = n
-        fuera = sum(1 for f in flakes
+        fuera = sum(1 for f in graphite
                     if not any(lo*1000 <= f["length_um"] < hi*1000
                                for _, lo, hi in IMAGEJ_LIMITS))
         if fuera:
             counts["Fuera de clase"] = fuera
-        tam_clase    = self._imagej_majority_size_text(counts)
-        morph_type   = self._classify_laminar_morphology(flakes)
-        aspects      = [f["aspect_ratio"] for f in flakes]
+        tam_clase  = self._imagej_majority_size_text(counts)
+        morph_type = self._classify_laminar_morphology(graphite)
+        aspects    = [f["aspect_ratio"] for f in graphite]
+        n_mns      = len(mns)
+        n_mns_mm2  = n_mns / area_mm2 if area_mm2 > 0 else 0
         return {
-            "n_total":         n_total,
-            "n_mm2":           round(n_mm2, 2),
-            "long_prom_um":    round(float(np.mean(lengths)), 2),
-            "long_max_um":     round(float(np.max(lengths)), 2),
-            "long_min_um":     round(float(np.min(lengths)), 2),
+            "n_total":           n_total,
+            "n_mm2":             round(n_mm2, 2),
+            "long_prom_um":      round(float(np.mean(lengths)), 2),
+            "long_max_um":       round(float(np.max(lengths)), 2),
+            "long_min_um":       round(float(np.min(lengths)), 2),
             "aspect_ratio_prom": round(float(np.mean(aspects)), 2),
-            "morfologia_iso":  morph_type,
-            "morfologia_label": self._LAMINAR_MORPH_LABELS.get(morph_type, morph_type),
-            "tam_clase":       tam_clase,
-            "counts":          counts,
-            "px_per_mm":       round(scale, 4),
-            "flakes":          flakes,
+            "morfologia_iso":    morph_type,
+            "morfologia_label":  self._LAMINAR_MORPH_LABELS.get(morph_type, morph_type),
+            "tam_clase":         tam_clase,
+            "counts":            counts,
+            "n_mns":             n_mns,
+            "n_mns_mm2":         round(n_mns_mm2, 2),
+            "px_per_mm":         round(scale, 4),
+            "flakes":            flakes,   # incluye grafito + MnS para el overlay
         }
 
     def _imagej_class_code(self, label):

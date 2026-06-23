@@ -1939,7 +1939,6 @@ class TabCalidad(ttk.Frame):
         hover_lbl.pack(fill="x", pady=(4, 0))
 
         # Columnas dinámicas según los tipos de datos presentes
-        # Líneas → columna Distancia; Partículas → Diam, Area, Circ, Clase
         _COL_LINE = [("dist", "Distancia", 90, "w")]
         _COL_PART = [
             ("diam",  "Diám",  68, "e"),
@@ -1947,13 +1946,24 @@ class TabCalidad(ttk.Frame):
             ("circ",  "Circ",  46, "e"),
             ("clase", "Clase", 52, "w"),
         ]
+        _COL_LAM = [
+            ("long",  "Long",  68, "e"),
+            ("ancho", "Ancho", 60, "e"),
+            ("asp",   "Asp",   44, "e"),
+            ("ptype", "Tipo",  46, "w"),
+            ("clase", "Clase", 52, "w"),
+        ]
 
         def _rebuild_meas_table():
-            has_lines = any(m.get("type") != "particle" for m in meas_list_cam)
-            has_part  = any(m.get("type") == "particle"  for m in meas_list_cam)
+            has_lines    = any(m.get("type") != "particle" for m in meas_list_cam)
+            has_nod_part = any(m.get("type") == "particle" and m.get("subtype") != "laminar" for m in meas_list_cam)
+            has_lam_part = any(m.get("type") == "particle" and m.get("subtype") == "laminar"  for m in meas_list_cam)
             cols = [("tipo", "T", 22, "center")]
-            if has_lines: cols += _COL_LINE
-            if has_part:  cols += _COL_PART
+            if has_lines:    cols += _COL_LINE
+            if has_nod_part: cols += _COL_PART
+            if has_lam_part: cols += _COL_LAM
+            # deduplicar "clase" si aparece en ambas listas
+            seen = set(); cols = [c for c in cols if not (c[0] in seen or seen.add(c[0]))]
             col_ids = [c[0] for c in cols]
             meas_tv.configure(columns=col_ids)
             for cid, title, w, anch in cols:
@@ -1961,20 +1971,31 @@ class TabCalidad(ttk.Frame):
                 meas_tv.column(cid, width=w, minwidth=w, anchor=anch, stretch=False)
             meas_tv.delete(*meas_tv.get_children())
             for m in meas_list_cam:
-                is_p  = m.get("type") == "particle"
-                tipo  = "P" if is_p else "→"
-                row   = {"tipo": tipo}
+                is_p   = m.get("type") == "particle"
+                is_lam = is_p and m.get("subtype") == "laminar"
+                tipo   = "L" if is_lam else ("P" if is_p else "→")
+                row    = {"tipo": tipo}
                 if has_lines:
                     row["dist"] = "" if is_p else m.get("label", "")
-                if has_part:
-                    if is_p:
+                if has_nod_part:
+                    if is_p and not is_lam:
                         unit = m.get("unit", "")
                         row["diam"]  = f"{m.get('diam',0):.2f}{unit}"
                         row["area"]  = f"{m.get('area',0):.3f}"
                         row["circ"]  = f"{m.get('circ',0):.2f}"
                         row["clase"] = m.get("clase", "")
                     else:
-                        row["diam"] = row["area"] = row["circ"] = row["clase"] = ""
+                        row["diam"] = row["area"] = row["circ"] = ""
+                if has_lam_part:
+                    if is_lam:
+                        unit = m.get("unit", "µm")
+                        row["long"]  = f"{m.get('long',0):.1f}{unit}"
+                        row["ancho"] = f"{m.get('ancho',0):.1f}{unit}"
+                        row["asp"]   = f"{m.get('asp',0):.2f}"
+                        row["ptype"] = m.get("ptype", "")
+                        row["clase"] = m.get("clase", "")
+                    else:
+                        row["long"] = row["ancho"] = row["asp"] = row["ptype"] = ""
                 meas_tv.insert("", "end", values=[row.get(c, "") for c in col_ids])
 
             # Auto-sizing: ajustar ancho de cada columna al contenido
@@ -2045,7 +2066,7 @@ class TabCalidad(ttk.Frame):
 
         meas_row = ttk.Frame(win, padding=(8, 2))
         meas_row.pack(fill="x")
-        ttk.Label(meas_row, text="Clic = medir linea  |  Shift+clic = agregar nodulo",
+        ttk.Label(meas_row, text="Clic = medir linea  |  Shift+clic = agregar nodulo / laminilla",
                   foreground="#666").pack(side="left")
         btn_del_meas = ttk.Button(meas_row, text="Borrar ultima")
         btn_del_meas.pack(side="right", padx=(0, 4))
@@ -2336,23 +2357,44 @@ class TabCalidad(ttk.Frame):
                 def _ui():
                     if idx is not None and 0 <= idx < len(cnts):
                         p = cnts[idx]
-                        cal = next((c for c in _cals_cam if c["nombre"] == cam_cal_var.get()), None)
-                        if cal and cal.get("px_per_unit"):
-                            pu = cal["px_per_unit"]; unit = cal.get("unit", "µm")
-                            diam = p.get("diam_px", 0) / pu
-                            area = p.get("area_px", 0) / (pu ** 2)
+                        _mode = analysis_mode_var.get()
+                        if _mode == "laminar":
+                            px_mm = _cam_px_mm() or IMAGEJ_RESOLUCION_PX_MM
+                            length_um = p.get("length_um") or (p["length_px"] / px_mm * 1000)
+                            width_um  = p.get("width_um")  or (p["width_px"]  / px_mm * 1000)
+                            ptype = p.get("particle_type", "graphite")
+                            ptype_lbl = "MnS (inclusion)" if ptype == "mns" else "Grafito laminar"
+                            clase = ""
+                            for lbl, lo, hi in IMAGEJ_LIMITS:
+                                if lo * 1000 <= length_um < hi * 1000:
+                                    clase = lbl.split("(")[0].strip()
+                                    break
                             hover_lbl.config(text=(
-                                f"Diam: {diam:.2f} {unit}\n"
-                                f"Area: {area:.4f} {unit}²\n"
-                                f"Circ: {p['circ']:.3f}  "
-                                f"{'Nodular' if p['circ']>=0.5 else 'Vermicular'}"
+                                f"{ptype_lbl}\n"
+                                f"Long: {length_um:.1f} µm\n"
+                                f"Ancho: {width_um:.1f} µm\n"
+                                f"Aspecto: {p['aspect_ratio']:.2f}\n"
+                                f"Circ: {p['circ']:.3f}\n"
+                                f"{clase}"
                             ))
                         else:
-                            hover_lbl.config(text=(
-                                f"Diam: {p.get('diam_px',0):.1f} px\n"
-                                f"Area: {p.get('area_px',0):.0f} px²\n"
-                                f"Circ: {p['circ']:.3f}"
-                            ))
+                            cal = next((c for c in _cals_cam if c["nombre"] == cam_cal_var.get()), None)
+                            if cal and cal.get("px_per_unit"):
+                                pu = cal["px_per_unit"]; unit = cal.get("unit", "µm")
+                                diam = p.get("diam_px", 0) / pu
+                                area = p.get("area_px", 0) / (pu ** 2)
+                                hover_lbl.config(text=(
+                                    f"Diam: {diam:.2f} {unit}\n"
+                                    f"Area: {area:.4f} {unit}²\n"
+                                    f"Circ: {p['circ']:.3f}  "
+                                    f"{'Nodular' if p['circ']>=0.5 else 'Vermicular'}"
+                                ))
+                            else:
+                                hover_lbl.config(text=(
+                                    f"Diam: {p.get('diam_px',0):.1f} px\n"
+                                    f"Area: {p.get('area_px',0):.0f} px²\n"
+                                    f"Circ: {p['circ']:.3f}"
+                                ))
                     else:
                         hover_lbl.config(text="")
                     if captured_frame[0] is not None:
@@ -2361,32 +2403,57 @@ class TabCalidad(ttk.Frame):
             _threading.Thread(target=_worker, daemon=True).start()
 
         def _on_shift_click(event):
-            """Shift+clic: agrega el nódulo bajo el cursor a la tabla sin pausar."""
+            """Shift+clic: agrega la partícula bajo el cursor a la tabla."""
             idx = hovered_particle[0]
             cnts = contours_cache[0] or []
             if idx is None or idx >= len(cnts):
                 return
             p = cnts[idx]
-            cal = next((c for c in _cals_cam if c["nombre"] == cam_cal_var.get()), None)
-            if cal and cal.get("px_per_unit"):
-                pu = cal["px_per_unit"]; unit = cal.get("unit", "µm")
-                diam_v = p.get("diam_px", 0) / pu
-                area_v = p.get("area_px", 0) / (pu ** 2)
+            mode = analysis_mode_var.get()
+            if mode == "laminar":
+                px_mm = _cam_px_mm() or IMAGEJ_RESOLUCION_PX_MM
+                length_um = p.get("length_um") or (p["length_px"] / px_mm * 1000)
+                width_um  = p.get("width_um")  or (p["width_px"]  / px_mm * 1000)
+                ptype = p.get("particle_type", "graphite")
+                ptype_lbl = "MnS" if ptype == "mns" else "Gr"
+                clase = ""
+                for lbl, lo, hi in IMAGEJ_LIMITS:
+                    if lo * 1000 <= length_um < hi * 1000:
+                        clase = self._imagej_class_code(lbl)
+                        break
+                meas_list_cam.append({
+                    "type":    "particle",
+                    "subtype": "laminar",
+                    "long":    round(length_um, 2),
+                    "ancho":   round(width_um,  2),
+                    "asp":     round(p["aspect_ratio"], 2),
+                    "ptype":   ptype_lbl,
+                    "clase":   clase,
+                    "unit":    "µm",
+                    "label":   f"L:{length_um:.1f}µm",
+                    "contour": p["contour"].copy(),
+                })
             else:
-                unit = "px"
-                diam_v = p.get("diam_px", 0)
-                area_v = p.get("area_px", 0)
-            clase = "Nod" if p["circ"] >= 0.5 else "Verm"
-            meas_list_cam.append({
-                "type": "particle",
-                "diam": diam_v, "area": area_v,
-                "circ": p["circ"], "clase": clase, "unit": unit,
-                "label": f"D:{diam_v:.2f}{unit}",
-                "contour": p["contour"].copy(),   # para dibujar en canvas con número
-            })
+                cal = next((c for c in _cals_cam if c["nombre"] == cam_cal_var.get()), None)
+                if cal and cal.get("px_per_unit"):
+                    pu = cal["px_per_unit"]; unit = cal.get("unit", "µm")
+                    diam_v = p.get("diam_px", 0) / pu
+                    area_v = p.get("area_px", 0) / (pu ** 2)
+                else:
+                    unit = "px"
+                    diam_v = p.get("diam_px", 0)
+                    area_v = p.get("area_px", 0)
+                clase = "Nod" if p["circ"] >= 0.5 else "Verm"
+                meas_list_cam.append({
+                    "type": "particle",
+                    "diam": diam_v, "area": area_v,
+                    "circ": p["circ"], "clase": clase, "unit": unit,
+                    "label": f"D:{diam_v:.2f}{unit}",
+                    "contour": p["contour"].copy(),
+                })
             meas_status_var.set(f"{len(meas_list_cam)} entrada(s)")
             _refresh_meas_tv()
-            return "break"   # evita que <Button-1> también se dispare
+            return "break"
 
         lbl_preview.bind("<Button-1>", _on_canvas_click)
         lbl_preview.bind("<Shift-Button-1>", _on_shift_click)

@@ -1845,12 +1845,12 @@ class TabCalidad(ttk.Frame):
                     v.set("...")
                 return
             fmt = self._format_metric
-            lam_stat_vars["n_total"].set(str(stats["n_total"]))
-            lam_stat_vars["n_mm2"].set(fmt(stats["n_mm2"], 2))
-            lam_stat_vars["long_prom_um"].set(f"{fmt(stats['long_prom_um'], 1)} µm")
-            lam_stat_vars["long_max_um"].set(f"{fmt(stats['long_max_um'], 1)} µm")
-            lam_stat_vars["long_min_um"].set(f"{fmt(stats['long_min_um'], 1)} µm")
-            lam_stat_vars["aspect_ratio_prom"].set(fmt(stats["aspect_ratio_prom"], 2))
+            lam_stat_vars["n_total"].set(str(stats.get("n_total", "—")))
+            lam_stat_vars["n_mm2"].set(fmt(stats.get("n_mm2", 0), 2))
+            lam_stat_vars["long_prom_um"].set(f"{fmt(stats.get('long_prom_um', 0), 1)} µm" if stats.get('long_prom_um') is not None else "—")
+            lam_stat_vars["long_max_um"].set(f"{fmt(stats.get('long_max_um', 0), 1)} µm" if stats.get('long_max_um') is not None else "—")
+            lam_stat_vars["long_min_um"].set(f"{fmt(stats.get('long_min_um', 0), 1)} µm" if stats.get('long_min_um') is not None else "—")
+            lam_stat_vars["aspect_ratio_prom"].set(fmt(stats.get("aspect_ratio_prom", 0), 2) if stats.get("aspect_ratio_prom") is not None else "—")
             morph = stats.get("morfologia_iso", "—")
             lam_stat_vars["morfologia_iso"].set(morph)
             lam_stat_vars["tam_clase"].set(stats.get("tam_clase", "") or dash)

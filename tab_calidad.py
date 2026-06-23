@@ -1758,6 +1758,26 @@ class TabCalidad(ttk.Frame):
             dist_vars[category] = sv
             ttk.Label(rf, textvariable=sv, foreground="#66bbff", anchor="w").pack(side="left")
 
+        # ── Clasificación por material (color) ────────────────────────────────
+        ttk.Separator(nod_section, orient="horizontal").pack(fill="x", pady=(6, 4))
+        ttk.Label(nod_section, text="Por material (color):", anchor="w",
+                  font=("TkDefaultFont", 8, "bold")).pack(fill="x")
+        mat_vars = {}
+        _MAT_ROWS = [
+            ("C",       "Grafito C",       self._MAT_COLOR_HEX["C"]),
+            ("MnS",     "Inclus. MnS",     self._MAT_COLOR_HEX["MnS"]),
+            ("rechupe", "Rechupes",        self._MAT_COLOR_HEX["rechupe"]),
+        ]
+        for key, label, color in _MAT_ROWS:
+            rf = ttk.Frame(nod_section)
+            rf.pack(fill="x", pady=1)
+            tk.Label(rf, text="■", fg=color, bg=stats_panel.cget("background"),
+                     font=("TkDefaultFont", 10)).pack(side="left")
+            ttk.Label(rf, text=label + ":", anchor="w", width=13).pack(side="left")
+            sv = tk.StringVar(value="—")
+            mat_vars[key] = sv
+            ttk.Label(rf, textvariable=sv, foreground="#66bbff", anchor="w").pack(side="left")
+
         # ── Sección stats Laminar (ISO 945) ───────────────────────────────────
         lam_section = ttk.Frame(stats_panel)
         # lam_section empieza oculta
@@ -1812,6 +1832,9 @@ class TabCalidad(ttk.Frame):
             counts = stats.get("counts", {})
             for category, sv in dist_vars.items():
                 sv.set(str(counts.get(category, 0)))
+            mat_counts = stats.get("mat_counts", {})
+            for key, sv in mat_vars.items():
+                sv.set(str(mat_counts.get(key, "—")))
 
         def _update_laminar_stats_panel(stats):
             dash = "—"
@@ -2219,7 +2242,8 @@ class TabCalidad(ttk.Frame):
                     if mode == "laminar":
                         color = _lam_contour_color(p)
                     else:
-                        color = (0, 220, 0) if p["circ"] >= 0.5 else (0, 140, 255)
+                        color = self._MAT_COLOR_BGR.get(
+                            p.get("classification", "C"), (0, 220, 0))
                     cv2.drawContours(display_bgr, [cnt.astype(np.int32)], -1, color, 2)
 
             _show_preview(display_bgr)
@@ -3088,6 +3112,33 @@ class TabCalidad(ttk.Frame):
         if value is not None:
             var.set(self._format_metric(value, 3))
 
+    # Colores por tipo de material (BGR para cv2, hex para tkinter canvas)
+    _MAT_COLOR_BGR = {
+        "C":       (0, 220, 0),      # verde   — grafito C
+        "MnS":     (210, 180, 0),    # cian    — inclusión MnS
+        "rechupe": (0, 0, 220),      # rojo    — rechupe/porosidad
+    }
+    _MAT_COLOR_HEX = {
+        "C":       "#00dc00",
+        "MnS":     "#00b4d4",
+        "rechupe": "#dc0000",
+    }
+
+    def _classify_particle_material(self, mean_val, solidity,
+                                    mns_thresh=95, rechupe_solidity=0.52):
+        """Clasifica una partícula por intensidad de gris y solidez.
+        - MnS: grisáceo (mean_val alto → más claro que el grafito)
+        - Rechupe: oscuro como el grafito pero forma muy irregular (baja solidez)
+        - C: grafito (oscuro y relativamente regular)
+        mns_thresh: umbral de intensidad media para separar MnS de grafito.
+        rechupe_solidity: solidez mínima para considerar grafito; por debajo → rechupe.
+        """
+        if mean_val > mns_thresh:
+            return "MnS"
+        if solidity < rechupe_solidity:
+            return "rechupe"
+        return "C"
+
     def _get_nodule_contours(self, image_bgr, blur_size=5, threshold=0, min_area=None):
         import numpy as np
         import cv2 as _cv2
@@ -3104,14 +3155,28 @@ class TabCalidad(ttk.Frame):
         thresh = _cv2.morphologyEx(thresh, _cv2.MORPH_CLOSE, kernel, iterations=1)
         contours, _ = _cv2.findContours(thresh, _cv2.RETR_EXTERNAL, _cv2.CHAIN_APPROX_SIMPLE)
         result = []
+        mask_buf = np.zeros(gray.shape, dtype=np.uint8)
         for cnt in contours:
             area = _cv2.contourArea(cnt)
             if area < area_min:
                 continue
             perimeter = _cv2.arcLength(cnt, True)
             circ = (4 * np.pi * area / perimeter ** 2) if perimeter > 0 else 0
-            result.append({"contour": cnt, "circ": float(circ),
-                           "area_px": area, "diam_px": (4 * area / np.pi) ** 0.5})
+            # Solidez: área / área del casco convexo
+            hull = _cv2.convexHull(cnt)
+            hull_area = _cv2.contourArea(hull)
+            solidity = float(area / hull_area) if hull_area > 0 else 1.0
+            # Intensidad media dentro del contorno (imagen gris original)
+            mask_buf[:] = 0
+            _cv2.drawContours(mask_buf, [cnt], -1, 255, -1)
+            mean_val = float(_cv2.mean(gray, mask=mask_buf)[0])
+            classification = self._classify_particle_material(mean_val, solidity)
+            result.append({
+                "contour": cnt, "circ": float(circ),
+                "area_px": area, "diam_px": (4 * area / np.pi) ** 0.5,
+                "solidity": solidity, "mean_val": mean_val,
+                "classification": classification,
+            })
         return result
 
     def _count_nodules_opencv(self, image_bgr, px_per_mm=None, threshold=0, min_area=None):
@@ -3135,6 +3200,7 @@ class TabCalidad(ttk.Frame):
 
         contours, _ = _cv2.findContours(thresh, _cv2.RETR_EXTERNAL, _cv2.CHAIN_APPROX_SIMPLE)
         particles = []
+        mask_buf = np.zeros(gray.shape, dtype=np.uint8)
         for cnt in contours:
             area = _cv2.contourArea(cnt)
             if area < area_min:
@@ -3142,13 +3208,23 @@ class TabCalidad(ttk.Frame):
             perimeter = _cv2.arcLength(cnt, True)
             circularity = (4 * np.pi * area / (perimeter ** 2)) if perimeter > 0 else 0
             diam_mm = np.sqrt((4 * area) / np.pi) / scale
-            particles.append({"area": area, "circ": float(circularity), "diam_mm": float(diam_mm)})
+            hull_area = _cv2.contourArea(_cv2.convexHull(cnt))
+            solidity = float(area / hull_area) if hull_area > 0 else 1.0
+            mask_buf[:] = 0
+            _cv2.drawContours(mask_buf, [cnt], -1, 255, -1)
+            mean_val = float(_cv2.mean(gray, mask=mask_buf)[0])
+            mat = self._classify_particle_material(mean_val, solidity)
+            particles.append({"area": area, "circ": float(circularity),
+                               "diam_mm": float(diam_mm), "mat": mat})
 
         if not particles:
             return None
 
         area_total = sum(p["area"] for p in particles)
         nod_area = sum(p["area"] for p in particles if p["circ"] >= 0.5)
+        mat_counts = {}
+        for p in particles:
+            mat_counts[p["mat"]] = mat_counts.get(p["mat"], 0) + 1
 
         counts = {}
         for category, min_d, max_d in IMAGEJ_LIMITS:
@@ -3172,6 +3248,7 @@ class TabCalidad(ttk.Frame):
             "diam_max_um": round(float(max(diams)) * 1000, 2),
             "diam_min_um": round(float(min(diams)) * 1000, 2),
             "counts": counts,
+            "mat_counts": mat_counts,
             "tam_grafito_clase": self._imagej_majority_size_text(counts),
             "px_per_mm": round(scale, 4),
         }

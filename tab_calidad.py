@@ -3177,7 +3177,7 @@ class TabCalidad(ttk.Frame):
         Rechupe por forma: oscuro y forma muy irregular (solidity baja).
         Grafito C: resto.
         """
-        # Analizar HSV para detectar el púrpura oscuro característico del rechupe
+        # Analizar HSV para clasificación por color
         hsv_s, hsv_v = 0, 255
         if mean_bgr is not None:
             try:
@@ -3188,6 +3188,11 @@ class TabCalidad(ttk.Frame):
                 hsv_s, hsv_v = int(hsv[1]), int(hsv[2])
             except Exception:
                 pass
+
+        # Grafito C negro neutro: muy oscuro Y muy baja saturacion (negro puro)
+        # → siempre es grafito independientemente de la forma
+        if hsv_v < 60 and hsv_s < 45:
+            return "C"
 
         # Rechupe cromático: oscuro + muy saturado (púrpura intenso)
         if hsv_s > rechupe_sat_thresh and hsv_v < rechupe_val_thresh:

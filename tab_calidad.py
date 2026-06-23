@@ -2422,24 +2422,36 @@ class TabCalidad(ttk.Frame):
                             ))
                         else:
                             cal = next((c for c in _cals_cam if c["nombre"] == cam_cal_var.get()), None)
+                            mat = p.get("classification", "C")
+                            mat_label = {"C": "Grafito C", "MnS": "Inclus. MnS",
+                                         "rechupe": "Rechupe"}.get(mat, mat)
+                            mat_color = self._MAT_COLOR_HEX.get(mat, "#aaaaaa")
                             if cal and cal.get("px_per_unit"):
                                 pu = cal["px_per_unit"]; unit = cal.get("unit", "µm")
                                 diam = p.get("diam_px", 0) / pu
                                 area = p.get("area_px", 0) / (pu ** 2)
-                                hover_lbl.config(text=(
-                                    f"Diam: {diam:.2f} {unit}\n"
-                                    f"Area: {area:.4f} {unit}²\n"
-                                    f"Circ: {p['circ']:.3f}  "
-                                    f"{'Nodular' if p['circ']>=0.5 else 'Vermicular'}"
-                                ))
+                                hover_lbl.config(
+                                    text=(
+                                        f"▶ {mat_label}\n"
+                                        f"Diam: {diam:.2f} {unit}\n"
+                                        f"Area: {area:.4f} {unit}²\n"
+                                        f"Circ: {p['circ']:.3f}  "
+                                        f"{'Nodular' if p['circ']>=0.5 else 'Vermicular'}"
+                                    ),
+                                    foreground=mat_color,
+                                )
                             else:
-                                hover_lbl.config(text=(
-                                    f"Diam: {p.get('diam_px',0):.1f} px\n"
-                                    f"Area: {p.get('area_px',0):.0f} px²\n"
-                                    f"Circ: {p['circ']:.3f}"
-                                ))
+                                hover_lbl.config(
+                                    text=(
+                                        f"▶ {mat_label}\n"
+                                        f"Diam: {p.get('diam_px',0):.1f} px\n"
+                                        f"Area: {p.get('area_px',0):.0f} px²\n"
+                                        f"Circ: {p['circ']:.3f}"
+                                    ),
+                                    foreground=mat_color,
+                                )
                     else:
-                        hover_lbl.config(text="")
+                        hover_lbl.config(text="", foreground="#0077cc")
                     if captured_frame[0] is not None:
                         _show_frame(captured_frame[0])
                 win.after(0, _ui)
@@ -2504,7 +2516,7 @@ class TabCalidad(ttk.Frame):
         lbl_preview.bind("<Motion>", lambda e: _last_mouse.__setitem__(0, (e.x, e.y)))
         lbl_preview.bind("<Leave>",  lambda e: (_last_mouse.__setitem__(0, None),
                                                 hovered_particle.__setitem__(0, None),
-                                                hover_lbl.config(text="")))
+                                                hover_lbl.config(text="", foreground="#0077cc")))
 
         def _del_last():
             if meas_list_cam: meas_list_cam.pop()

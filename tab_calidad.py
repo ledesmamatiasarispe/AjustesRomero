@@ -3131,26 +3131,27 @@ class TabCalidad(ttk.Frame):
         "rechupe": "#dc0000",
     }
 
-    def _classify_particle_material(self, mean_val, solidity, mean_bgr=None,
+    def _classify_particle_material(self, mean_val, solidity, mean_bgr=None, circ=0.0,
                                     mns_thresh=95, rechupe_solidity=0.52,
-                                    mns_blue_ratio=1.12):
-        """Clasifica una partícula por intensidad, color BGR y solidez.
+                                    mns_blue_ratio=1.12, mns_min_circ=0.45):
+        """Clasifica una partícula por forma, intensidad y color BGR.
 
-        MnS tiene un tinte azul-violáceo característico en microscopía de
-        reflexión: el canal azul (B) es notablemente mayor que el rojo (R).
-        Se detecta por:
-          1. Intensidad grisácea (mean_val > mns_thresh), O
-          2. Ratio B/R > mns_blue_ratio con algo de brillo (B > 25)
-        Rechupe: oscuro (no-MnS) y forma muy irregular (solidez baja).
-        Grafito C: resto.
+        MnS: REDONDA (circ >= mns_min_circ) Y con color grisáceo/violáceo:
+          - Criterio de color 1: intensidad grisácea (mean_val > mns_thresh)
+          - Criterio de color 2: tinte azul-violáceo (B/R >= mns_blue_ratio)
+          Ambas condiciones deben cumplirse: forma circular + al menos un criterio de color.
+        Rechupe: oscuro (no-MnS) + forma muy irregular (solidity baja).
+        Grafito C: resto (oscuro y relativamente regular).
         """
-        is_mns = mean_val > mns_thresh
-        if not is_mns and mean_bgr is not None:
-            b, g, r = float(mean_bgr[0]), float(mean_bgr[1]), float(mean_bgr[2])
-            if b > 25 and r > 0 and (b / max(r, 1)) >= mns_blue_ratio:
-                is_mns = True
-        if is_mns:
-            return "MnS"
+        # Primero verificar si tiene la forma redonda necesaria para MnS
+        if circ >= mns_min_circ:
+            color_gris   = mean_val > mns_thresh
+            color_violet = False
+            if mean_bgr is not None:
+                b, g, r = float(mean_bgr[0]), float(mean_bgr[1]), float(mean_bgr[2])
+                color_violet = b > 25 and (b / max(r, 1)) >= mns_blue_ratio
+            if color_gris or color_violet:
+                return "MnS"
         if solidity < rechupe_solidity:
             return "rechupe"
         return "C"
@@ -3187,7 +3188,7 @@ class TabCalidad(ttk.Frame):
             _cv2.drawContours(mask_buf, [cnt], -1, 255, -1)
             mean_val = float(_cv2.mean(gray, mask=mask_buf)[0])
             mean_bgr = _cv2.mean(image_bgr, mask=mask_buf)[:3]
-            classification = self._classify_particle_material(mean_val, solidity, mean_bgr)
+            classification = self._classify_particle_material(mean_val, solidity, mean_bgr, circ)
             result.append({
                 "contour": cnt, "circ": float(circ),
                 "area_px": area, "diam_px": (4 * area / np.pi) ** 0.5,
@@ -3231,7 +3232,7 @@ class TabCalidad(ttk.Frame):
             _cv2.drawContours(mask_buf, [cnt], -1, 255, -1)
             mean_val = float(_cv2.mean(gray, mask=mask_buf)[0])
             mean_bgr_p = _cv2.mean(image_bgr, mask=mask_buf)[:3]
-            mat = self._classify_particle_material(mean_val, solidity, mean_bgr_p)
+            mat = self._classify_particle_material(mean_val, solidity, mean_bgr_p, circularity)
             particles.append({"area": area, "circ": float(circularity),
                                "diam_mm": float(diam_mm), "mat": mat})
 
@@ -3368,7 +3369,7 @@ class TabCalidad(ttk.Frame):
             _cv2.drawContours(mask_buf, [cnt], -1, 255, -1)
             mean_val = float(_cv2.mean(gray, mask=mask_buf)[0])
             mean_bgr = _cv2.mean(image_bgr, mask=mask_buf)[:3]
-            classification = self._classify_particle_material(mean_val, solidity, mean_bgr)
+            classification = self._classify_particle_material(mean_val, solidity, mean_bgr, circ)
             # particle_type por forma (retrocompatibilidad) + classification por color
             if circ >= 0.5 and aspect < 2.0:
                 ptype = "mns"

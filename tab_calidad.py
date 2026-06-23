@@ -1680,8 +1680,9 @@ class TabCalidad(ttk.Frame):
         contours_cache = [None]
         stats_cache = [None]
         frame_counter = [0]
-        show_contours_var = tk.BooleanVar(value=False)
-        show_binary_var   = tk.BooleanVar(value=False)
+        show_contours_var   = tk.BooleanVar(value=False)
+        show_binary_var     = tk.BooleanVar(value=False)
+        analysis_mode_var   = tk.StringVar(value="nodular")   # "nodular" | "laminar"
         thresh_var        = tk.IntVar(value=0)
         min_area_var      = tk.IntVar(value=getattr(self, "_cam_min_area", IMAGEJ_AREA_UMBRAL))
         measure_var       = tk.BooleanVar(value=False)
@@ -1723,6 +1724,9 @@ class TabCalidad(ttk.Frame):
 
         # _update_area_var() se llama después de que cam_cal_var y _cam_px_mm estén definidos
 
+        # ── Sección stats Nodular ─────────────────────────────────────────────
+        nod_section = ttk.Frame(stats_panel)
+        nod_section.pack(fill="x")
         _STAT_ROWS = [
             ("n_total",          "Nodulos totales"),
             ("n_mm2",            "Nodulos/mm²"),
@@ -1735,23 +1739,55 @@ class TabCalidad(ttk.Frame):
         ]
         stat_vars = {}
         for key, label in _STAT_ROWS:
-            rf = ttk.Frame(stats_panel)
+            rf = ttk.Frame(nod_section)
             rf.pack(fill="x", pady=1)
             ttk.Label(rf, text=label + ":", anchor="w", width=16).pack(side="left")
             sv = tk.StringVar(value="—")
             stat_vars[key] = sv
             ttk.Label(rf, textvariable=sv, foreground="#66bbff", anchor="w").pack(side="left")
-
-        ttk.Separator(stats_panel, orient="horizontal").pack(fill="x", pady=(8, 4))
-        ttk.Label(stats_panel, text="Distribucion por clase:", anchor="w").pack(fill="x")
+        ttk.Separator(nod_section, orient="horizontal").pack(fill="x", pady=(8, 4))
+        ttk.Label(nod_section, text="Distribucion por clase:", anchor="w").pack(fill="x")
         dist_vars = {}
         for category, _, _ in IMAGEJ_LIMITS:
-            rf = ttk.Frame(stats_panel)
+            rf = ttk.Frame(nod_section)
             rf.pack(fill="x", pady=1)
             short = category.split("(")[0].strip()
             ttk.Label(rf, text=short + ":", anchor="w", width=9).pack(side="left")
             sv = tk.StringVar(value="—")
             dist_vars[category] = sv
+            ttk.Label(rf, textvariable=sv, foreground="#66bbff", anchor="w").pack(side="left")
+
+        # ── Sección stats Laminar (ISO 945) ───────────────────────────────────
+        lam_section = ttk.Frame(stats_panel)
+        # lam_section empieza oculta
+        _LAM_ROWS = [
+            ("n_total",            "Laminillas"),
+            ("n_mm2",              "Laminillas/mm²"),
+            ("long_prom_um",       "Long. promedio"),
+            ("long_max_um",        "Long. max"),
+            ("long_min_um",        "Long. min"),
+            ("aspect_ratio_prom",  "Largo/ancho"),
+            ("morfologia_iso",     "Morfología ISO"),
+            ("tam_clase",          "Tamaño clase"),
+        ]
+        lam_stat_vars = {}
+        for key, label in _LAM_ROWS:
+            rf = ttk.Frame(lam_section)
+            rf.pack(fill="x", pady=1)
+            ttk.Label(rf, text=label + ":", anchor="w", width=16).pack(side="left")
+            sv = tk.StringVar(value="—")
+            lam_stat_vars[key] = sv
+            ttk.Label(rf, textvariable=sv, foreground="#66bbff", anchor="w").pack(side="left")
+        ttk.Separator(lam_section, orient="horizontal").pack(fill="x", pady=(8, 4))
+        ttk.Label(lam_section, text="Distribucion por longitud:", anchor="w").pack(fill="x")
+        lam_dist_vars = {}
+        for category, _, _ in IMAGEJ_LIMITS:
+            rf = ttk.Frame(lam_section)
+            rf.pack(fill="x", pady=1)
+            short = category.split("(")[0].strip()
+            ttk.Label(rf, text=short + ":", anchor="w", width=9).pack(side="left")
+            sv = tk.StringVar(value="—")
+            lam_dist_vars[category] = sv
             ttk.Label(rf, textvariable=sv, foreground="#66bbff", anchor="w").pack(side="left")
 
         def _update_stats_panel(stats):
@@ -1774,6 +1810,43 @@ class TabCalidad(ttk.Frame):
             counts = stats.get("counts", {})
             for category, sv in dist_vars.items():
                 sv.set(str(counts.get(category, 0)))
+
+        def _update_laminar_stats_panel(stats):
+            dash = "—"
+            if stats is None:
+                for v in lam_stat_vars.values():
+                    v.set("...")
+                for v in lam_dist_vars.values():
+                    v.set("...")
+                return
+            fmt = self._format_metric
+            lam_stat_vars["n_total"].set(str(stats["n_total"]))
+            lam_stat_vars["n_mm2"].set(fmt(stats["n_mm2"], 2))
+            lam_stat_vars["long_prom_um"].set(f"{fmt(stats['long_prom_um'], 1)} µm")
+            lam_stat_vars["long_max_um"].set(f"{fmt(stats['long_max_um'], 1)} µm")
+            lam_stat_vars["long_min_um"].set(f"{fmt(stats['long_min_um'], 1)} µm")
+            lam_stat_vars["aspect_ratio_prom"].set(fmt(stats["aspect_ratio_prom"], 2))
+            morph = stats.get("morfologia_iso", "—")
+            lam_stat_vars["morfologia_iso"].set(morph)
+            lam_stat_vars["tam_clase"].set(stats.get("tam_clase", "") or dash)
+            counts = stats.get("counts", {})
+            for category, sv in lam_dist_vars.items():
+                sv.set(str(counts.get(category, 0)))
+
+        def _switch_analysis_mode(mode):
+            analysis_mode_var.set(mode)
+            contours_cache[0] = None
+            stats_cache[0] = None
+            if mode == "nodular":
+                lam_section.pack_forget()
+                nod_section.pack(fill="x")
+                stats_panel.config(text="Conteo de nodulos")
+                btn_save_count.config(text="Guardar y contar nodulos")
+            else:
+                nod_section.pack_forget()
+                lam_section.pack(fill="x")
+                stats_panel.config(text="Analisis grafito laminar (ISO 945)")
+                btn_save_count.config(text="Guardar y analizar laminar")
 
         # on_redraw para overlay de mediciones y nódulo hover
         # Las medidas van PRIMERO: si el hover lanza excepción las medidas siguen visibles
@@ -1941,6 +2014,14 @@ class TabCalidad(ttk.Frame):
         ttk.Combobox(cal_row, textvariable=cam_cal_var, values=_cal_names,
                      state="readonly", width=28).pack(side="left", padx=(6, 0))
 
+        mode_row = ttk.Frame(win, padding=(8, 2))
+        mode_row.pack(fill="x")
+        ttk.Label(mode_row, text="Modo:").pack(side="left")
+        ttk.Radiobutton(mode_row, text="Nodular", variable=analysis_mode_var, value="nodular",
+                        command=lambda: _switch_analysis_mode("nodular")).pack(side="left", padx=(6, 0))
+        ttk.Radiobutton(mode_row, text="Laminar (ISO 945)", variable=analysis_mode_var, value="laminar",
+                        command=lambda: _switch_analysis_mode("laminar")).pack(side="left", padx=(6, 0))
+
         btn_row = ttk.Frame(win, padding=(8, 6))
         btn_row.pack(fill="x")
         btn_cap_live = ttk.Button(btn_row, text="Capturar")
@@ -2015,45 +2096,82 @@ class TabCalidad(ttk.Frame):
                 _, binary = cv2.threshold(blurred, tval, 255, cv2.THRESH_BINARY_INV)
             return binary
 
+        def _lam_contour_color(flake):
+            """Colorea laminillas por tamaño (igual paleta que overlay nodular pero por longitud)."""
+            length_um = flake.get("length_um") or (flake["length_px"] / max(_cam_px_mm() or IMAGEJ_RESOLUCION_PX_MM, 1)) * 1000
+            if length_um >= 250:   # Clase 3
+                return (0, 60, 220)    # rojo-anaranjado (grandes)
+            elif length_um >= 60:  # Clase 5-4
+                return (0, 200, 0)     # verde (medianos)
+            elif length_um >= 15:  # Clase 7-6
+                return (220, 120, 0)   # azul (finos)
+            else:                  # Clase 8
+                return (180, 180, 180) # gris (muy finos)
+
         def _show_frame(frame_bgr):
             px_mm = _cam_px_mm()
             do_contours = show_contours_var.get()
+            mode = analysis_mode_var.get()
 
             if live[0]:
                 frame_counter[0] += 1
                 if do_contours and frame_counter[0] % 25 == 1 and not _cnt_computing[0]:
                     _cnt_computing[0] = True
                     _fbg = frame_bgr.copy()
-                    _t = thresh_var.get(); _ma = min_area_var.get(); _pmm = px_mm
+                    _t = thresh_var.get(); _ma = min_area_var.get(); _pmm = px_mm; _mode = mode
                     def _cnt_worker():
                         try:
-                            cnts = self._get_nodule_contours(_fbg, blur_size=11,
-                                                             threshold=_t, min_area=_ma)
-                            sts  = self._count_nodules_opencv(_fbg, px_per_mm=_pmm,
-                                                              threshold=_t, min_area=_ma)
+                            if _mode == "laminar":
+                                cnts = self._get_laminar_contours(_fbg, threshold=_t,
+                                                                  min_area=_ma, blur_size=11)
+                                # inyectar length_um para el color
+                                _s = float(_pmm) if _pmm else IMAGEJ_RESOLUCION_PX_MM
+                                for f in cnts:
+                                    f["length_um"] = (f["length_px"] / _s) * 1000
+                                sts = self._count_laminar_opencv(_fbg, px_per_mm=_pmm,
+                                                                 threshold=_t, min_area=_ma)
+                            else:
+                                cnts = self._get_nodule_contours(_fbg, blur_size=11,
+                                                                 threshold=_t, min_area=_ma)
+                                sts  = self._count_nodules_opencv(_fbg, px_per_mm=_pmm,
+                                                                  threshold=_t, min_area=_ma)
                         except Exception:
                             cnts = []; sts = None
                         finally:
                             _cnt_computing[0] = False
                         contours_cache[0] = cnts
-                        _stats_queue.put(sts)   # main thread lo lee en _update_live
+                        _stats_queue.put(sts)
                     import threading as _th; _th.Thread(target=_cnt_worker, daemon=True).start()
             else:
                 if do_contours and contours_cache[0] is None:
                     try:
-                        contours_cache[0] = self._get_nodule_contours(
-                            frame_bgr, threshold=thresh_var.get(),
-                            min_area=min_area_var.get())
+                        if mode == "laminar":
+                            cnts = self._get_laminar_contours(frame_bgr, threshold=thresh_var.get(),
+                                                              min_area=min_area_var.get())
+                            _s = float(px_mm) if px_mm else IMAGEJ_RESOLUCION_PX_MM
+                            for f in cnts:
+                                f["length_um"] = (f["length_px"] / _s) * 1000
+                            contours_cache[0] = cnts
+                        else:
+                            contours_cache[0] = self._get_nodule_contours(
+                                frame_bgr, threshold=thresh_var.get(),
+                                min_area=min_area_var.get())
                     except Exception:
                         contours_cache[0] = []
                 if do_contours and stats_cache[0] is None:
                     try:
-                        stats_cache[0] = self._count_nodules_opencv(
-                            frame_bgr, px_per_mm=px_mm, threshold=thresh_var.get(),
-                            min_area=min_area_var.get())
+                        if mode == "laminar":
+                            stats_cache[0] = self._count_laminar_opencv(
+                                frame_bgr, px_per_mm=px_mm, threshold=thresh_var.get(),
+                                min_area=min_area_var.get())
+                            _update_laminar_stats_panel(stats_cache[0])
+                        else:
+                            stats_cache[0] = self._count_nodules_opencv(
+                                frame_bgr, px_per_mm=px_mm, threshold=thresh_var.get(),
+                                min_area=min_area_var.get())
+                            _update_stats_panel(stats_cache[0])
                     except Exception:
                         stats_cache[0] = None
-                    _update_stats_panel(stats_cache[0])
 
             if show_binary_var.get():
                 blur_sz = 11 if live[0] else 5
@@ -2069,7 +2187,10 @@ class TabCalidad(ttk.Frame):
                 for p in (contours_cache[0] or []):
                     cnt = p["contour"].astype(np.float32).copy()
                     cnt[..., 0] *= sx; cnt[..., 1] *= sy
-                    color = (0, 220, 0) if p["circ"] >= 0.5 else (0, 140, 255)
+                    if mode == "laminar":
+                        color = _lam_contour_color(p)
+                    else:
+                        color = (0, 220, 0) if p["circ"] >= 0.5 else (0, 140, 255)
                     cv2.drawContours(display_bgr, [cnt.astype(np.int32)], -1, color, 2)
 
             _show_preview(display_bgr)
@@ -2087,7 +2208,10 @@ class TabCalidad(ttk.Frame):
             try:
                 sts = _stats_queue.get_nowait()
                 stats_cache[0] = sts
-                _update_stats_panel(sts)
+                if analysis_mode_var.get() == "laminar":
+                    _update_laminar_stats_panel(sts)
+                else:
+                    _update_stats_panel(sts)
             except _queue.Empty:
                 pass
             # Hover: sondear posición del mouse cada 3 frames (~100ms) sin <Motion>
@@ -2414,6 +2538,7 @@ class TabCalidad(ttk.Frame):
             material = _pick_material()
             if material is None:
                 return
+            mode = analysis_mode_var.get()
             fname = f"camara_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.jpg"
             comment = simpledialog.askstring("Observacion", "Comentario para la foto:", parent=win)
             if comment is None:
@@ -2432,35 +2557,73 @@ class TabCalidad(ttk.Frame):
             if cal_id:
                 sample_item["calibration_id"] = cal_id
             px_per_mm = _cam_px_mm()
-            status_var.set(f"Analizando nodulos...")
+            status_var.set("Analizando...")
             win.update_idletasks()
-            try:
-                stats = self._count_nodules_opencv(frame, px_per_mm=px_per_mm)
-            except Exception as ex:
-                messagebox.showerror("Conteo de nodulos", f"Error al analizar la imagen:\n{ex}", parent=win)
-                status_var.set("Error en analisis")
-                return
-            if stats is None:
-                messagebox.showinfo("Conteo de nodulos",
-                    "No se encontraron particulas en la imagen.\n"
-                    "Verificar que la imagen sea de microestructura con fondo claro.",
-                    parent=win)
-                status_var.set("Sin particulas detectadas")
-                return
 
-            sample_item["opencv_stats"] = {
-                "n_total": stats["n_total"],
-                "n_mm2": stats["n_mm2"],
-                "nodularidad": stats["nodularidad"],
-                "vermicular": stats["vermicular"],
-                "diam_prom_um": stats["diam_prom_um"],
-                "diam_max_um": stats["diam_max_um"],
-                "diam_min_um": stats["diam_min_um"],
-                "counts": dict(stats["counts"]),
-                "tam_grafito_clase": stats.get("tam_grafito_clase", ""),
-                "px_per_mm": stats.get("px_per_mm", IMAGEJ_RESOLUCION_PX_MM),
-            }
+            # ── Análisis según modo ───────────────────────────────────────────
+            if mode == "laminar":
+                try:
+                    stats = self._count_laminar_opencv(frame, px_per_mm=px_per_mm)
+                except Exception as ex:
+                    messagebox.showerror("Analisis laminar", f"Error al analizar:\n{ex}", parent=win)
+                    status_var.set("Error en analisis")
+                    return
+                if stats is None:
+                    messagebox.showinfo("Analisis laminar",
+                        "No se encontraron laminillas en la imagen.\n"
+                        "Verificar imagen de microestructura con fondo claro.",
+                        parent=win)
+                    status_var.set("Sin particulas detectadas")
+                    return
+                # stats_key: subset serializable (sin "flakes" que tiene arrays numpy)
+                sample_item["opencv_stats"] = {
+                    "mode":              "laminar",
+                    "n_total":           stats["n_total"],
+                    "n_mm2":             stats["n_mm2"],
+                    "long_prom_um":      stats["long_prom_um"],
+                    "long_max_um":       stats["long_max_um"],
+                    "long_min_um":       stats["long_min_um"],
+                    "aspect_ratio_prom": stats["aspect_ratio_prom"],
+                    "morfologia_iso":    stats["morfologia_iso"],
+                    "morfologia_label":  stats.get("morfologia_label", ""),
+                    "tam_clase":         stats.get("tam_clase", ""),
+                    "counts":            dict(stats["counts"]),
+                    "px_per_mm":         stats.get("px_per_mm", IMAGEJ_RESOLUCION_PX_MM),
+                    # campos que _merge_imagej_stats necesita (dummy para compatibilidad)
+                    "nodularidad": 0, "vermicular": 0,
+                    "diam_prom_um": stats["long_prom_um"],
+                    "diam_max_um":  stats["long_max_um"],
+                    "diam_min_um":  stats["long_min_um"],
+                }
+            else:
+                try:
+                    stats = self._count_nodules_opencv(frame, px_per_mm=px_per_mm)
+                except Exception as ex:
+                    messagebox.showerror("Conteo de nodulos", f"Error al analizar:\n{ex}", parent=win)
+                    status_var.set("Error en analisis")
+                    return
+                if stats is None:
+                    messagebox.showinfo("Conteo de nodulos",
+                        "No se encontraron particulas en la imagen.\n"
+                        "Verificar imagen de microestructura con fondo claro.",
+                        parent=win)
+                    status_var.set("Sin particulas detectadas")
+                    return
+                sample_item["opencv_stats"] = {
+                    "mode":             "nodular",
+                    "n_total":          stats["n_total"],
+                    "n_mm2":            stats["n_mm2"],
+                    "nodularidad":      stats["nodularidad"],
+                    "vermicular":       stats["vermicular"],
+                    "diam_prom_um":     stats["diam_prom_um"],
+                    "diam_max_um":      stats["diam_max_um"],
+                    "diam_min_um":      stats["diam_min_um"],
+                    "counts":           dict(stats["counts"]),
+                    "tam_grafito_clase": stats.get("tam_grafito_clase", ""),
+                    "px_per_mm":        stats.get("px_per_mm", IMAGEJ_RESOLUCION_PX_MM),
+                }
 
+            # ── Acumular y promediar escaneos del mismo modo ──────────────────
             attached_ids = []
             errors = []
             self._report_images.append(sample_item)
@@ -2479,33 +2642,112 @@ class TabCalidad(ttk.Frame):
             all_opencv = [
                 img["opencv_stats"]
                 for img in self._normalize_report_images(self._report_images)
-                if img.get("opencv_stats")
+                if img.get("opencv_stats") and img["opencv_stats"].get("mode", "nodular") == mode
             ]
             n_scans = len(all_opencv)
             avg_stats = self._merge_imagej_stats(all_opencv, [""] * n_scans) if n_scans > 1 else dict(stats)
             avg_stats.setdefault("source_count", n_scans)
 
             scan_group_id = uuid.uuid4().hex[:12]
-            scan_group_label = f"Escaneo {n_scans} — {datetime.now().strftime('%H:%M:%S')}"
+            scan_group_label = f"Escaneo {n_scans} ({mode[:3]}) — {datetime.now().strftime('%H:%M:%S')}"
             sample_item["scan_group_id"] = scan_group_id
             sample_item["scan_group_label"] = scan_group_label
 
-            is_nodular = self._family_for_material(self.var_material.get()) == "Nodular"
-            nodule_count_value = IMAGEJ_NODULAR_DEFAULT_NODULES if is_nodular else self._format_metric(avg_stats["n_mm2"], 2)
-            self.var_conteo_nodulos.set(nodule_count_value)
-            self.var_pct_nod.set(self._format_metric(avg_stats["nodularidad"], 2))
-            self.var_tam_grafito.set(avg_stats.get("tam_grafito_clase", ""))
-            if not is_nodular:
-                self.var_morfologia.set(
-                    f"Nodular {self._format_metric(avg_stats['nodularidad'], 2)}% / "
-                    f"Vermicular {self._format_metric(avg_stats['vermicular'], 2)}%"
+            # ── Actualizar campos del informe ────────────────────────────────
+            cal_note = (
+                f"Calibracion: {stats['px_per_mm']:.1f} px/mm (calibracion aplicada)"
+                if px_per_mm
+                else f"Calibracion: {IMAGEJ_RESOLUCION_PX_MM} px/mm (x100 por defecto)"
+            )
+            fmt = self._format_metric
+            if mode == "laminar":
+                morph_label = self._LAMINAR_MORPH_LABELS.get(
+                    avg_stats.get("morfologia_iso", ""), avg_stats.get("morfologia_iso", ""))
+                self.var_morfologia.set(f"Laminar {morph_label}")
+                self.var_tam_grafito.set(avg_stats.get("tam_clase", "") or avg_stats.get("tam_grafito_clase", ""))
+                avg_counts_lines = [
+                    f"  {cat}: {int(round(float(cnt)))}"
+                    for cat, cnt in avg_stats["counts"].items() if cnt
+                ]
+                avg_block_lines = [
+                    f"Morfologia ISO: {morph_label}",
+                    f"Laminillas/mm2: {fmt(avg_stats['n_mm2'], 2)}",
+                    f"Longitud promedio: {fmt(avg_stats.get('long_prom_um', avg_stats.get('diam_prom_um', 0)), 1)} um",
+                    f"Long. max: {fmt(avg_stats.get('long_max_um', avg_stats.get('diam_max_um', 0)), 1)} um  "
+                    f"min: {fmt(avg_stats.get('long_min_um', avg_stats.get('diam_min_um', 0)), 1)} um",
+                    f"Relacion largo/ancho: {fmt(avg_stats.get('aspect_ratio_prom', 0), 2)}",
+                    f"Tamano clase: {avg_stats.get('tam_clase', avg_stats.get('tam_grafito_clase', ''))}",
+                    "Distribucion por longitud:",
+                    *avg_counts_lines,
+                ]
+                self._replace_or_prepend_observation_block(
+                    f"=== Promedio laminar camara ({n_scans} escaneo{'s' if n_scans > 1 else ''}) ===",
+                    avg_block_lines,
                 )
-            self._prompt_quality_value_if_empty(self.var_ce_final, "Carbono equivalente", "CE:")
-            self._prompt_quality_value_if_empty(self.var_c_final, "Carbono total", "C (%):")
-            self._prompt_quality_value_if_empty(self.var_si_final, "Silicio", "Si (%):")
+                self._append_observation_block(
+                    f"Analisis laminar ISO 945 (camara) — escaneo {n_scans}",
+                    [
+                        f"Imagen: {fname}",
+                        cal_note,
+                        f"Morfologia: {self._LAMINAR_MORPH_LABELS.get(stats.get('morfologia_iso',''), stats.get('morfologia_iso',''))}",
+                        f"Laminillas/mm2: {fmt(stats['n_mm2'], 2)}",
+                        f"Long. promedio: {fmt(stats.get('long_prom_um', 0), 1)} um",
+                        f"Tamano predominante: {stats.get('tam_clase', '')}",
+                    ],
+                )
+                title_msg = "Analisis laminar"
+            else:
+                is_nodular = self._family_for_material(self.var_material.get()) == "Nodular"
+                nodule_count_value = IMAGEJ_NODULAR_DEFAULT_NODULES if is_nodular else fmt(avg_stats["n_mm2"], 2)
+                self.var_conteo_nodulos.set(nodule_count_value)
+                self.var_pct_nod.set(fmt(avg_stats["nodularidad"], 2))
+                self.var_tam_grafito.set(avg_stats.get("tam_grafito_clase", ""))
+                if not is_nodular:
+                    self.var_morfologia.set(
+                        f"Nodular {fmt(avg_stats['nodularidad'], 2)}% / "
+                        f"Vermicular {fmt(avg_stats['vermicular'], 2)}%"
+                    )
+                self._prompt_quality_value_if_empty(self.var_ce_final, "Carbono equivalente", "CE:")
+                self._prompt_quality_value_if_empty(self.var_c_final, "Carbono total", "C (%):")
+                self._prompt_quality_value_if_empty(self.var_si_final, "Silicio", "Si (%):")
+                avg_counts_lines = [
+                    f"  {cat}: {int(round(float(cnt)))}"
+                    for cat, cnt in avg_stats["counts"].items() if cnt
+                ]
+                avg_block_lines = [
+                    f"Nodulos/mm2: {fmt(avg_stats['n_mm2'], 2)}",
+                    f"Nodulos/mm2 informado: {nodule_count_value}" if is_nodular else "",
+                    f"Nodularidad: {fmt(avg_stats['nodularidad'], 2)}%",
+                    f"Vermiculares: {fmt(avg_stats['vermicular'], 2)}%",
+                    f"Tamano grafito: {avg_stats.get('tam_grafito_clase', '')}",
+                    f"Diametro promedio: {fmt(avg_stats['diam_prom_um'], 2)} um",
+                    f"Max: {fmt(avg_stats['diam_max_um'], 2)} um  Min: {fmt(avg_stats['diam_min_um'], 2)} um",
+                    "Distribucion por clase:",
+                    *avg_counts_lines,
+                ]
+                self._replace_or_prepend_observation_block(
+                    f"=== Promedio OpenCV camara ({n_scans} escaneo{'s' if n_scans > 1 else ''}) ===",
+                    avg_block_lines,
+                )
+                self._append_observation_block(
+                    f"Analisis OpenCV (camara) — escaneo {n_scans}",
+                    [
+                        f"Imagen: {fname}",
+                        cal_note,
+                        f"Area minima: {IMAGEJ_AREA_UMBRAL} px",
+                        f"Nodulos/mm2: {fmt(stats['n_mm2'], 2)}",
+                        f"Nodularidad: {fmt(stats['nodularidad'], 2)}%",
+                        f"Tamano predominante: {stats.get('tam_grafito_clase', '')}",
+                    ],
+                )
+                title_msg = "Conteo de nodulos"
 
+            # ── Imágenes del grupo (gráfico + tabla) ─────────────────────────
             try:
-                chart = self._create_imagej_distribution_chart(avg_stats, f"Camara {fname[:16]}")
+                chart_stats = avg_stats.copy()
+                if mode == "laminar":
+                    chart_stats.setdefault("tam_grafito_clase", avg_stats.get("tam_clase", ""))
+                chart = self._create_imagej_distribution_chart(chart_stats, f"Camara {fname[:16]}")
                 if chart:
                     chart["scan_group_id"] = scan_group_id
                     chart["scan_group_label"] = scan_group_label
@@ -2523,43 +2765,6 @@ class TabCalidad(ttk.Frame):
             except Exception as ex:
                 errors.append(f"Tabla de resultados: {ex}")
 
-            cal_note = (
-                f"Calibracion: {stats['px_per_mm']:.1f} px/mm (calibracion aplicada)"
-                if px_per_mm
-                else f"Calibracion: {IMAGEJ_RESOLUCION_PX_MM} px/mm (x100 por defecto)"
-            )
-            avg_counts_lines = [
-                f"  {category}: {int(round(float(count)))}"
-                for category, count in avg_stats["counts"].items()
-                if count
-            ]
-            avg_block_lines = [
-                f"Nodulos/mm2: {self._format_metric(avg_stats['n_mm2'], 2)}",
-                f"Nodulos/mm2 informado: {nodule_count_value}" if is_nodular else "",
-                f"Nodularidad: {self._format_metric(avg_stats['nodularidad'], 2)}%",
-                f"Vermiculares: {self._format_metric(avg_stats['vermicular'], 2)}%",
-                f"Tamano grafito: {avg_stats.get('tam_grafito_clase', '')}",
-                f"Diametro promedio: {self._format_metric(avg_stats['diam_prom_um'], 2)} um",
-                f"Max: {self._format_metric(avg_stats['diam_max_um'], 2)} um  Min: {self._format_metric(avg_stats['diam_min_um'], 2)} um",
-                "Distribucion por clase:",
-                *avg_counts_lines,
-            ]
-            self._replace_or_prepend_observation_block(
-                f"=== Promedio OpenCV camara ({n_scans} escaneo{'s' if n_scans > 1 else ''}) ===",
-                avg_block_lines,
-            )
-            self._append_observation_block(
-                f"Analisis OpenCV (camara) — escaneo {n_scans}",
-                [
-                    f"Imagen: {fname}",
-                    cal_note,
-                    f"Area minima: {IMAGEJ_AREA_UMBRAL} px",
-                    f"Nodulos/mm2: {self._format_metric(stats['n_mm2'], 2)}",
-                    f"Nodularidad: {self._format_metric(stats['nodularidad'], 2)}%",
-                    f"Tamano predominante: {stats.get('tam_grafito_clase', '')}",
-                ],
-            )
-
             self._report_images = self._normalize_report_images(self._report_images)
             self._refresh_images_ui()
             if attached_ids:
@@ -2571,17 +2776,17 @@ class TabCalidad(ttk.Frame):
                 except Exception:
                     pass
                 self._images_changed()
+            unit_word = "laminillas" if mode == "laminar" else "nodulos"
             if n_scans == 1:
-                status_var.set(f"Escaneo 1 guardado — {stats['n_total']} nodulos")
+                status_var.set(f"Escaneo 1 guardado — {stats['n_total']} {unit_word}")
                 msg = "Analisis guardado en el informe."
             else:
-                status_var.set(f"Promedio de {n_scans} escaneos actualizado en el informe")
-                msg = f"Escaneo {n_scans} guardado.\nEl informe fue actualizado con el promedio de {n_scans} escaneos."
+                status_var.set(f"Promedio de {n_scans} escaneos actualizado")
+                msg = f"Escaneo {n_scans} guardado.\nPromedio de {n_scans} escaneos aplicado al informe."
             if errors:
-                messagebox.showwarning("Conteo de nodulos",
-                    msg + "\n\nAvisos:\n" + "\n".join(errors), parent=win)
+                messagebox.showwarning(title_msg, msg + "\n\nAvisos:\n" + "\n".join(errors), parent=win)
             else:
-                messagebox.showinfo("Conteo de nodulos", msg, parent=win)
+                messagebox.showinfo(title_msg, msg, parent=win)
 
         btn_save.config(command=_do_save)
         btn_save_count.config(command=_do_save_and_count)
@@ -2940,6 +3145,129 @@ class TabCalidad(ttk.Frame):
             "counts": counts,
             "tam_grafito_clase": tam_grafito,
             "px_per_mm": round(scale, 4),
+        }
+
+    # ── Análisis grafito laminar (ISO 945) ────────────────────────────────────
+
+    _LAMINAR_MORPH_LABELS = {
+        "A": "A — Distribución uniforme aleatoria",
+        "B": "B — Distribución en rosetas",
+        "C": "C — Grafito Kish (laminillas grandes)",
+        "D": "D — Interdendrítico aleatorio",
+        "E": "E — Interdendrítico orientado",
+    }
+
+    def _get_laminar_contours(self, image_bgr, threshold=0, min_area=100, blur_size=5):
+        import numpy as np
+        import cv2 as _cv2
+        gray = _cv2.cvtColor(image_bgr, _cv2.COLOR_BGR2GRAY)
+        k = blur_size if blur_size % 2 == 1 else blur_size + 1
+        blur = _cv2.GaussianBlur(gray, (k, k), 0)
+        if threshold > 0:
+            _, thresh = _cv2.threshold(blur, threshold, 255, _cv2.THRESH_BINARY_INV)
+        else:
+            _, thresh = _cv2.threshold(blur, 0, 255, _cv2.THRESH_BINARY_INV + _cv2.THRESH_OTSU)
+        kernel = np.ones((2, 2), np.uint8)
+        thresh = _cv2.morphologyEx(thresh, _cv2.MORPH_OPEN, kernel, iterations=1)
+        contours, _ = _cv2.findContours(thresh, _cv2.RETR_EXTERNAL, _cv2.CHAIN_APPROX_SIMPLE)
+        result = []
+        for cnt in contours:
+            area = _cv2.contourArea(cnt)
+            if area < min_area:
+                continue
+            perimeter = _cv2.arcLength(cnt, True)
+            circ = (4 * np.pi * area / perimeter ** 2) if perimeter > 0 else 0
+            rect = _cv2.minAreaRect(cnt)
+            (_, _), (rw, rh), angle = rect
+            length_px = float(max(rw, rh))
+            width_px  = float(min(rw, rh))
+            if rw < rh:
+                angle = angle + 90
+            angle = float(angle % 180)
+            aspect = length_px / max(width_px, 1.0)
+            result.append({
+                "contour":     cnt,
+                "circ":        float(circ),
+                "length_px":   length_px,
+                "width_px":    width_px,
+                "aspect_ratio": float(aspect),
+                "angle":       angle,
+                "area_px":     float(area),
+            })
+        return result
+
+    def _classify_laminar_morphology(self, flakes):
+        import numpy as np
+        if not flakes:
+            return "—"
+        elongated = [f for f in flakes if f.get("aspect_ratio", 1) >= 2.0]
+        if not elongated:
+            return "D"
+        lengths = [f["length_um"] for f in elongated]
+        mean_len  = float(np.mean(lengths))
+        std_len   = float(np.std(lengths))
+        cv_len    = std_len / mean_len if mean_len > 0 else 0
+        norm_angles = [f["angle"] % 90 for f in elongated]
+        std_angle   = float(np.std(norm_angles)) if norm_angles else 90.0
+        # Tipo C: Kish — laminillas muy grandes o distribución muy variable en tamaño
+        if mean_len > 400 or (mean_len > 150 and cv_len > 0.9):
+            return "C"
+        # Tipo E: interdendrítico orientado — ángulos concentrados
+        if std_angle < 18 and mean_len < 180:
+            return "E"
+        # Tipo D: muy fino y aleatorio
+        if mean_len < 35:
+            return "D"
+        # Tipo B: rosetas — alta variabilidad de tamaños en rango medio
+        if cv_len > 0.6 and 35 <= mean_len <= 200:
+            return "B"
+        # Tipo A por defecto
+        return "A"
+
+    def _count_laminar_opencv(self, image_bgr, px_per_mm=None, threshold=0, min_area=None):
+        import numpy as np
+        if min_area is None:
+            min_area = getattr(self, "_cam_min_area", IMAGEJ_AREA_UMBRAL)
+        scale = float(px_per_mm) if px_per_mm else IMAGEJ_RESOLUCION_PX_MM
+        h, w = image_bgr.shape[:2]
+        area_mm2 = (w / scale) * (h / scale)
+        flakes = self._get_laminar_contours(image_bgr, threshold=threshold,
+                                            min_area=min_area, blur_size=5)
+        if not flakes:
+            return None
+        for f in flakes:
+            f["length_um"] = (f["length_px"] / scale) * 1000.0
+            f["width_um"]  = (f["width_px"]  / scale) * 1000.0
+        n_total = len(flakes)
+        n_mm2   = n_total / area_mm2 if area_mm2 > 0 else 0
+        lengths = [f["length_um"] for f in flakes]
+        counts  = {}
+        for label, lo, hi in IMAGEJ_LIMITS:
+            lo_um = lo * 1000; hi_um = hi * 1000
+            n = sum(1 for f in flakes if lo_um <= f["length_um"] < hi_um)
+            if n:
+                counts[label] = n
+        fuera = sum(1 for f in flakes
+                    if not any(lo*1000 <= f["length_um"] < hi*1000
+                               for _, lo, hi in IMAGEJ_LIMITS))
+        if fuera:
+            counts["Fuera de clase"] = fuera
+        tam_clase    = self._imagej_majority_size_text(counts)
+        morph_type   = self._classify_laminar_morphology(flakes)
+        aspects      = [f["aspect_ratio"] for f in flakes]
+        return {
+            "n_total":         n_total,
+            "n_mm2":           round(n_mm2, 2),
+            "long_prom_um":    round(float(np.mean(lengths)), 2),
+            "long_max_um":     round(float(np.max(lengths)), 2),
+            "long_min_um":     round(float(np.min(lengths)), 2),
+            "aspect_ratio_prom": round(float(np.mean(aspects)), 2),
+            "morfologia_iso":  morph_type,
+            "morfologia_label": self._LAMINAR_MORPH_LABELS.get(morph_type, morph_type),
+            "tam_clase":       tam_clase,
+            "counts":          counts,
+            "px_per_mm":       round(scale, 4),
+            "flakes":          flakes,
         }
 
     def _imagej_class_code(self, label):

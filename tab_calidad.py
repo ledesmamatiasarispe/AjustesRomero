@@ -2269,15 +2269,17 @@ class TabCalidad(ttk.Frame):
             _show_preview(display_bgr)
 
         def _update_live():
-            if not live[0] or not win.winfo_exists():
+            if not win.winfo_exists():
                 return
-            ret, frame = cap.read()
-            if ret:
-                try:
-                    _show_frame(frame)
-                except Exception:
-                    pass   # nunca dejar morir el loop por una excepción en _show_frame
-            # Leer stats que vienen del hilo de detección (thread-safe via queue)
+            # Leer cámara solo en live; en freeze el frame ya está en captured_frame[0]
+            if live[0]:
+                ret, frame = cap.read()
+                if ret:
+                    try:
+                        _show_frame(frame)
+                    except Exception:
+                        pass
+            # Stats queue: siempre procesar (live y freeze)
             try:
                 sts = _stats_queue.get_nowait()
                 stats_cache[0] = sts
@@ -2287,7 +2289,7 @@ class TabCalidad(ttk.Frame):
                     _update_stats_panel(sts)
             except _queue.Empty:
                 pass
-            # Hover: usar posición guardada por <Motion> (compatible con Wayland/Linux)
+            # Hover: siempre activo cuando hay contornos (live y freeze)
             if show_contours_var.get() and frame_counter[0] % 3 == 0:
                 pos = _last_mouse[0]
                 if pos is not None:

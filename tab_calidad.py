@@ -1842,11 +1842,13 @@ class TabCalidad(ttk.Frame):
                 nod_section.pack(fill="x")
                 stats_panel.config(text="Conteo de nodulos")
                 btn_save_count.config(text="Guardar y contar nodulos")
+                btn_contours.config(text="Conteo nodulos")
             else:
                 nod_section.pack_forget()
                 lam_section.pack(fill="x")
                 stats_panel.config(text="Analisis grafito laminar (ISO 945)")
                 btn_save_count.config(text="Guardar y analizar laminar")
+                btn_contours.config(text="Ver laminillas")
 
         # on_redraw para overlay de mediciones y nódulo hover
         # Las medidas van PRIMERO: si el hover lanza excepción las medidas siguen visibles

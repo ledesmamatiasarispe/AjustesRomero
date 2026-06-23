@@ -2147,18 +2147,22 @@ class TabCalidad(ttk.Frame):
             return binary
 
         def _lam_contour_color(flake):
-            """Colorea por tipo: amarillo=MnS, rojo/verde/azul/gris=grafito por tamaño."""
-            if flake.get("particle_type") == "mns":
-                return (0, 220, 220)   # amarillo (BGR) — posible MnS
+            """Colorea por tipo de material (intensidad+forma) y por tamaño de laminilla.
+            - MnS (grisáceo):   cian
+            - Rechupe (oscuro e irregular): rojo
+            - Grafito C:  verde/azul/gris según tamaño ISO 945
+            """
+            mat = flake.get("classification", "C")
+            if mat == "MnS":
+                return self._MAT_COLOR_BGR["MnS"]      # cian
+            if mat == "rechupe":
+                return self._MAT_COLOR_BGR["rechupe"]  # rojo
+            # Grafito C — diferenciar por tamaño de laminilla
             length_um = flake.get("length_um") or (flake["length_px"] / max(_cam_px_mm() or IMAGEJ_RESOLUCION_PX_MM, 1)) * 1000
-            if length_um >= 250:   # Clase 3
-                return (0, 60, 220)    # rojo-anaranjado (grandes)
-            elif length_um >= 60:  # Clase 5-4
-                return (0, 200, 0)     # verde (medianos)
-            elif length_um >= 15:  # Clase 7-6
-                return (220, 120, 0)   # azul (finos)
-            else:                  # Clase 8
-                return (180, 180, 180) # gris (muy finos)
+            if length_um >= 250:   return (0, 60, 220)     # rojo-anaranjado (grandes)
+            elif length_um >= 60:  return (0, 200, 0)      # verde (medianos)
+            elif length_um >= 15:  return (220, 120, 0)    # azul (finos)
+            else:                  return (180, 180, 180)  # gris (muy finos)
 
         def _show_frame(frame_bgr):
             px_mm = _cam_px_mm()
@@ -2242,8 +2246,7 @@ class TabCalidad(ttk.Frame):
                     if mode == "laminar":
                         color = _lam_contour_color(p)
                     else:
-                        color = self._MAT_COLOR_BGR.get(
-                            p.get("classification", "C"), (0, 220, 0))
+                        color = (0, 220, 0) if p["circ"] >= 0.5 else (0, 140, 255)
                     cv2.drawContours(display_bgr, [cnt.astype(np.int32)], -1, color, 2)
 
             _show_preview(display_bgr)
@@ -3328,6 +3331,7 @@ class TabCalidad(ttk.Frame):
         thresh = _cv2.morphologyEx(thresh, _cv2.MORPH_OPEN, kernel, iterations=1)
         contours, _ = _cv2.findContours(thresh, _cv2.RETR_EXTERNAL, _cv2.CHAIN_APPROX_SIMPLE)
         result = []
+        mask_buf = np.zeros(gray.shape, dtype=np.uint8)
         for cnt in contours:
             area = _cv2.contourArea(cnt)
             if area < min_area:
@@ -3342,21 +3346,30 @@ class TabCalidad(ttk.Frame):
                 angle = angle + 90
             angle = float(angle % 180)
             aspect = length_px / max(width_px, 1.0)
-            # Clasificacion preliminar por forma:
-            # MnS son compactas/redondas; el grafito laminar es alargado
+            # Solidez e intensidad media para clasificación por color
+            hull_area = _cv2.contourArea(_cv2.convexHull(cnt))
+            solidity = float(area / hull_area) if hull_area > 0 else 1.0
+            mask_buf[:] = 0
+            _cv2.drawContours(mask_buf, [cnt], -1, 255, -1)
+            mean_val = float(_cv2.mean(gray, mask=mask_buf)[0])
+            classification = self._classify_particle_material(mean_val, solidity)
+            # particle_type por forma (retrocompatibilidad) + classification por color
             if circ >= 0.5 and aspect < 2.0:
                 ptype = "mns"
             else:
                 ptype = "graphite"
             result.append({
-                "contour":       cnt,
-                "circ":          float(circ),
-                "length_px":     length_px,
-                "width_px":      width_px,
-                "aspect_ratio":  float(aspect),
-                "angle":         angle,
-                "area_px":       float(area),
-                "particle_type": ptype,
+                "contour":        cnt,
+                "circ":           float(circ),
+                "length_px":      length_px,
+                "width_px":       width_px,
+                "aspect_ratio":   float(aspect),
+                "angle":          angle,
+                "area_px":        float(area),
+                "particle_type":  ptype,
+                "mean_val":       mean_val,
+                "solidity":       solidity,
+                "classification": classification,
             })
         return result
 

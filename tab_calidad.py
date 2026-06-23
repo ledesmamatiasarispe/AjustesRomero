@@ -1685,6 +1685,7 @@ class TabCalidad(ttk.Frame):
         analysis_mode_var   = tk.StringVar(value="nodular")   # "nodular" | "laminar"
         thresh_var        = tk.IntVar(value=0)
         min_area_var      = tk.IntVar(value=getattr(self, "_cam_min_area", IMAGEJ_AREA_UMBRAL))
+        use_open_var      = tk.BooleanVar(value=True)
         measure_var       = tk.BooleanVar(value=False)
         meas_pending_cam  = []   # primer punto pendiente (coords originales de cámara)
         meas_list_cam     = []   # medidas completadas
@@ -2127,6 +2128,13 @@ class TabCalidad(ttk.Frame):
                                  textvariable=min_area_var, width=7, justify="center")
         min_area_sb.pack(side="left")
 
+        def _on_open_change(*_):
+            contours_cache[0] = None; stats_cache[0] = None
+
+        use_open_var.trace_add("write", _on_open_change)
+        ttk.Checkbutton(thresh_row, text="OPEN morfológico",
+                        variable=use_open_var).pack(side="left", padx=(16, 0))
+
         def _on_min_area_change(*_):
             contours_cache[0] = None
             stats_cache[0] = None
@@ -2179,12 +2187,13 @@ class TabCalidad(ttk.Frame):
                     _cnt_computing[0] = True
                     _fbg = frame_bgr.copy()
                     _t = thresh_var.get(); _ma = min_area_var.get(); _pmm = px_mm; _mode = mode
+                    _open = use_open_var.get()
                     def _cnt_worker():
                         try:
                             if _mode == "laminar":
                                 cnts = self._get_laminar_contours(_fbg, threshold=_t,
-                                                                  min_area=_ma, blur_size=11)
-                                # inyectar length_um para el color
+                                                                  min_area=_ma, blur_size=11,
+                                                                  use_open=_open)
                                 _s = float(_pmm) if _pmm else IMAGEJ_RESOLUCION_PX_MM
                                 for f in cnts:
                                     f["length_um"] = (f["length_px"] / _s) * 1000
@@ -2192,9 +2201,11 @@ class TabCalidad(ttk.Frame):
                                                                  threshold=_t, min_area=_ma)
                             else:
                                 cnts = self._get_nodule_contours(_fbg, blur_size=11,
-                                                                 threshold=_t, min_area=_ma)
+                                                                 threshold=_t, min_area=_ma,
+                                                                 use_open=_open)
                                 sts  = self._count_nodules_opencv(_fbg, px_per_mm=_pmm,
-                                                                  threshold=_t, min_area=_ma)
+                                                                  threshold=_t, min_area=_ma,
+                                                                  use_open=_open)
                         except Exception:
                             cnts = []; sts = None
                         finally:
@@ -2207,7 +2218,8 @@ class TabCalidad(ttk.Frame):
                     try:
                         if mode == "laminar":
                             cnts = self._get_laminar_contours(frame_bgr, threshold=thresh_var.get(),
-                                                              min_area=min_area_var.get())
+                                                              min_area=min_area_var.get(),
+                                                              use_open=use_open_var.get())
                             _s = float(px_mm) if px_mm else IMAGEJ_RESOLUCION_PX_MM
                             for f in cnts:
                                 f["length_um"] = (f["length_px"] / _s) * 1000
@@ -2215,7 +2227,8 @@ class TabCalidad(ttk.Frame):
                         else:
                             contours_cache[0] = self._get_nodule_contours(
                                 frame_bgr, threshold=thresh_var.get(),
-                                min_area=min_area_var.get())
+                                min_area=min_area_var.get(),
+                                use_open=use_open_var.get())
                     except Exception:
                         contours_cache[0] = []
                 if do_contours and stats_cache[0] is None:
@@ -3156,7 +3169,7 @@ class TabCalidad(ttk.Frame):
             return "rechupe"
         return "C"
 
-    def _get_nodule_contours(self, image_bgr, blur_size=5, threshold=0, min_area=None):
+    def _get_nodule_contours(self, image_bgr, blur_size=5, threshold=0, min_area=None, use_open=True):
         import numpy as np
         import cv2 as _cv2
         area_min = int(min_area) if min_area is not None else IMAGEJ_AREA_UMBRAL
@@ -3168,7 +3181,8 @@ class TabCalidad(ttk.Frame):
         else:
             _, thresh = _cv2.threshold(blur, 0, 255, _cv2.THRESH_BINARY_INV + _cv2.THRESH_OTSU)
         kernel = np.ones((3, 3), np.uint8)
-        thresh = _cv2.morphologyEx(thresh, _cv2.MORPH_OPEN, kernel, iterations=1)
+        if use_open:
+            thresh = _cv2.morphologyEx(thresh, _cv2.MORPH_OPEN, kernel, iterations=1)
         thresh = _cv2.morphologyEx(thresh, _cv2.MORPH_CLOSE, kernel, iterations=1)
         contours, _ = _cv2.findContours(thresh, _cv2.RETR_EXTERNAL, _cv2.CHAIN_APPROX_SIMPLE)
         result = []
@@ -3197,7 +3211,7 @@ class TabCalidad(ttk.Frame):
             })
         return result
 
-    def _count_nodules_opencv(self, image_bgr, px_per_mm=None, threshold=0, min_area=None):
+    def _count_nodules_opencv(self, image_bgr, px_per_mm=None, threshold=0, min_area=None, use_open=True):
         import numpy as np
         import cv2 as _cv2
 
@@ -3213,7 +3227,8 @@ class TabCalidad(ttk.Frame):
         else:
             _, thresh = _cv2.threshold(blur, 0, 255, _cv2.THRESH_BINARY_INV + _cv2.THRESH_OTSU)
         kernel = np.ones((3, 3), np.uint8)
-        thresh = _cv2.morphologyEx(thresh, _cv2.MORPH_OPEN, kernel, iterations=1)
+        if use_open:
+            thresh = _cv2.morphologyEx(thresh, _cv2.MORPH_OPEN, kernel, iterations=1)
         thresh = _cv2.morphologyEx(thresh, _cv2.MORPH_CLOSE, kernel, iterations=1)
 
         contours, _ = _cv2.findContours(thresh, _cv2.RETR_EXTERNAL, _cv2.CHAIN_APPROX_SIMPLE)
@@ -3333,7 +3348,7 @@ class TabCalidad(ttk.Frame):
         "E": "E — Interdendrítico orientado",
     }
 
-    def _get_laminar_contours(self, image_bgr, threshold=0, min_area=100, blur_size=5):
+    def _get_laminar_contours(self, image_bgr, threshold=0, min_area=100, blur_size=5, use_open=True):
         import numpy as np
         import cv2 as _cv2
         gray = _cv2.cvtColor(image_bgr, _cv2.COLOR_BGR2GRAY)
@@ -3344,7 +3359,8 @@ class TabCalidad(ttk.Frame):
         else:
             _, thresh = _cv2.threshold(blur, 0, 255, _cv2.THRESH_BINARY_INV + _cv2.THRESH_OTSU)
         kernel = np.ones((2, 2), np.uint8)
-        thresh = _cv2.morphologyEx(thresh, _cv2.MORPH_OPEN, kernel, iterations=1)
+        if use_open:
+            thresh = _cv2.morphologyEx(thresh, _cv2.MORPH_OPEN, kernel, iterations=1)
         contours, _ = _cv2.findContours(thresh, _cv2.RETR_EXTERNAL, _cv2.CHAIN_APPROX_SIMPLE)
         result = []
         mask_buf = np.zeros(gray.shape, dtype=np.uint8)

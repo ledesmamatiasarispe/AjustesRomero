@@ -3148,27 +3148,53 @@ class TabCalidad(ttk.Frame):
 
     def _classify_particle_material(self, mean_val, solidity, mean_bgr=None, circ=0.0,
                                     mns_thresh=95, rechupe_solidity=0.52,
-                                    mns_blue_ratio=1.12, mns_min_circ=0.45):
-        """Clasifica una partícula por forma, intensidad y color BGR.
+                                    mns_blue_ratio=1.12, mns_min_circ=0.45,
+                                    rechupe_sat_thresh=70, rechupe_val_thresh=95):
+        """Clasifica una partícula por forma, intensidad y color HSV/BGR.
 
-        MnS: REDONDA (circ >= mns_min_circ) Y con color grisáceo/violáceo:
-          - Criterio de color 1: intensidad grisácea (mean_val > mns_thresh)
-          - Criterio de color 2: tinte azul-violáceo (B/R >= mns_blue_ratio)
-          Ambas condiciones deben cumplirse: forma circular + al menos un criterio de color.
-        Rechupe: oscuro (no-MnS) + forma muy irregular (solidity baja).
-        Grafito C: resto (oscuro y relativamente regular).
+        Micro-rechupes en plano inferior → púrpura INTENSO y OSCURO:
+          alta saturación HSV (S > rechupe_sat_thresh) Y
+          bajo brillo HSV (V < rechupe_val_thresh).
+          Se detectan ANTES que MnS para no confundirse con ellos.
+
+        MnS: REDONDA + color GRISÁCEO (baja saturación, no oscuro-saturado):
+          - Criterio 1: intensidad media grisácea (mean_val > mns_thresh)
+          - Criterio 2: tinte azul-violáceo (B/R >= mns_blue_ratio)
+          Con la condición extra de que NO sea un rechupe (no oscuro+saturado).
+
+        Rechupe por forma: oscuro y forma muy irregular (solidity baja).
+        Grafito C: resto.
         """
-        # Primero verificar si tiene la forma redonda necesaria para MnS
+        # Analizar HSV para detectar el púrpura oscuro característico del rechupe
+        hsv_s, hsv_v = 0, 255
+        if mean_bgr is not None:
+            try:
+                import cv2 as _cv2
+                import numpy as np
+                px = np.uint8([[[int(mean_bgr[0]), int(mean_bgr[1]), int(mean_bgr[2])]]])
+                hsv = _cv2.cvtColor(px, _cv2.COLOR_BGR2HSV)[0][0]
+                hsv_s, hsv_v = int(hsv[1]), int(hsv[2])
+            except Exception:
+                pass
+
+        # Rechupe cromático: oscuro + muy saturado (púrpura intenso)
+        if hsv_s > rechupe_sat_thresh and hsv_v < rechupe_val_thresh:
+            return "rechupe"
+
+        # MnS: redondo + grisáceo/violáceo leve (NO el púrpura intenso del rechupe)
         if circ >= mns_min_circ:
             color_gris   = mean_val > mns_thresh
             color_violet = False
             if mean_bgr is not None:
-                b, g, r = float(mean_bgr[0]), float(mean_bgr[1]), float(mean_bgr[2])
+                b, r = float(mean_bgr[0]), float(mean_bgr[2])
                 color_violet = b > 25 and (b / max(r, 1)) >= mns_blue_ratio
             if color_gris or color_violet:
                 return "MnS"
+
+        # Rechupe por forma: oscuro e irregular
         if solidity < rechupe_solidity:
             return "rechupe"
+
         return "C"
 
     def _get_nodule_contours(self, image_bgr, blur_size=5, threshold=0, min_area=None, use_open=True):

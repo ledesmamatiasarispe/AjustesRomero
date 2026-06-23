@@ -2198,7 +2198,8 @@ class TabCalidad(ttk.Frame):
                                 for f in cnts:
                                     f["length_um"] = (f["length_px"] / _s) * 1000
                                 sts = self._count_laminar_opencv(_fbg, px_per_mm=_pmm,
-                                                                 threshold=_t, min_area=_ma)
+                                                                 threshold=_t, min_area=_ma,
+                                                                 blur_size=11, use_open=_open)
                             else:
                                 cnts = self._get_nodule_contours(_fbg, blur_size=11,
                                                                  threshold=_t, min_area=_ma,
@@ -3189,9 +3190,9 @@ class TabCalidad(ttk.Frame):
             except Exception:
                 pass
 
-        # Grafito C negro neutro: muy oscuro Y muy baja saturacion (negro puro)
-        # → siempre es grafito independientemente de la forma
-        if hsv_v < 60 and hsv_s < 45:
+        # Grafito C negro neutro: EXTREMADAMENTE oscuro Y saturacion MUY baja (negro puro)
+        # Umbral estricto: S<30 para no confundir con rechupes iridiscentes (S≈35-60)
+        if hsv_v < 55 and hsv_s < 30:
             return "C"
 
         # Rechupe cromático: oscuro + muy saturado (púrpura intenso)
@@ -3479,7 +3480,8 @@ class TabCalidad(ttk.Frame):
         # Tipo A por defecto
         return "A"
 
-    def _count_laminar_opencv(self, image_bgr, px_per_mm=None, threshold=0, min_area=None):
+    def _count_laminar_opencv(self, image_bgr, px_per_mm=None, threshold=0, min_area=None,
+                             blur_size=5, use_open=True):
         import numpy as np
         if min_area is None:
             min_area = getattr(self, "_cam_min_area", IMAGEJ_AREA_UMBRAL)
@@ -3487,7 +3489,8 @@ class TabCalidad(ttk.Frame):
         h, w = image_bgr.shape[:2]
         area_mm2 = (w / scale) * (h / scale)
         flakes = self._get_laminar_contours(image_bgr, threshold=threshold,
-                                            min_area=min_area, blur_size=5)
+                                            min_area=min_area, blur_size=blur_size,
+                                            use_open=use_open)
         if not flakes:
             return None
         MNS_MAX_DIAM_UM = 30.0   # inclusiones MnS tipicas < 30 µm de diametro equivalente

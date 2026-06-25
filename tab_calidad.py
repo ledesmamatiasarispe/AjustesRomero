@@ -865,18 +865,22 @@ class TabCalidad(ttk.Frame):
         last  = [None]
         photo = [None]
 
+        def _cw(): return max(canvas.winfo_width(),  preview_w)
+        def _ch(): return max(canvas.winfo_height(), preview_h)
+
         def _clamp(fw, fh):
-            vw = preview_w / zoom[0]; vh = preview_h / zoom[0]
+            vw = _cw() / zoom[0]; vh = _ch() / zoom[0]
             pan[0] = max(0.0, min(pan[0], max(0.0, fw - vw)))
             pan[1] = max(0.0, min(pan[1], max(0.0, fh - vh)))
 
         def _render(pil_img):
+            cw, ch = _cw(), _ch()
             fw, fh = pil_img.size
             _clamp(fw, fh)
-            vw = preview_w / zoom[0]; vh = preview_h / zoom[0]
+            vw = cw / zoom[0]; vh = ch / zoom[0]
             box = (pan[0], pan[1], pan[0] + vw, pan[1] + vh)
             resample = Image.NEAREST if zoom[0] > 3 else Image.LANCZOS
-            cropped = pil_img.crop(box).resize((preview_w, preview_h), resample)
+            cropped = pil_img.crop(box).resize((cw, ch), resample)
             ph = ImageTk.PhotoImage(cropped)
             canvas.delete("all")
             canvas.create_image(0, 0, anchor="nw", image=ph)
@@ -949,6 +953,7 @@ class TabCalidad(ttk.Frame):
         canvas.bind("<B3-Motion>",        on_r_drag)
         canvas.bind("<ButtonRelease-3>",  on_r_release)
         canvas.bind("<Double-Button-1>",  lambda e: reset())
+        canvas.bind("<Configure>", lambda e: _render(last[0]) if last[0] is not None else None)
 
         return canvas, show_frame, reset, canvas_to_img, img_to_canvas
 
@@ -1669,12 +1674,18 @@ class TabCalidad(ttk.Frame):
         cam_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         cam_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
-        PREVIEW_W, PREVIEW_H = 820, 616
+        PREVIEW_W, PREVIEW_H = 820, 616   # valores iniciales; el canvas puede crecer
+
+        def _cpw():
+            try: return max(lbl_preview.winfo_width(),  PREVIEW_W)
+            except Exception: return PREVIEW_W
+        def _cph():
+            try: return max(lbl_preview.winfo_height(), PREVIEW_H)
+            except Exception: return PREVIEW_H
 
         def _fill(bgr):
-            """Redimensiona el frame al tamaño del canvas sin recortar."""
-            return cv2.resize(bgr, (PREVIEW_W, PREVIEW_H),
-                              interpolation=cv2.INTER_LINEAR)
+            """Redimensiona el frame al tamaño actual del canvas."""
+            return cv2.resize(bgr, (_cpw(), _cph()), interpolation=cv2.INTER_LINEAR)
         captured_frame = [None]
         live = [True]
         contours_cache = [None]
@@ -1885,7 +1896,7 @@ class TabCalidad(ttk.Frame):
         # on_redraw para overlay de mediciones y nódulo hover
         # Las medidas van PRIMERO: si el hover lanza excepción las medidas siguen visibles
         def _cam_on_redraw(cv):
-            sx = PREVIEW_W / max(cam_w, 1); sy = PREVIEW_H / max(cam_h, 1)
+            sx = _cpw() / max(cam_w, 1); sy = _cph() / max(cam_h, 1)
             # ── Medidas (siempre se dibujan primero) ──────────────────────────
             if meas_pending_cam:
                 dx = meas_pending_cam[0][0] * sx; dy = meas_pending_cam[0][1] * sy
@@ -2257,7 +2268,7 @@ class TabCalidad(ttk.Frame):
             if do_contours:
                 import numpy as np
                 fh, fw = frame_bgr.shape[:2]
-                sx = PREVIEW_W / max(fw, 1); sy = PREVIEW_H / max(fh, 1)
+                sx = _cpw() / max(fw, 1); sy = _cph() / max(fh, 1)
                 for p in (contours_cache[0] or []):
                     cnt = p["contour"].astype(np.float32).copy()
                     cnt[..., 0] *= sx; cnt[..., 1] *= sy
@@ -2334,8 +2345,8 @@ class TabCalidad(ttk.Frame):
         def _on_canvas_click(event):
             frame = captured_frame[0]   # None si está en live (el overlay se dibuja igual)
             dx, dy = _c2i_prev(event.x, event.y)
-            orig_x = dx * cam_w / PREVIEW_W
-            orig_y = dy * cam_h / PREVIEW_H
+            orig_x = dx * cam_w / _cpw()
+            orig_y = dy * cam_h / _cph()
             if not (0 <= orig_x <= cam_w and 0 <= orig_y <= cam_h):
                 return
             if not meas_pending_cam:
@@ -2373,8 +2384,8 @@ class TabCalidad(ttk.Frame):
                 return
             try:
                 dx0, dy0 = _c2i_prev(ex, ey)
-                ox = dx0 * cam_w / PREVIEW_W
-                oy = dy0 * cam_h / PREVIEW_H
+                ox = dx0 * cam_w / _cpw()
+                oy = dy0 * cam_h / _cph()
             except Exception:
                 return
             _hover_computing[0] = True

@@ -204,9 +204,15 @@ printf 'SLEEPING=%s\n' "$(test -f /tmp/pie-horno-sleep.txt && echo yes || echo n
                 result = self._ssh_command(self._raspberry_status_command(), timeout=RASPBERRY_CMD_TIMEOUT)
                 output = result.stdout or ""
                 error = (result.stderr or "").strip()
-                self.after(0, lambda: self._apply_raspberry_status(result.returncode, output, error))
+                try:
+                    self.after(0, lambda: self._apply_raspberry_status(result.returncode, output, error))
+                except Exception:
+                    pass
             except Exception as ex:
-                self.after(0, lambda: self._apply_raspberry_status(1, "", str(ex)))
+                try:
+                    self.after(0, lambda: self._apply_raspberry_status(1, "", str(ex)))
+                except Exception:
+                    pass
 
         threading.Thread(target=worker, daemon=True).start()
         return True
@@ -313,9 +319,15 @@ printf 'SLEEPING=%s\n' "$(test -f /tmp/pie-horno-sleep.txt && echo yes || echo n
                 err = (result.stderr or "").strip()
                 out = (result.stdout or "").strip()
                 msg = out or err or "Comando enviado."
-                self.after(0, lambda: self._finish_raspberry_action(action, result.returncode, msg))
+                try:
+                    self.after(0, lambda: self._finish_raspberry_action(action, result.returncode, msg))
+                except Exception:
+                    pass
             except Exception as ex:
-                self.after(0, lambda: self._finish_raspberry_action(action, 1, str(ex)))
+                try:
+                    self.after(0, lambda: self._finish_raspberry_action(action, 1, str(ex)))
+                except Exception:
+                    pass
 
         threading.Thread(target=worker, daemon=True).start()
 

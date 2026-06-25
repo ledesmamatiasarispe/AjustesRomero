@@ -2698,6 +2698,13 @@ class TabCalidad(ttk.Frame):
                 pos = _last_mouse[0]
                 if pos is not None:
                     _launch_hover(pos[0], pos[1])
+            # Sincronizar destino con la selección de la pestaña Calidad (~cada 1s)
+            if frame_counter[0] % 30 == 0:
+                new_lote = _default_lote(); new_mat = _default_mat()
+                if new_lote and new_lote != target_lote_var.get():
+                    target_lote_var.set(new_lote)
+                if new_mat and new_mat != target_mat_var.get():
+                    target_mat_var.set(new_mat)
             win.after(33, _update_live)
 
         def _enter_frozen():

@@ -2206,10 +2206,9 @@ class TabCalidad(ttk.Frame):
         def _cam_on_redraw(cv):
             sx = _disp["dw"] / max(cam_w, 1); sy = _disp["dh"] / max(cam_h, 1)
             xo, yo = _disp["x_off"], _disp["y_off"]
-            # ajuste para convertir coords de imagen al canvas con offset
+            # El offset de letterbox debe entrar ANTES de _i2c_prev para que zoom lo escale
             def _i2c_off(ix, iy):
-                cx, cy = _i2c_prev(ix, iy)
-                return cx + xo, cy + yo
+                return _i2c_prev(ix + xo, iy + yo)
             # ── Medidas (siempre se dibujan primero) ──────────────────────────
             if meas_pending_cam:
                 dx = meas_pending_cam[0][0] * sx; dy = meas_pending_cam[0][1] * sy
@@ -2658,10 +2657,13 @@ class TabCalidad(ttk.Frame):
             if do_contours:
                 import numpy as np
                 fh, fw = frame_bgr.shape[:2]
-                sx = _cpw() / max(fw, 1); sy = _cph() / max(fh, 1)
+                # Usar _disp para que el offset del letterbox quede incluido
+                sx = _disp["dw"] / max(fw, 1); sy = _disp["dh"] / max(fh, 1)
+                xo = _disp["x_off"];           yo = _disp["y_off"]
                 for p in (contours_cache[0] or []):
                     cnt = p["contour"].astype(np.float32).copy()
-                    cnt[..., 0] *= sx; cnt[..., 1] *= sy
+                    cnt[..., 0] = cnt[..., 0] * sx + xo
+                    cnt[..., 1] = cnt[..., 1] * sy + yo
                     if mode == "laminar":
                         color = _lam_contour_color(p)
                     else:

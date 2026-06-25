@@ -521,6 +521,7 @@ class TabCalidad(ttk.Frame):
                          reverse=True)
         cb_col["values"] = coladas
 
+        # Los traces se registran al FINAL, después de definir _load_datos/_load_images
         def _on_col(*_):
             lote = col_var.get()
             mats = sorted({r.get("material", "") for r in self.reports
@@ -537,9 +538,6 @@ class TabCalidad(ttk.Frame):
             _load_images(rpt)
             if mode_var.get() == "imágenes":
                 _show_img(0)
-
-        col_var.trace_add("write", _on_col)
-        mat_var.trace_add("write", _on_mat)
 
         # ── Stack: datos ───────────────────────────────────────────────────────
         datos_frame = ttk.Frame(parent)
@@ -585,8 +583,7 @@ class TabCalidad(ttk.Frame):
 
         ttk.Separator(inner, orient="horizontal").pack(fill="x", pady=(6, 2))
         ttk.Label(inner, text="Observaciones:", anchor="w").pack(fill="x")
-        obs_text = tk.Text(inner, height=4, state="disabled", wrap="word",
-                           bg=inner.cget("bg") if hasattr(inner, "cget") else "#f0f0f0")
+        obs_text = tk.Text(inner, height=4, state="disabled", wrap="word", bg="#f0f0f0")
         obs_text.pack(fill="x", pady=(2, 6))
 
         # Mini-galería
@@ -690,6 +687,10 @@ class TabCalidad(ttk.Frame):
             else:
                 img_frame.pack_forget()
                 datos_frame.pack(fill="both", expand=True)
+
+        # Registrar traces AQUÍ, después de que todas las funciones estén definidas
+        col_var.trace_add("write", _on_col)
+        mat_var.trace_add("write", _on_mat)
 
         return {"switch_mode": switch_mode}
 

@@ -205,6 +205,7 @@ class TabCalidad(ttk.Frame):
         ttk.Button(action_bar, text="Cargar en Access", command=self._load_current_report_in_access).pack(side="left", padx=(6, 0))
         ttk.Button(action_bar, text="Abrir en Access", command=self._open_current_report_in_access_for_review).pack(side="left", padx=(6, 0))
         ttk.Button(action_bar, text="Ver comp. estimada", command=self._ver_comp_estimada_grupo).pack(side="left", padx=(6, 0))
+        ttk.Button(action_bar, text="Comparar", command=self._open_compare_window).pack(side="left", padx=(6, 0))
         ttk.Button(action_bar, text="Camara", command=self._open_camera_popup).pack(side="left", padx=(6, 0))
         ttk.Button(action_bar, text="Calibraciones", command=self._open_calibrations_manager).pack(side="left", padx=(6, 0))
         ttk.Button(action_bar, text="Eliminar", command=self._delete_selected).pack(side="right")
@@ -494,6 +495,243 @@ class TabCalidad(ttk.Frame):
             "section_options": section_options or list(DEFAULT_SECTION_OPTIONS),
             "alloy": alloy,
         }
+
+    # ── Ventana Comparar ──────────────────────────────────────────────────────
+
+    def _build_compare_pane(self, parent, mode_var):
+        """Construye un panel de comparación y devuelve {'switch_mode': fn}."""
+        from widgets import ScrollFrame
+        current_report = [None]
+        img_list       = []
+        img_idx        = [0]
+        photo_ref      = [None]
+
+        # ── Selectores (siempre visibles) ─────────────────────────────────────
+        sel_row = ttk.Frame(parent, padding=(6, 4))
+        sel_row.pack(fill="x")
+        col_var = tk.StringVar(); mat_var = tk.StringVar()
+        ttk.Label(sel_row, text="Colada:").pack(side="left")
+        cb_col = ttk.Combobox(sel_row, textvariable=col_var, state="readonly", width=20)
+        cb_col.pack(side="left", padx=(4, 10))
+        ttk.Label(sel_row, text="Material:").pack(side="left")
+        cb_mat = ttk.Combobox(sel_row, textvariable=mat_var, state="readonly", width=16)
+        cb_mat.pack(side="left", padx=(4, 0))
+
+        coladas = sorted({r.get("lote", "") for r in self.reports if r.get("lote", "")},
+                         reverse=True)
+        cb_col["values"] = coladas
+
+        def _on_col(*_):
+            lote = col_var.get()
+            mats = sorted({r.get("material", "") for r in self.reports
+                           if r.get("lote", "") == lote and r.get("material", "")})
+            cb_mat["values"] = mats
+            mat_var.set(mats[0] if mats else "")
+
+        def _on_mat(*_):
+            lote = col_var.get(); mat = mat_var.get()
+            rpt = next((r for r in self.reports
+                        if r.get("lote", "") == lote and r.get("material", "") == mat), None)
+            current_report[0] = rpt
+            _load_datos(rpt)
+            _load_images(rpt)
+            if mode_var.get() == "imágenes":
+                _show_img(0)
+
+        col_var.trace_add("write", _on_col)
+        mat_var.trace_add("write", _on_mat)
+
+        # ── Stack: datos ───────────────────────────────────────────────────────
+        datos_frame = ttk.Frame(parent)
+        datos_frame.pack(fill="both", expand=True)
+        datos_frame.columnconfigure(0, weight=1)
+        datos_frame.rowconfigure(1, weight=1)
+
+        scroll = ScrollFrame(datos_frame)
+        scroll.pack(fill="both", expand=True)
+        inner = scroll.inner
+
+        _FIELDS = [
+            ("fecha",             "Fecha"),
+            ("base",              "Base"),
+            ("material",          "Material"),
+            ("lote",              "Lote / colada"),
+            ("informe",           "Informe"),
+            ("ce_final",          "CE final"),
+            ("c_final",           "C final"),
+            ("si_final",          "Si final"),
+            ("traccion",          "Traccion (kg/mm2)"),
+            ("traccion_real",     "Traccion real Lab"),
+            ("dureza",            "Dureza"),
+            ("tam_grafito",       "Tam grafito"),
+            ("morfologia",        "Morfologia"),
+            ("tipo_grafito",      "Tipo grafito"),
+            ("conteo_nodulos",    "Conteo nodulos"),
+            ("pct_nodularizacion","% nodularizacion"),
+            ("alargamiento",      "Alargamiento (%)"),
+            ("perlita",           "Perlita %"),
+            ("ferrita",           "Ferrita %"),
+            ("cementita",         "Cementita %"),
+            ("matriz",            "Matriz"),
+        ]
+        field_vars = {}
+        for key, label in _FIELDS:
+            row = ttk.Frame(inner)
+            row.pack(fill="x", pady=1)
+            ttk.Label(row, text=label + ":", anchor="w", width=18).pack(side="left")
+            sv = tk.StringVar(value="")
+            field_vars[key] = sv
+            ttk.Label(row, textvariable=sv, anchor="w", foreground="#333").pack(side="left", fill="x", expand=True)
+
+        ttk.Separator(inner, orient="horizontal").pack(fill="x", pady=(6, 2))
+        ttk.Label(inner, text="Observaciones:", anchor="w").pack(fill="x")
+        obs_text = tk.Text(inner, height=4, state="disabled", wrap="word",
+                           bg=inner.cget("bg") if hasattr(inner, "cget") else "#f0f0f0")
+        obs_text.pack(fill="x", pady=(2, 6))
+
+        # Mini-galería
+        ttk.Separator(inner, orient="horizontal").pack(fill="x", pady=(2, 4))
+        ttk.Label(inner, text="Imagenes:", anchor="w").pack(fill="x")
+        img_tv = ttk.Treeview(inner, columns=("archivo",), show="headings", height=4,
+                               selectmode="browse")
+        img_tv.heading("archivo", text="Archivo"); img_tv.column("archivo", width=200)
+        img_tv.pack(fill="x")
+        lbl_mini = tk.Label(inner, bg="#222", height=8)
+        lbl_mini.pack(fill="x", pady=(4, 0))
+
+        def _mini_preview(event=None):
+            sel = img_tv.selection()
+            if not sel: return
+            idx = img_tv.index(sel[0])
+            if idx >= len(img_list): return
+            path = img_list[idx].get("path", "")
+            if not path or not Path(path).exists(): return
+            try:
+                pil = Image.open(path).convert("RGB")
+                pil.thumbnail((300, 160), Image.LANCZOS)
+                ph = ImageTk.PhotoImage(pil)
+                lbl_mini.config(image=ph)
+                lbl_mini.image = ph
+            except Exception:
+                pass
+
+        img_tv.bind("<<TreeviewSelect>>", _mini_preview)
+
+        def _load_datos(rpt):
+            for key in field_vars:
+                field_vars[key].set(rpt.get(key, "") if rpt else "")
+            obs_text.config(state="normal")
+            obs_text.delete("1.0", tk.END)
+            if rpt:
+                obs_text.insert("1.0", rpt.get("datos", ""))
+            obs_text.config(state="disabled")
+
+        # ── Stack: imágenes a máximo tamaño ───────────────────────────────────
+        img_frame = ttk.Frame(parent)
+        img_canvas = tk.Canvas(img_frame, bg="#111")
+        img_canvas.pack(fill="both", expand=True)
+        nav_row = ttk.Frame(img_frame, padding=(4, 2))
+        nav_row.pack(fill="x")
+        nav_var = tk.StringVar(value="0/0")
+        ttk.Button(nav_row, text="◀", width=3,
+                   command=lambda: _show_img(img_idx[0] - 1)).pack(side="left")
+        ttk.Label(nav_row, textvariable=nav_var, anchor="center",
+                  width=12).pack(side="left", padx=6)
+        ttk.Button(nav_row, text="▶", width=3,
+                   command=lambda: _show_img(img_idx[0] + 1)).pack(side="left")
+
+        def _show_img(idx):
+            if not img_list:
+                nav_var.set("0/0"); img_canvas.delete("all"); return
+            idx = max(0, min(idx, len(img_list) - 1))
+            img_idx[0] = idx
+            path = img_list[idx].get("path", "")
+            nav_var.set(f"{idx+1}/{len(img_list)}")
+            if not path or not Path(path).exists():
+                img_canvas.delete("all"); return
+            try:
+                pil = Image.open(path).convert("RGB")
+                cw = max(img_canvas.winfo_width(), 200)
+                ch = max(img_canvas.winfo_height(), 200)
+                scale = min(cw / pil.width, ch / pil.height)
+                nw, nh = int(pil.width * scale), int(pil.height * scale)
+                resized = pil.resize((nw, nh), Image.LANCZOS)
+                bg = Image.new("RGB", (cw, ch), (0, 0, 0))
+                bg.paste(resized, ((cw - nw) // 2, (ch - nh) // 2))
+                ph = ImageTk.PhotoImage(bg)
+                img_canvas.delete("all")
+                img_canvas.create_image(0, 0, anchor="nw", image=ph)
+                photo_ref[0] = ph
+            except Exception:
+                pass
+
+        img_canvas.bind("<Configure>", lambda e: _show_img(img_idx[0]))
+
+        def _load_images(rpt):
+            img_list.clear()
+            if rpt:
+                imgs = self._normalize_report_images(rpt.get("imagenes", []))
+                img_list.extend(imgs)
+            img_tv.delete(*img_tv.get_children())
+            for img in img_list:
+                img_tv.insert("", "end", values=(Path(img.get("path","")).name,))
+            nav_var.set(f"0/{len(img_list)}" if not img_list else f"1/{len(img_list)}")
+            img_idx[0] = 0
+            if img_list and mode_var.get() == "imágenes":
+                _show_img(0)
+
+        # ── Alternar modo ──────────────────────────────────────────────────────
+        def switch_mode():
+            if mode_var.get() == "imágenes":
+                datos_frame.pack_forget()
+                img_frame.pack(fill="both", expand=True)
+                parent.update_idletasks()
+                _show_img(img_idx[0])
+            else:
+                img_frame.pack_forget()
+                datos_frame.pack(fill="both", expand=True)
+
+        return {"switch_mode": switch_mode}
+
+    def _open_compare_window(self):
+        if Image is None or ImageTk is None:
+            messagebox.showinfo("Comparar", "Pillow no está disponible.", parent=self)
+            return
+        win = tk.Toplevel(self)
+        win.title("Comparar informes")
+        win.resizable(True, True)
+        try:
+            win.state("zoomed")
+        except Exception:
+            pass
+
+        mode_var = tk.StringVar(value="datos")
+
+        ctrl = ttk.Frame(win, padding=(8, 4))
+        ctrl.pack(fill="x")
+        btn_toggle = ttk.Button(ctrl, text="Vista imágenes")
+        btn_toggle.pack(side="left")
+        ttk.Button(ctrl, text="Cerrar", command=win.destroy).pack(side="right")
+
+        pane = ttk.PanedWindow(win, orient="horizontal")
+        pane.pack(fill="both", expand=True)
+        left_f  = ttk.Frame(pane); pane.add(left_f,  weight=1)
+        right_f = ttk.Frame(pane); pane.add(right_f, weight=1)
+
+        left_p  = self._build_compare_pane(left_f,  mode_var)
+        right_p = self._build_compare_pane(right_f, mode_var)
+
+        def _toggle():
+            if mode_var.get() == "datos":
+                mode_var.set("imágenes")
+                btn_toggle.config(text="Vista datos")
+            else:
+                mode_var.set("datos")
+                btn_toggle.config(text="Vista imágenes")
+            left_p["switch_mode"]()
+            right_p["switch_mode"]()
+
+        btn_toggle.config(command=_toggle)
 
     def _ver_comp_estimada_grupo(self):
         sel = self.tree.selection()

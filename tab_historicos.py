@@ -57,9 +57,10 @@ class TabHistoricos(ttk.Frame):
         ttk.Button(act, text="Eliminar sesion", command=self.delete_session).pack(side="left", padx=6)
         ttk.Button(act, text="Visualizar en Ajuste", command=self.view_selected_in_adjust).pack(side="left", padx=6)
         ttk.Button(act, text="Generar informe de calidad", command=self.generate_quality_report_for_selected).pack(side="left")
+        ttk.Button(act, text="Marcar sinterizado", command=self._toggle_sinterizado).pack(side="left", padx=6)
 
         # ---- Tabla de sesiones (coladas)
-        cols = ("id", "objetivo", "guardado", "inicio", "fin", "cant")
+        cols = ("id", "objetivo", "guardado", "inicio", "fin", "crisol", "cant")
         self.tree = ttk.Treeview(left, columns=cols, show="headings", height=20)
         for cid, title, w in (
             ("id",       "ID",        220),
@@ -67,6 +68,7 @@ class TabHistoricos(ttk.Frame):
             ("guardado", "Guardado",   70),
             ("inicio",   "Inicio",    150),
             ("fin",      "Fin",       150),
+            ("crisol",   "Crisol",     60),
             ("cant",     "# ajustes",  70),
         ):
             self.tree.heading(cid, text=title)
@@ -163,10 +165,16 @@ class TabHistoricos(ttk.Frame):
         self._alloy_cache = None
         for i in self.tree.get_children():
             self.tree.delete(i)
+        crisol_counter = 0
         for s in self.hist:
+            if s.get("primer_sinterizado"):
+                crisol_counter = 1
+            else:
+                crisol_counter += 1
             colada_raw = s.get("colada", "")
             idn, yy, mat = split_colada(colada_raw)
             id_show = idn if idn else colada_raw
+            crisol_display = f"[S] {crisol_counter}" if s.get("primer_sinterizado") else str(crisol_counter)
             self.tree.insert(
                 "",
                 "end",
@@ -176,6 +184,7 @@ class TabHistoricos(ttk.Frame):
                     "Auto" if s.get("auto_saved") else "",
                     s.get("started_at", ""),
                     s.get("ended_at", ""),
+                    crisol_display,
                     len(s.get("ajustes", [])),
                 ),
             )
@@ -268,9 +277,21 @@ class TabHistoricos(ttk.Frame):
 
         checks = ttk.LabelFrame(box, text="Materiales", padding=8)
         checks.pack(fill="x", expand=True)
+        # Materiales que tienen cucharas cargadas en esta sesion
+        ladle_entry = self._ladle_entry_for_session(session)
+        ladle_materials = set()
+        if ladle_entry:
+            for row in ladle_entry.get("rows", []):
+                mat = str(row.get("material_final", "") or "").strip()
+                qty = int(row.get("cantidad", 0) or 0)
+                if mat and qty > 0:
+                    ladle_materials.add(mat)
+
         vars_by_material = []
         for material in materials:
-            if default_materials:
+            if ladle_materials:
+                checked = material in ladle_materials
+            elif default_materials:
                 checked = material in default_materials
             else:
                 checked = (
@@ -1135,6 +1156,28 @@ class TabHistoricos(ttk.Frame):
         ttk.Button(btns, text="Guardar", command=save).pack(side="right")
         ttk.Button(btns, text="Cancelar", command=win.destroy).pack(side="right", padx=6)
         e.focus_set(); win.wait_window()
+
+    def _toggle_sinterizado(self):
+        idx = self._selected_session_index()
+        if idx is None:
+            messagebox.showinfo("Sinterizado", "Selecciona una colada primero.", parent=self)
+            return
+        s = dict(self.hist[idx])
+        new_flag = not s.get("primer_sinterizado", False)
+        s["primer_sinterizado"] = new_flag
+        try:
+            update_session(idx, s)
+        except DuplicateColadaError as ex:
+            messagebox.showerror("Error", str(ex), parent=self)
+            return
+        self.refresh()
+        action = "marcada" if new_flag else "desmarcada"
+        messagebox.showinfo(
+            "Sinterizado",
+            f"Colada {action} como primer horno post-sinterizado.\n"
+            f"El conteo de crisol se reinicia desde esta colada.",
+            parent=self,
+        )
 
     def delete_session(self):
         idx = self._selected_session_index()

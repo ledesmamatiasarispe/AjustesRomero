@@ -1683,9 +1683,23 @@ class TabCalidad(ttk.Frame):
             try: return max(lbl_preview.winfo_height(), PREVIEW_H)
             except Exception: return PREVIEW_H
 
+        # Offset y escala actuales para transformar coords canvas ↔ cam
+        _disp = {"scale": 1.0, "x_off": 0, "y_off": 0, "dw": PREVIEW_W, "dh": PREVIEW_H}
+
         def _fill(bgr):
-            """Redimensiona el frame al tamaño actual del canvas."""
-            return cv2.resize(bgr, (_cpw(), _cph()), interpolation=cv2.INTER_LINEAR)
+            """Redimensiona manteniendo aspect ratio; centra con barras negras."""
+            import numpy as np
+            h, w = bgr.shape[:2]
+            cw, ch = _cpw(), _cph()
+            scale = min(cw / max(w, 1), ch / max(h, 1))
+            dw, dh = int(w * scale), int(h * scale)
+            x_off = (cw - dw) // 2
+            y_off = (ch - dh) // 2
+            _disp.update({"scale": scale, "x_off": x_off, "y_off": y_off, "dw": dw, "dh": dh})
+            resized = cv2.resize(bgr, (dw, dh), interpolation=cv2.INTER_LINEAR)
+            canvas_img = np.zeros((ch, cw, 3), dtype=np.uint8)
+            canvas_img[y_off:y_off + dh, x_off:x_off + dw] = resized
+            return canvas_img
         captured_frame = [None]
         live = [True]
         contours_cache = [None]
@@ -1896,17 +1910,22 @@ class TabCalidad(ttk.Frame):
         # on_redraw para overlay de mediciones y nódulo hover
         # Las medidas van PRIMERO: si el hover lanza excepción las medidas siguen visibles
         def _cam_on_redraw(cv):
-            sx = _cpw() / max(cam_w, 1); sy = _cph() / max(cam_h, 1)
+            sx = _disp["dw"] / max(cam_w, 1); sy = _disp["dh"] / max(cam_h, 1)
+            xo, yo = _disp["x_off"], _disp["y_off"]
+            # ajuste para convertir coords de imagen al canvas con offset
+            def _i2c_off(ix, iy):
+                cx, cy = _i2c_prev(ix, iy)
+                return cx + xo, cy + yo
             # ── Medidas (siempre se dibujan primero) ──────────────────────────
             if meas_pending_cam:
                 dx = meas_pending_cam[0][0] * sx; dy = meas_pending_cam[0][1] * sy
-                cx, cy = _i2c_prev(dx, dy)
+                cx, cy = _i2c_off(dx, dy)
                 cv.create_oval(cx-5, cy-5, cx+5, cy+5, fill="#ff4444", outline="white", width=1)
             for m in meas_list_cam:
                 if m.get("type") == "particle" or "x1" not in m:
-                    continue   # partículas no tienen coordenadas de línea
-                cx1, cy1 = _i2c_prev(m["x1"] * sx, m["y1"] * sy)
-                cx2, cy2 = _i2c_prev(m["x2"] * sx, m["y2"] * sy)
+                    continue
+                cx1, cy1 = _i2c_off(m["x1"] * sx, m["y1"] * sy)
+                cx2, cy2 = _i2c_off(m["x2"] * sx, m["y2"] * sy)
                 cv.create_line(cx1, cy1, cx2, cy2, fill="#00dd88", width=2)
                 for px, py in ((cx1, cy1), (cx2, cy2)):
                     cv.create_oval(px-3, py-3, px+3, py+3, fill="#00dd88", outline="")
@@ -1923,7 +1942,7 @@ class TabCalidad(ttk.Frame):
                         continue
                     scaled = cnt.astype(np.float32).copy()
                     scaled[..., 0] *= sx; scaled[..., 1] *= sy
-                    pts = [_i2c_prev(float(x), float(y)) for x, y in scaled.reshape(-1, 2)]
+                    pts = [_i2c_off(float(x), float(y)) for x, y in scaled.reshape(-1, 2)]
                     flat = [c for xy in pts for c in xy]
                     if len(flat) >= 4:
                         cv.create_polygon(flat, outline="#44aaff", fill="", width=2)
@@ -1945,7 +1964,7 @@ class TabCalidad(ttk.Frame):
                     p = cnts[hi]
                     scaled = p["contour"].astype(np.float32).copy()
                     scaled[..., 0] *= sx; scaled[..., 1] *= sy
-                    pts_canvas = [_i2c_prev(x, y) for x, y in scaled.reshape(-1, 2)]
+                    pts_canvas = [_i2c_off(x, y) for x, y in scaled.reshape(-1, 2)]
                     flat = [c for xy in pts_canvas for c in xy]
                     if len(flat) >= 4:
                         cv.create_polygon(flat, outline="#ffff00", fill="", width=2)
@@ -2345,8 +2364,8 @@ class TabCalidad(ttk.Frame):
         def _on_canvas_click(event):
             frame = captured_frame[0]   # None si está en live (el overlay se dibuja igual)
             dx, dy = _c2i_prev(event.x, event.y)
-            orig_x = dx * cam_w / _cpw()
-            orig_y = dy * cam_h / _cph()
+            orig_x = (dx - _disp["x_off"]) * cam_w / max(_disp["dw"], 1)
+            orig_y = (dy - _disp["y_off"]) * cam_h / max(_disp["dh"], 1)
             if not (0 <= orig_x <= cam_w and 0 <= orig_y <= cam_h):
                 return
             if not meas_pending_cam:
@@ -2384,8 +2403,8 @@ class TabCalidad(ttk.Frame):
                 return
             try:
                 dx0, dy0 = _c2i_prev(ex, ey)
-                ox = dx0 * cam_w / _cpw()
-                oy = dy0 * cam_h / _cph()
+                ox = (dx0 - _disp["x_off"]) * cam_w / max(_disp["dw"], 1)
+                oy = (dy0 - _disp["y_off"]) * cam_h / max(_disp["dh"], 1)
             except Exception:
                 return
             _hover_computing[0] = True

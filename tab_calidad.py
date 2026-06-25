@@ -714,17 +714,42 @@ class TabCalidad(ttk.Frame):
 
         img_canvas.bind("<Configure>", lambda e: _show_img(img_idx[0]))
 
-        def switch_mode():
-            if mode_var.get() == "imágenes":
-                datos_frame.pack_forget(); img_frame.pack(fill="both", expand=True)
+        # ── Vista composición a pantalla completa ─────────────────────────────
+        comp_full_frame = ttk.Frame(parent)
+        comp_full_tv = ttk.Treeview(comp_full_frame,
+                                    columns=("el","base","mat"), show="headings")
+        comp_full_tv.heading("el",   text="Elemento")
+        comp_full_tv.column("el",   width=100, anchor="w")
+        comp_full_tv.heading("base", text="Base")
+        comp_full_tv.column("base", width=140, anchor="e")
+        comp_full_tv.heading("mat",  text="Material estimado")
+        comp_full_tv.column("mat",  width=140, anchor="e")
+        comp_full_tv.pack(fill="both", expand=True, padx=8, pady=8)
+        comp_full_rows = []   # sincronizado con comp_tv en _load_comp
+
+        def _sync_comp_full():
+            comp_full_tv.delete(*comp_full_tv.get_children())
+            for child in comp_tv.get_children():
+                vals = comp_tv.item(child, "values")
+                comp_full_tv.insert("", "end", values=vals)
+
+        # ── Cambio de modo ────────────────────────────────────────────────────
+        def set_mode(mode):
+            for f in (datos_frame, img_frame, comp_full_frame):
+                f.pack_forget()
+            if mode == "imágenes":
+                img_frame.pack(fill="both", expand=True)
                 parent.update_idletasks(); _show_img(img_idx[0])
+            elif mode == "composición":
+                _sync_comp_full()
+                comp_full_frame.pack(fill="both", expand=True)
             else:
-                img_frame.pack_forget(); datos_frame.pack(fill="both", expand=True)
+                datos_frame.pack(fill="both", expand=True)
 
         # Traces al final, después de que todas las funciones estén definidas
         col_var.trace_add("write", _on_col)
         mat_var.trace_add("write", _on_mat)
-        return {"switch_mode": switch_mode}
+        return {"set_mode": set_mode}
 
     def _open_compare_window(self):
         if Image is None or ImageTk is None:
@@ -740,10 +765,7 @@ class TabCalidad(ttk.Frame):
 
         mode_var = tk.StringVar(value="datos")
 
-        ctrl = ttk.Frame(win, padding=(8, 4))
-        ctrl.pack(fill="x")
-        btn_toggle = ttk.Button(ctrl, text="Vista imágenes")
-        btn_toggle.pack(side="left")
+        ctrl = ttk.Frame(win, padding=(8, 4)); ctrl.pack(fill="x")
         ttk.Button(ctrl, text="Cerrar", command=win.destroy).pack(side="right")
 
         pane = ttk.PanedWindow(win, orient="horizontal")
@@ -754,17 +776,17 @@ class TabCalidad(ttk.Frame):
         left_p  = self._build_compare_pane(left_f,  mode_var)
         right_p = self._build_compare_pane(right_f, mode_var)
 
-        def _toggle():
-            if mode_var.get() == "datos":
-                mode_var.set("imágenes")
-                btn_toggle.config(text="Vista datos")
-            else:
-                mode_var.set("datos")
-                btn_toggle.config(text="Vista imágenes")
-            left_p["switch_mode"]()
-            right_p["switch_mode"]()
+        def _switch(new_mode):
+            mode_var.set(new_mode)
+            left_p["set_mode"](new_mode)
+            right_p["set_mode"](new_mode)
 
-        btn_toggle.config(command=_toggle)
+        ttk.Button(ctrl, text="Vista datos",
+                   command=lambda: _switch("datos")).pack(side="left")
+        ttk.Button(ctrl, text="Vista imágenes",
+                   command=lambda: _switch("imágenes")).pack(side="left", padx=(6,0))
+        ttk.Button(ctrl, text="Vista composición",
+                   command=lambda: _switch("composición")).pack(side="left", padx=(6,0))
 
     def _ver_comp_estimada_grupo(self):
         sel = self.tree.selection()

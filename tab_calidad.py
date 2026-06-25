@@ -6304,7 +6304,10 @@ class TabCalidad(ttk.Frame):
         self._set_draft_ui(any(self.reports[i].get("_draft_pending") for i in indexes))
 
     def _focused_field_key(self):
-        focus_widget = self.focus_get()
+        try:
+            focus_widget = self.focus_get()
+        except Exception:
+            return None   # popdown de Combobox u otros widgets internos
         for key, widget in getattr(self, "_field_widgets", {}).items():
             if widget == focus_widget:
                 return key

@@ -2397,6 +2397,77 @@ class TabCalidad(ttk.Frame):
         ttk.Combobox(cal_row, textvariable=cam_cal_var, values=_cal_names,
                      state="readonly", width=28).pack(side="left", padx=(6, 0))
 
+        # ── Destino de guardado: sesión + material ───────────────────────────
+        # Defaults desde la selección actual de la pestaña Calidad
+        def _default_lote():
+            if self._selected_index is not None:
+                return self.reports[self._selected_index].get("lote", "")
+            if self._selected_group is not None:
+                return self._selected_group.get("lote", "")
+            return ""
+        def _default_mat():
+            if self._selected_index is not None:
+                return self.reports[self._selected_index].get("material", "")
+            if self._selected_group is not None:
+                lote = self._selected_group.get("lote", "")
+                idx_list = self._group_report_indexes(self._selected_group.get("base",""), lote)
+                if idx_list:
+                    return self.reports[idx_list[0]].get("material", "")
+            return ""
+
+        _all_lotes = sorted({r.get("lote","") for r in self.reports if r.get("lote","")}, reverse=True)
+        target_lote_var = tk.StringVar(value=_default_lote())
+        target_mat_var  = tk.StringVar(value=_default_mat())
+
+        def _cam_mats_for_lote(lote):
+            return sorted({r.get("material","") for r in self.reports
+                           if r.get("lote","") == lote and r.get("material","")})
+
+        def _on_target_lote(*_):
+            mats = _cam_mats_for_lote(target_lote_var.get())
+            cb_target_mat["values"] = mats
+            if mats and target_mat_var.get() not in mats:
+                target_mat_var.set(mats[0])
+
+        target_lote_var.trace_add("write", _on_target_lote)
+
+        dest_row = ttk.Frame(win, padding=(8, 2))
+        dest_row.pack(fill="x")
+        ttk.Label(dest_row, text="Guardar en →").pack(side="left")
+        ttk.Label(dest_row, text="Sesion:").pack(side="left", padx=(8, 0))
+        cb_target_lote = ttk.Combobox(dest_row, textvariable=target_lote_var,
+                                      values=_all_lotes, state="readonly", width=20)
+        cb_target_lote.pack(side="left", padx=(4, 0))
+        ttk.Label(dest_row, text="Material:").pack(side="left", padx=(8, 0))
+        cb_target_mat = ttk.Combobox(dest_row, textvariable=target_mat_var,
+                                     values=_cam_mats_for_lote(_default_lote()),
+                                     state="readonly", width=16)
+        cb_target_mat.pack(side="left", padx=(4, 0))
+
+        def _find_target_report_idx():
+            lote = target_lote_var.get(); mat = target_mat_var.get()
+            return next((i for i, r in enumerate(self.reports)
+                         if r.get("lote","") == lote and r.get("material","") == mat), None)
+
+        def _save_item_to_target(item):
+            """Guarda el item de imagen en el informe destino elegido."""
+            idx = _find_target_report_idx()
+            if idx is None:
+                messagebox.showwarning("Camara",
+                    f"No se encontro informe para {target_lote_var.get()} / {target_mat_var.get()}.",
+                    parent=win)
+                return False
+            imgs = self._normalize_report_images(self.reports[idx].get("imagenes", []))
+            imgs.append(item)
+            self.reports[idx]["imagenes"] = imgs
+            save_quality_reports(self.reports)
+            # Si es el informe actualmente visible, actualizar la vista
+            if self._selected_index == idx:
+                self._report_images = self._normalize_report_images(self.reports[idx]["imagenes"])
+                self._refresh_images_ui()
+                self._images_changed()
+            return True
+
         mode_row = ttk.Frame(win, padding=(8, 2))
         mode_row.pack(fill="x")
         ttk.Label(mode_row, text="Modo:").pack(side="left")
@@ -2950,9 +3021,6 @@ class TabCalidad(ttk.Frame):
                 if frame is None:
                     messagebox.showinfo("Camara", "No se pudo obtener imagen.", parent=win)
                     return
-            material = _pick_material()
-            if material is None:
-                return
             fname = f"camara_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}.jpg"
             comment = simpledialog.askstring("Observacion", "Comentario para la foto:", parent=win)
             if comment is None:
@@ -2974,22 +3042,9 @@ class TabCalidad(ttk.Frame):
                 item["measurements"] = list(meas_list_cam)
                 item["px_per_unit"] = (next((c for c in _cals_cam if c["nombre"] == cam_cal_var.get()), {}) or {}).get("px_per_unit")
                 item["meas_unit"]   = (next((c for c in _cals_cam if c["nombre"] == cam_cal_var.get()), {}) or {}).get("unit", "µm")
-            if self._selected_index is not None:
-                self._report_images.append(item)
-                self._report_images = self._normalize_report_images(self._report_images)
-                self._refresh_images_ui()
-                self._images_changed()
-            elif self._selected_group is not None:
-                indexes = self._group_report_indexes(
-                    self._selected_group["base"], self._selected_group["lote"])
-                for idx in indexes:
-                    if self.reports[idx].get("material", "") == material:
-                        imgs = self._normalize_report_images(self.reports[idx].get("imagenes", []))
-                        imgs.append(item)
-                        self.reports[idx]["imagenes"] = imgs
-                        save_quality_reports(self.reports)
-                        break
-            status_var.set(f"Guardado en '{material}'")
+            mat = target_mat_var.get()
+            if _save_item_to_target(item):
+                status_var.set(f"Guardado en '{mat}'")
 
         def _do_save_and_count():
             frame = captured_frame[0]
@@ -3091,18 +3146,8 @@ class TabCalidad(ttk.Frame):
             # ── Acumular y promediar escaneos del mismo modo ──────────────────
             attached_ids = []
             errors = []
-            self._report_images.append(sample_item)
+            _save_item_to_target(sample_item)
             attached_ids.append(sample_item["id"])
-            if self._selected_group is not None and self._selected_index is None:
-                indexes = self._group_report_indexes(
-                    self._selected_group["base"], self._selected_group["lote"])
-                for idx in indexes:
-                    if self.reports[idx].get("material", "") == material:
-                        imgs = self._normalize_report_images(self.reports[idx].get("imagenes", []))
-                        imgs.append(sample_item)
-                        self.reports[idx]["imagenes"] = imgs
-                        save_quality_reports(self.reports)
-                        break
 
             all_opencv = [
                 img["opencv_stats"]

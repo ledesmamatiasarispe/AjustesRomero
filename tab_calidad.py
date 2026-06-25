@@ -416,7 +416,9 @@ class TabCalidad(ttk.Frame):
         self.tree.pack(fill="both", expand=True)
         self.tree.bind("<<TreeviewSelect>>", lambda e: self._load_selected())
         try:
-            self.tree.tag_configure("draft", background=self._highlight_bg(), foreground=self._highlight_fg())
+            self.tree.tag_configure("draft",      background=self._highlight_bg(), foreground=self._highlight_fg())
+            self.tree.tag_configure("complete",   foreground="#44cc44")   # verde: completo con foto
+            self.tree.tag_configure("incomplete", foreground="#cc8800")   # naranja: faltan campos o foto
         except Exception:
             pass
 
@@ -7048,6 +7050,21 @@ class TabCalidad(ttk.Frame):
             return list(enumerate(self.reports))
         return [(idx, report) for idx, report in enumerate(self.reports) if not report.get("archived")]
 
+    _COMPLETENESS_FIELDS = [
+        "fecha", "material", "lote", "ce_final", "traccion", "dureza",
+        "morfologia", "tipo_grafito", "conteo_nodulos", "pct_nodularizacion",
+        "perlita", "ferrita",
+    ]
+
+    def _report_completeness_tag(self, report):
+        """Devuelve 'complete', 'incomplete' o '' (para no sobreescribir 'draft')."""
+        if report.get("_draft_pending"):
+            return ""
+        missing = any(not str(report.get(f, "") or "").strip()
+                      for f in self._COMPLETENESS_FIELDS)
+        has_photo = bool(self._normalize_report_images(report.get("imagenes", [])))
+        return "complete" if (not missing and has_photo) else "incomplete"
+
     def refresh(self):
         self.reports = load_quality_reports()
         self._item_to_index = {}
@@ -7084,6 +7101,8 @@ class TabCalidad(ttk.Frame):
             )
             for idx, report in sorted(items, key=lambda x: x[1].get("material", "")):
                 child_iid = f"report:{idx}"
+                ctag = self._report_completeness_tag(report)
+                tags = ("draft",) if report.get("_draft_pending") else ((ctag,) if ctag else ())
                 self.tree.insert(
                     parent_iid,
                     "end",
@@ -7094,7 +7113,7 @@ class TabCalidad(ttk.Frame):
                         family,
                         report.get("informe", ""),
                     ),
-                    tags=("draft",) if report.get("_draft_pending") else (),
+                    tags=tags,
                 )
                 self._item_to_index[child_iid] = idx
 

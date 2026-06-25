@@ -2698,13 +2698,6 @@ class TabCalidad(ttk.Frame):
                 pos = _last_mouse[0]
                 if pos is not None:
                     _launch_hover(pos[0], pos[1])
-            # Sincronizar destino con la selección de la pestaña Calidad (~cada 1s)
-            if frame_counter[0] % 30 == 0:
-                new_lote = _default_lote(); new_mat = _default_mat()
-                if new_lote and new_lote != target_lote_var.get():
-                    target_lote_var.set(new_lote)
-                if new_mat and new_mat != target_mat_var.get():
-                    target_mat_var.set(new_mat)
             win.after(33, _update_live)
 
         def _enter_frozen():
@@ -3314,8 +3307,22 @@ class TabCalidad(ttk.Frame):
         btn_save.config(command=_do_save)
         btn_save_count.config(command=_do_save_and_count)
 
+        # Sincronizar destino con el árbol de Calidad vía evento (sin polling)
+        def _sync_target_from_calidad(*_):
+            new_lote = _default_lote(); new_mat = _default_mat()
+            if new_lote and new_lote != target_lote_var.get():
+                target_lote_var.set(new_lote)
+            if new_mat and new_mat != target_mat_var.get():
+                target_mat_var.set(new_mat)
+
+        _tree_bind_id = self.tree.bind("<<TreeviewSelect>>", _sync_target_from_calidad, add="+")
+
         def _on_close():
             live[0] = False
+            try:
+                self.tree.unbind("<<TreeviewSelect>>", _tree_bind_id)
+            except Exception:
+                pass
             try:
                 cap.release()
             except Exception:

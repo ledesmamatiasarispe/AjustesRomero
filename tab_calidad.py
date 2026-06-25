@@ -14,7 +14,7 @@ from pathlib import Path
 
 from storage import load_quality_reports, save_quality_reports, ensure_quality_images_dir, load_history
 from utils import fmt, simulate_with_plan, to_float
-from config import BG_ENTRY, FG, ACCENT, ELEMENTS
+from config import BG, BG_ENTRY, FG, ACCENT, ELEMENTS
 from widgets import ScrollFrame
 from ce import ce_from_percent
 

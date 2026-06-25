@@ -1978,6 +1978,7 @@ class TabCalidad(ttk.Frame):
 
         # Offset y escala actuales para transformar coords canvas ↔ cam
         _disp = {"scale": 1.0, "x_off": 0, "y_off": 0, "dw": PREVIEW_W, "dh": PREVIEW_H}
+        _last_raw_frame = [None]   # último frame BGR crudo, para re-renderizar en resize
 
         def _fill(bgr):
             """Redimensiona manteniendo aspect ratio; centra con barras negras."""
@@ -2270,6 +2271,10 @@ class TabCalidad(ttk.Frame):
         lbl_preview, _show_preview, _reset_preview, _c2i_prev, _i2c_prev = self._make_zoom_pan_preview(
             preview_frame, PREVIEW_W, PREVIEW_H, on_redraw=_cam_on_redraw)
         lbl_preview.pack(fill="both", expand=True)
+        # Al redimensionar el canvas, re-procesar el frame crudo para que _disp
+        # y el overlay de contornos se recalculen con el nuevo tamaño
+        lbl_preview.bind("<Configure>",
+                         lambda e: _show_frame(_last_raw_frame[0]) if _last_raw_frame[0] is not None else None)
 
         # ── Panel derecho: tabla de medidas + info de nódulo hover ─────────────
         meas_panel = ttk.LabelFrame(main_pane, text="Mediciones", padding=4)
@@ -2500,6 +2505,8 @@ class TabCalidad(ttk.Frame):
             else:                  return (180, 180, 180)  # gris (muy finos)
 
         def _show_frame(frame_bgr):
+            if frame_bgr is None: return
+            _last_raw_frame[0] = frame_bgr   # guardar para re-render en resize
             px_mm = _cam_px_mm()
             do_contours = show_contours_var.get()
             mode = analysis_mode_var.get()

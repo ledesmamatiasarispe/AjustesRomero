@@ -516,25 +516,22 @@ class TabCalidad(ttk.Frame):
         ttk.Label(sel_row, text="Material:").pack(side="left")
         cb_mat = ttk.Combobox(sel_row, textvariable=mat_var, state="readonly", width=16)
         cb_mat.pack(side="left", padx=(4, 0))
+        cb_col["values"] = sorted({r.get("lote","") for r in self.reports if r.get("lote","")}, reverse=True)
 
-        coladas = sorted({r.get("lote", "") for r in self.reports if r.get("lote", "")},
-                         reverse=True)
-        cb_col["values"] = coladas
-
-        # Los traces se registran al FINAL, después de definir _load_datos/_load_images
         def _on_col(*_):
             lote = col_var.get()
-            mats = sorted({r.get("material", "") for r in self.reports
-                           if r.get("lote", "") == lote and r.get("material", "")})
+            mats = sorted({r.get("material","") for r in self.reports
+                           if r.get("lote","") == lote and r.get("material","")})
             cb_mat["values"] = mats
             mat_var.set(mats[0] if mats else "")
 
         def _on_mat(*_):
             lote = col_var.get(); mat = mat_var.get()
             rpt = next((r for r in self.reports
-                        if r.get("lote", "") == lote and r.get("material", "") == mat), None)
+                        if r.get("lote","") == lote and r.get("material","") == mat), None)
             current_report[0] = rpt
             _load_datos(rpt)
+            _load_comp(rpt, lote)
             _load_images(rpt)
             if mode_var.get() == "imágenes":
                 _show_img(0)
@@ -542,8 +539,6 @@ class TabCalidad(ttk.Frame):
         # ── Stack: datos ───────────────────────────────────────────────────────
         datos_frame = ttk.Frame(parent)
         datos_frame.pack(fill="both", expand=True)
-        datos_frame.columnconfigure(0, weight=1)
-        datos_frame.rowconfigure(1, weight=1)
 
         scroll = ScrollFrame(datos_frame)
         scroll.pack(fill="both", expand=True)
@@ -554,7 +549,6 @@ class TabCalidad(ttk.Frame):
             ("base",              "Base"),
             ("material",          "Material"),
             ("lote",              "Lote / colada"),
-            ("informe",           "Informe"),
             ("ce_final",          "CE final"),
             ("c_final",           "C final"),
             ("si_final",          "Si final"),
@@ -574,44 +568,53 @@ class TabCalidad(ttk.Frame):
         ]
         field_vars = {}
         for key, label in _FIELDS:
-            row = ttk.Frame(inner)
-            row.pack(fill="x", pady=1)
-            ttk.Label(row, text=label + ":", anchor="w", width=18).pack(side="left")
-            sv = tk.StringVar(value="")
-            field_vars[key] = sv
-            ttk.Label(row, textvariable=sv, anchor="w", foreground="#333").pack(side="left", fill="x", expand=True)
+            row = ttk.Frame(inner); row.pack(fill="x", pady=1)
+            ttk.Label(row, text=label + ":", anchor="w", width=18,
+                      foreground=FG).pack(side="left")
+            sv = tk.StringVar(value=""); field_vars[key] = sv
+            ttk.Label(row, textvariable=sv, anchor="w",
+                      foreground=ACCENT).pack(side="left", fill="x", expand=True)
 
         ttk.Separator(inner, orient="horizontal").pack(fill="x", pady=(6, 2))
-        ttk.Label(inner, text="Observaciones:", anchor="w").pack(fill="x")
-        obs_text = tk.Text(inner, height=4, state="disabled", wrap="word", bg="#f0f0f0")
+        ttk.Label(inner, text="Observaciones:", anchor="w", foreground=FG).pack(fill="x")
+        obs_text = tk.Text(inner, height=4, state="disabled", wrap="word",
+                           bg=BG_ENTRY, fg=FG, insertbackground=FG)
         obs_text.pack(fill="x", pady=(2, 6))
 
-        # Mini-galería
+        # ── Composición estimada ───────────────────────────────────────────────
+        ttk.Separator(inner, orient="horizontal").pack(fill="x", pady=(4, 2))
+        ttk.Label(inner, text="Composicion estimada:", anchor="w",
+                  foreground=FG, font=("TkDefaultFont", 8, "bold")).pack(fill="x")
+        comp_tv = ttk.Treeview(inner, columns=("el","base","mat"), show="headings", height=8)
+        comp_tv.heading("el",   text="Elemento"); comp_tv.column("el",   width=70, anchor="w")
+        comp_tv.heading("base", text="Base");     comp_tv.column("base", width=80, anchor="e")
+        comp_tv.heading("mat",  text="Mat. est."); comp_tv.column("mat", width=80, anchor="e")
+        comp_tv.pack(fill="x", pady=(2, 6))
+
+        # ── Mini-galería ───────────────────────────────────────────────────────
         ttk.Separator(inner, orient="horizontal").pack(fill="x", pady=(2, 4))
-        ttk.Label(inner, text="Imagenes:", anchor="w").pack(fill="x")
+        ttk.Label(inner, text="Imagenes:", anchor="w", foreground=FG).pack(fill="x")
         img_tv = ttk.Treeview(inner, columns=("archivo",), show="headings", height=4,
                                selectmode="browse")
         img_tv.heading("archivo", text="Archivo"); img_tv.column("archivo", width=200)
         img_tv.pack(fill="x")
-        lbl_mini = tk.Label(inner, bg="#222", height=8)
+        lbl_mini = tk.Label(inner, bg=BG, height=8)
         lbl_mini.pack(fill="x", pady=(4, 0))
 
         def _mini_preview(event=None):
             sel = img_tv.selection()
             if not sel: return
-            idx = img_tv.index(sel[0])
-            if idx >= len(img_list): return
-            path = img_list[idx].get("path", "")
+            idx_m = img_tv.index(sel[0])
+            if idx_m >= len(img_list): return
+            path = img_list[idx_m].get("path", "")
             if not path or not Path(path).exists(): return
             try:
                 pil = Image.open(path).convert("RGB")
                 pil.thumbnail((300, 160), Image.LANCZOS)
                 ph = ImageTk.PhotoImage(pil)
-                lbl_mini.config(image=ph)
-                lbl_mini.image = ph
+                lbl_mini.config(image=ph); lbl_mini.image = ph
             except Exception:
                 pass
-
         img_tv.bind("<<TreeviewSelect>>", _mini_preview)
 
         def _load_datos(rpt):
@@ -619,50 +622,54 @@ class TabCalidad(ttk.Frame):
                 field_vars[key].set(rpt.get(key, "") if rpt else "")
             obs_text.config(state="normal")
             obs_text.delete("1.0", tk.END)
-            if rpt:
-                obs_text.insert("1.0", rpt.get("datos", ""))
+            if rpt: obs_text.insert("1.0", rpt.get("datos", ""))
             obs_text.config(state="disabled")
 
-        # ── Stack: imágenes a máximo tamaño ───────────────────────────────────
-        img_frame = ttk.Frame(parent)
-        img_canvas = tk.Canvas(img_frame, bg="#111")
-        img_canvas.pack(fill="both", expand=True)
-        nav_row = ttk.Frame(img_frame, padding=(4, 2))
-        nav_row.pack(fill="x")
-        nav_var = tk.StringVar(value="0/0")
-        ttk.Button(nav_row, text="◀", width=3,
-                   command=lambda: _show_img(img_idx[0] - 1)).pack(side="left")
-        ttk.Label(nav_row, textvariable=nav_var, anchor="center",
-                  width=12).pack(side="left", padx=6)
-        ttk.Button(nav_row, text="▶", width=3,
-                   command=lambda: _show_img(img_idx[0] + 1)).pack(side="left")
-
-        def _show_img(idx):
-            if not img_list:
-                nav_var.set("0/0"); img_canvas.delete("all"); return
-            idx = max(0, min(idx, len(img_list) - 1))
-            img_idx[0] = idx
-            path = img_list[idx].get("path", "")
-            nav_var.set(f"{idx+1}/{len(img_list)}")
-            if not path or not Path(path).exists():
-                img_canvas.delete("all"); return
-            try:
-                pil = Image.open(path).convert("RGB")
-                cw = max(img_canvas.winfo_width(), 200)
-                ch = max(img_canvas.winfo_height(), 200)
-                scale = min(cw / pil.width, ch / pil.height)
-                nw, nh = int(pil.width * scale), int(pil.height * scale)
-                resized = pil.resize((nw, nh), Image.LANCZOS)
-                bg = Image.new("RGB", (cw, ch), (0, 0, 0))
-                bg.paste(resized, ((cw - nw) // 2, (ch - nh) // 2))
-                ph = ImageTk.PhotoImage(bg)
-                img_canvas.delete("all")
-                img_canvas.create_image(0, 0, anchor="nw", image=ph)
-                photo_ref[0] = ph
-            except Exception:
-                pass
-
-        img_canvas.bind("<Configure>", lambda e: _show_img(img_idx[0]))
+        def _load_comp(rpt, lote):
+            """Calcula y muestra comp base + comp estimada del material."""
+            comp_tv.delete(*comp_tv.get_children())
+            if not rpt: return
+            # Composición base del último ajuste de la sesión
+            base_comp = {}
+            session = next((s for s in load_history() if s.get("colada","") == lote), None)
+            if session and session.get("ajustes"):
+                base_comp = session["ajustes"][-1].get("estimado",{}).get("comp",{}) or {}
+            # Composición estimada con inoculación
+            mat_comp = dict(base_comp)
+            snapshot = rpt.get("inoculacion_snapshot", {}) or {}
+            inoc = snapshot.get("protocolo", [])
+            if inoc and base_comp:
+                def _eff_add(alloy, kg):
+                    rend = to_float(alloy.get("rendimiento",100)) / 100
+                    return {e: kg * (to_float(alloy.get("composicion",{}).get(e,0))/100)*rend
+                            for e in ELEMENTS}
+                def _get_alloy(name):
+                    for a in self.alloys:
+                        if str(a.get("nombre","")).strip() == name: return a
+                    return None
+                plan = {}
+                for e in inoc:
+                    if isinstance(e, str):  nombre, cant = e, 1.0
+                    elif isinstance(e, dict): nombre = e.get("nombre",""); cant = float(e.get("cantidad_dosis",1) or 1)
+                    else: continue
+                    a = _get_alloy(nombre)
+                    g = to_float((a or {}).get("gramos_cucharin1", 0))
+                    if g and cant: plan[nombre] = (g * cant) / 1000
+                if plan:
+                    try:
+                        _, mat_comp = simulate_with_plan(50, base_comp, plan, ELEMENTS,
+                            get_alloy=_get_alloy, effective_add=_eff_add,
+                            effective_total_perkg=lambda a: to_float(a.get("rendimiento",100))/100)
+                    except Exception:
+                        mat_comp = dict(base_comp)
+            # Mostrar solo elementos con valor
+            from ce import ce_from_percent
+            for el in ELEMENTS:
+                bv = to_float(base_comp.get(el, 0)); mv = to_float(mat_comp.get(el, 0))
+                if bv > 0.001 or mv > 0.001:
+                    comp_tv.insert("", "end", values=(el, f"{bv:.4f}", f"{mv:.4f}"))
+            ce_b = ce_from_percent(base_comp); ce_m = ce_from_percent(mat_comp)
+            comp_tv.insert("", "end", values=("CE", f"{ce_b:.4f}", f"{ce_m:.4f}"))
 
         def _load_images(rpt):
             img_list.clear()
@@ -674,24 +681,49 @@ class TabCalidad(ttk.Frame):
                 img_tv.insert("", "end", values=(Path(img.get("path","")).name,))
             nav_var.set(f"0/{len(img_list)}" if not img_list else f"1/{len(img_list)}")
             img_idx[0] = 0
-            if img_list and mode_var.get() == "imágenes":
-                _show_img(0)
+            if img_list and mode_var.get() == "imágenes": _show_img(0)
 
-        # ── Alternar modo ──────────────────────────────────────────────────────
+        # ── Stack: imágenes a máximo tamaño ───────────────────────────────────
+        img_frame = ttk.Frame(parent)
+        img_canvas = tk.Canvas(img_frame, bg="#000")
+        img_canvas.pack(fill="both", expand=True)
+        nav_row = ttk.Frame(img_frame, padding=(4, 2)); nav_row.pack(fill="x")
+        nav_var = tk.StringVar(value="0/0")
+        ttk.Button(nav_row, text="◀", width=3,
+                   command=lambda: _show_img(img_idx[0]-1)).pack(side="left")
+        ttk.Label(nav_row, textvariable=nav_var, anchor="center", width=12).pack(side="left", padx=6)
+        ttk.Button(nav_row, text="▶", width=3,
+                   command=lambda: _show_img(img_idx[0]+1)).pack(side="left")
+
+        def _show_img(idx):
+            if not img_list: nav_var.set("0/0"); img_canvas.delete("all"); return
+            idx = max(0, min(idx, len(img_list)-1)); img_idx[0] = idx
+            path = img_list[idx].get("path",""); nav_var.set(f"{idx+1}/{len(img_list)}")
+            if not path or not Path(path).exists(): img_canvas.delete("all"); return
+            try:
+                pil = Image.open(path).convert("RGB")
+                cw = max(img_canvas.winfo_width(), 200); ch = max(img_canvas.winfo_height(), 200)
+                scale = min(cw/pil.width, ch/pil.height)
+                nw, nh = int(pil.width*scale), int(pil.height*scale)
+                resized = pil.resize((nw, nh), Image.LANCZOS)
+                bg = Image.new("RGB", (cw, ch), (0,0,0))
+                bg.paste(resized, ((cw-nw)//2, (ch-nh)//2))
+                ph = ImageTk.PhotoImage(bg); img_canvas.delete("all")
+                img_canvas.create_image(0, 0, anchor="nw", image=ph); photo_ref[0] = ph
+            except Exception: pass
+
+        img_canvas.bind("<Configure>", lambda e: _show_img(img_idx[0]))
+
         def switch_mode():
             if mode_var.get() == "imágenes":
-                datos_frame.pack_forget()
-                img_frame.pack(fill="both", expand=True)
-                parent.update_idletasks()
-                _show_img(img_idx[0])
+                datos_frame.pack_forget(); img_frame.pack(fill="both", expand=True)
+                parent.update_idletasks(); _show_img(img_idx[0])
             else:
-                img_frame.pack_forget()
-                datos_frame.pack(fill="both", expand=True)
+                img_frame.pack_forget(); datos_frame.pack(fill="both", expand=True)
 
-        # Registrar traces AQUÍ, después de que todas las funciones estén definidas
+        # Traces al final, después de que todas las funciones estén definidas
         col_var.trace_add("write", _on_col)
         mat_var.trace_add("write", _on_mat)
-
         return {"switch_mode": switch_mode}
 
     def _open_compare_window(self):

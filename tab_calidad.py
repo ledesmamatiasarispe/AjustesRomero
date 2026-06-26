@@ -7189,11 +7189,12 @@ class TabCalidad(ttk.Frame):
                 child_iid = f"report:{idx}"
                 ctag = self._report_completeness_tag(report)
                 tags = ("draft",) if report.get("_draft_pending") else ((ctag,) if ctag else ())
+                _prefix = "✔ " if ctag == "complete" else ("○ " if ctag == "incomplete" else "")
                 self.tree.insert(
                     parent_iid,
                     "end",
                     iid=child_iid,
-                    text=f"Material {report.get('material', '')}",
+                    text=f"{_prefix}Material {report.get('material', '')}",
                     values=(
                         report.get("fecha", ""),
                         family,

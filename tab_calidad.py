@@ -748,10 +748,19 @@ class TabCalidad(ttk.Frame):
             else:
                 datos_frame.pack(fill="both", expand=True)
 
+        def get_comp_row():
+            """Devuelve (el, base_val, mat_val) de la fila seleccionada en comp_full_tv, o None."""
+            sel = comp_full_tv.selection()
+            if not sel: return None
+            vals = comp_full_tv.item(sel[0], "values")
+            if not vals or len(vals) < 3: return None
+            return vals[0], vals[1], vals[2]   # (elemento, base, mat_estimado)
+
         # Traces al final, después de que todas las funciones estén definidas
         col_var.trace_add("write", _on_col)
         mat_var.trace_add("write", _on_mat)
-        return {"set_mode": set_mode}
+        return {"set_mode": set_mode, "get_comp_row": get_comp_row,
+                "comp_full_tv": comp_full_tv}
 
     def _open_compare_window(self):
         if Image is None or ImageTk is None:
@@ -778,10 +787,79 @@ class TabCalidad(ttk.Frame):
         left_p  = self._build_compare_pane(left_f,  mode_var)
         right_p = self._build_compare_pane(right_f, mode_var)
 
+        # ── Panel inferior de diferencia (visible solo en vista composición) ──
+        diff_frame = ttk.LabelFrame(win, text="Diferencia del elemento seleccionado", padding=8)
+        diff_el_var   = tk.StringVar(value="—")
+        diff_l_var    = tk.StringVar(value="—")   # mat izq
+        diff_r_var    = tk.StringVar(value="—")   # mat der
+        diff_abs_var  = tk.StringVar(value="—")
+        diff_pct_var  = tk.StringVar(value="—")
+
+        df = ttk.Frame(diff_frame); df.pack(fill="x")
+        for col, (label, var, color) in enumerate([
+            ("Elemento",            diff_el_var,  FG),
+            ("Mat. Izq.",           diff_l_var,   "#5588ff"),
+            ("Mat. Der.",           diff_r_var,   "#ff8855"),
+            ("Diferencia abs.",     diff_abs_var, ACCENT),
+            ("Diferencia %",        diff_pct_var, ACCENT),
+        ]):
+            c = ttk.Frame(df); c.grid(row=0, column=col, padx=(0, 20))
+            ttk.Label(c, text=label, foreground="#888",
+                      font=("TkDefaultFont", 7)).pack(anchor="w")
+            ttk.Label(c, textvariable=var, foreground=color,
+                      font=("TkDefaultFont", 11, "bold")).pack(anchor="w")
+
+        def _update_diff(*_):
+            l = left_p["get_comp_row"](); r = right_p["get_comp_row"]()
+            row = l or r
+            if not row:
+                diff_el_var.set("—"); diff_l_var.set("—"); diff_r_var.set("—")
+                diff_abs_var.set("—"); diff_pct_var.set("—"); return
+            el = row[0]
+            def _v(p, idx=2):  # mat estimado column
+                d = p["get_comp_row"]()
+                if d and d[0] == el:
+                    try: return float(str(d[idx]).replace(",","."))
+                    except: pass
+                # buscar en comp_full_tv por elemento
+                tv = p["comp_full_tv"]
+                for iid in tv.get_children():
+                    v = tv.item(iid, "values")
+                    if v and v[0] == el:
+                        try: return float(str(v[idx]).replace(",","."))
+                        except: pass
+                return None
+            lv = _v(left_p); rv = _v(right_p)
+            diff_el_var.set(el)
+            diff_l_var.set(f"{lv:.4f}" if lv is not None else "—")
+            diff_r_var.set(f"{rv:.4f}" if rv is not None else "—")
+            if lv is not None and rv is not None:
+                d = rv - lv
+                pct = (d / lv * 100) if lv != 0 else float("inf")
+                diff_abs_var.set(f"{d:+.4f}")
+                diff_pct_var.set(f"{pct:+.2f}%" if abs(pct) < 1e6 else "—")
+                diff_abs_var_color = "#44cc44" if abs(d) < 1e-9 else ("#cc4444" if d < 0 else "#cc8800")
+                # actualizar color
+                for w in df.winfo_children():
+                    labels = w.winfo_children()
+                    if len(labels) > 1 and labels[1].cget("textvariable") == str(diff_abs_var):
+                        try: labels[1].config(foreground=diff_abs_var_color)
+                        except: pass
+            else:
+                diff_abs_var.set("—"); diff_pct_var.set("—")
+
+        # Bind selección en ambas tablas
+        left_p["comp_full_tv"].bind("<<TreeviewSelect>>",  _update_diff)
+        right_p["comp_full_tv"].bind("<<TreeviewSelect>>", _update_diff)
+
         def _switch(new_mode):
             mode_var.set(new_mode)
             left_p["set_mode"](new_mode)
             right_p["set_mode"](new_mode)
+            if new_mode == "composición":
+                diff_frame.pack(fill="x", padx=8, pady=(0, 6))
+            else:
+                diff_frame.pack_forget()
 
         ttk.Button(ctrl, text="Vista datos",
                    command=lambda: _switch("datos")).pack(side="left")

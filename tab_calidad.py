@@ -7190,11 +7190,12 @@ class TabCalidad(ttk.Frame):
                 ctag = self._report_completeness_tag(report)
                 tags = ("draft",) if report.get("_draft_pending") else ((ctag,) if ctag else ())
                 _prefix = "✔ " if ctag == "complete" else ("○ " if ctag == "incomplete" else "")
+                _lab    = " 🧪" if str(report.get("traccion_real", "") or "").strip() else ""
                 self.tree.insert(
                     parent_iid,
                     "end",
                     iid=child_iid,
-                    text=f"{_prefix}Material {report.get('material', '')}",
+                    text=f"{_prefix}Material {report.get('material', '')}{_lab}",
                     values=(
                         report.get("fecha", ""),
                         family,

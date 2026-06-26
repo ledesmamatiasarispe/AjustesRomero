@@ -402,8 +402,16 @@ class TabCalidad(ttk.Frame):
         table_box = ttk.LabelFrame(right, text="Informes cargados", padding=6)
         table_box.pack(fill="both", expand=True)
 
+        # Estilo propio para preservar el foreground del tag al seleccionar
+        _qs = ttk.Style()
+        _qs.configure("Calidad.Treeview", rowheight=24)
+        _qs.map("Calidad.Treeview",
+                background=[("selected", "#2a5070")],
+                foreground=[])   # [] = no sobreescribir el foreground del tag
+
         cols = ("fecha", "tipo", "informe")
-        self.tree = ttk.Treeview(table_box, columns=cols, show="tree headings", height=20)
+        self.tree = ttk.Treeview(table_box, columns=cols, show="tree headings",
+                                 height=20, style="Calidad.Treeview")
         self.tree.heading("#0", text="Horno base / material")
         self.tree.column("#0", width=220, anchor="w")
         for cid, title, width in (
@@ -7137,7 +7145,7 @@ class TabCalidad(ttk.Frame):
         return [(idx, report) for idx, report in enumerate(self.reports) if not report.get("archived")]
 
     _COMPLETENESS_FIELDS = [
-        "fecha", "material", "lote", "ce_final", "traccion", "dureza",
+        "fecha", "material", "lote", "ce_final", "dureza",
         "morfologia", "tipo_grafito", "conteo_nodulos", "pct_nodularizacion",
         "perlita", "ferrita",
     ]
@@ -7189,13 +7197,12 @@ class TabCalidad(ttk.Frame):
                 child_iid = f"report:{idx}"
                 ctag = self._report_completeness_tag(report)
                 tags = ("draft",) if report.get("_draft_pending") else ((ctag,) if ctag else ())
-                _prefix = "✔ " if ctag == "complete" else ("○ " if ctag == "incomplete" else "")
-                _lab    = " 🧪" if str(report.get("traccion_real", "") or "").strip() else ""
+                _lab = " 🧪" if str(report.get("traccion_real", "") or "").strip() else ""
                 self.tree.insert(
                     parent_iid,
                     "end",
                     iid=child_iid,
-                    text=f"{_prefix}Material {report.get('material', '')}{_lab}",
+                    text=f"Material {report.get('material', '')}{_lab}",
                     values=(
                         report.get("fecha", ""),
                         family,

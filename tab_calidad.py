@@ -697,10 +697,18 @@ class TabCalidad(ttk.Frame):
         ttk.Button(nav_row, text="▶", width=3,
                    command=lambda: _show_img(img_idx[0]+1)).pack(side="left")
 
+        obs_img_var = tk.StringVar(value="")
+        obs_img_lbl = ttk.Label(img_frame, textvariable=obs_img_var, anchor="w",
+                                foreground="#aaaaaa", wraplength=400,
+                                font=("TkDefaultFont", 9))
+        obs_img_lbl.pack(fill="x", padx=8, pady=(0, 4))
+
         def _show_img(idx):
-            if not img_list: nav_var.set("0/0"); img_canvas.delete("all"); return
+            if not img_list:
+                nav_var.set("0/0"); img_canvas.delete("all"); obs_img_var.set(""); return
             idx = max(0, min(idx, len(img_list)-1)); img_idx[0] = idx
             path = img_list[idx].get("path",""); nav_var.set(f"{idx+1}/{len(img_list)}")
+            obs_img_var.set(img_list[idx].get("comentario", "") or "")
             if not path or not Path(path).exists(): img_canvas.delete("all"); return
             try:
                 pil = Image.open(path).convert("RGB")

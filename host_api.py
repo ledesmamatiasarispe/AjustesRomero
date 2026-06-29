@@ -570,16 +570,27 @@ def start_cucharas_count():
         raise CucharasContextError("missing_ajuste_context")
     valid_materials = _sorted_codes(_ladle_material_options(target))
 
-    state["current"] = {
-        "colada": colada,
-        "material_objetivo": target,
-        "counts": {code: 0 for code in valid_materials},
-        "events": {code: [] for code in valid_materials},
-    }
-    history_by_colada = state.get("history_by_colada", {})
-    if isinstance(history_by_colada, dict) and colada:
-        history_by_colada.pop(colada, None)
-        state["history_by_colada"] = history_by_colada
+    same_colada = str(current.get("colada", "") or "").strip() == str(colada).strip()
+    if same_colada:
+        existing_counts = current.get("counts", {}) if isinstance(current.get("counts", {}), dict) else {}
+        existing_events = current.get("events", {}) if isinstance(current.get("events", {}), dict) else {}
+        state["current"] = {
+            "colada": colada,
+            "material_objetivo": target,
+            "counts": {code: existing_counts.get(code, 0) for code in valid_materials},
+            "events": {code: list(existing_events.get(code, [])) for code in valid_materials},
+        }
+    else:
+        state["current"] = {
+            "colada": colada,
+            "material_objetivo": target,
+            "counts": {code: 0 for code in valid_materials},
+            "events": {code: [] for code in valid_materials},
+        }
+        history_by_colada = state.get("history_by_colada", {})
+        if isinstance(history_by_colada, dict) and colada:
+            history_by_colada.pop(colada, None)
+            state["history_by_colada"] = history_by_colada
     state["updated_at"] = datetime.now().isoformat(timespec="seconds")
     save_ladles_state(state)
     notify_data_changed()

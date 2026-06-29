@@ -76,6 +76,7 @@ const ajusteState = {
   confirmedAt: "",
   generalPct: 100,
   dirty: false,
+  colada: "",
 };
 
 const deviceState = {
@@ -476,6 +477,7 @@ function syncAjusteState(ajuste) {
       };
     })
     .filter(Boolean);
+  ajusteState.colada = ajuste?.colada || "";
   ajusteState.confirmedAt = ajuste?.confirmado_at || "";
   if (ajusteState.rows.length) {
     const allSame = ajusteState.rows.every((row) => row.porcentaje_horno === ajusteState.rows[0].porcentaje_horno);
@@ -636,7 +638,7 @@ function showSessionBanner(colada, material) {
   sessionBanner.timer = setTimeout(hideSessionBanner, 8000);
 }
 
-function syncCucharasState(payload) {
+function syncCucharasState(payload, fromDirectSave = false) {
   const newColada   = payload?.colada            || "";
   const newMaterial = payload?.material_objetivo || "";
   const prevColada  = cucharasState.colada;
@@ -652,17 +654,19 @@ function syncCucharasState(payload) {
   const hasActiveCounts = cucharasState.initiated &&
     Object.values(cucharasState.counts).some(v => v > 0);
 
+  if (hasActiveCounts && !fromDirectSave) {
+    // Sesión activa: ignorar snapshots externos (SSE, loadSnapshot)
+    // No tocar colada, material ni counts — solo avisar si la sesión del servidor cambió
+    if (sessionChanged) showSessionBanner(newColada, newMaterial);
+    return;
+  }
+
   cucharasState.colada = newColada;
   cucharasState.materialObjetivo = newMaterial;
-
-  if (!sessionChanged || !hasActiveCounts) {
-    // Misma sesión, o primera carga, o sin conteo activo: aceptar counts del servidor
-    cucharasState.counts = {};
-    for (const row of payload?.rows || []) {
-      cucharasState.counts[row.material_final] = Math.max(0, Number(row.cantidad) || 0);
-    }
+  cucharasState.counts = {};
+  for (const row of payload?.rows || []) {
+    cucharasState.counts[row.material_final] = Math.max(0, Number(row.cantidad) || 0);
   }
-  // Si la sesión cambió Y hay conteo activo: mantener los counts actuales (no resetear)
 
   if (sessionChanged) {
     showSessionBanner(newColada, newMaterial);
@@ -670,8 +674,10 @@ function syncCucharasState(payload) {
 }
 
 function renderCucharas(payload) {
-  setText(nodes.cucharasColada, formatColadaWithMaterial(payload?.colada || "", payload?.material_objetivo || ""));
-  setText(nodes.cucharasMaterial, payload?.material_objetivo || "");
+  const displayColada   = cucharasState.colada          || payload?.colada            || "";
+  const displayMaterial = cucharasState.materialObjetivo || payload?.material_objetivo || "";
+  setText(nodes.cucharasColada, formatColadaWithMaterial(displayColada, displayMaterial));
+  setText(nodes.cucharasMaterial, displayMaterial);
   refreshClock();
   renderCucharasWarning(payload);
 
@@ -742,7 +748,11 @@ async function runCucharasAction(action) {
     return;
   }
   if (action === "start") {
-    if (cucharasTotal() > 0) {
+    const sameColada = Boolean(
+      ajusteState.colada && cucharasState.colada &&
+      ajusteState.colada === cucharasState.colada
+    );
+    if (!sameColada && cucharasTotal() > 0) {
       const ok = window.confirm("Iniciar borra el conteo actual de esta colada. Continuar?");
       if (!ok) return;
     }
@@ -782,8 +792,8 @@ async function runCucharasAction(action) {
     const data = await response.json();
     if (action === "start") {
       cucharasState.initiated = true;
-      cucharasState.initiatedColada   = cucharasState.colada;
-      cucharasState.initiatedMaterial = cucharasState.materialObjetivo;
+      cucharasState.initiatedColada   = data.cucharas?.colada   || "";
+      cucharasState.initiatedMaterial = data.cucharas?.material_objetivo || "";
       cucharasState.counts = {};
       showUndoBtn();  // mostrar "Volver" después de iniciar con éxito
     }
@@ -939,7 +949,7 @@ async function saveCucharaDelta(material, delta) {
       throw new Error(`HTTP ${response.status}`);
     }
     const data = await response.json();
-    syncCucharasState(data.cucharas || {});
+    syncCucharasState(data.cucharas || {}, true);
     cucharasState.saving = false;
     renderCucharas(data.cucharas || {});
   } catch (error) {
@@ -1141,7 +1151,7 @@ async function restorePreviousSession() {
     cucharasState.initiatedColada   = undoState.colada;
     cucharasState.initiatedMaterial = undoState.material;
     cucharasState.counts = { ...undoState.counts };
-    syncCucharasState(data.cucharas || {});
+    syncCucharasState(data.cucharas || {}, true);
     cucharasState.saving = false;
     renderCucharas(data.cucharas || {});
     setCucharasStatus("Colada anterior restaurada.", "is-saved");

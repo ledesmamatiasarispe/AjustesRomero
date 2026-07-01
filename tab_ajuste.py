@@ -3061,7 +3061,7 @@ class TabAjuste(ttk.Frame):
                 rend = to_float(a.get("rendimiento", 100.0))
                 if q_low and q_low not in name.lower() and q_low not in tipo.lower():
                     continue
-                cat_tree.insert("", "end", iid=name, values=(name, tipo, fmt(rend, 1)))
+                cat_tree.insert("", "end", values=(name, tipo, fmt(rend, 1)))
 
         _populate_cat()
         filter_var.trace_add("write", lambda *_: _populate_cat(filter_var.get()))

@@ -3010,58 +3010,93 @@ class TabAjuste(ttk.Frame):
         win = tk.Toplevel(self)
         win.title("Cálculo de carga")
         win.transient(self)
-        win.geometry("900x600")
-        win.minsize(700, 460)
+        win.geometry("1200x660")
+        win.minsize(900, 480)
 
-        root = ttk.Frame(win, padding=10)
+        root = ttk.Frame(win, padding=8)
         root.pack(fill="both", expand=True)
 
-        # -- fila superior: agregar material --
-        add_frame = ttk.LabelFrame(root, text="Agregar material del catálogo", padding=6)
-        add_frame.pack(fill="x", pady=(0, 8))
-
-        all_names = sorted(set(a["nombre"] for a in self.alloys))
-        mat_var = tk.StringVar()
-        combo = ttk.Combobox(add_frame, textvariable=mat_var, values=all_names, width=36)
-        combo.pack(side="left")
-
-        # -- panel central: izquierda materiales / derecha resultados --
         pane = ttk.PanedWindow(root, orient="horizontal")
         pane.pack(fill="both", expand=True)
 
-        left_outer = ttk.LabelFrame(pane, text="Materiales de carga", padding=6)
-        right_outer = ttk.LabelFrame(pane, text="Composición resultante", padding=6)
-        pane.add(left_outer, weight=3)
-        pane.add(right_outer, weight=2)
+        cat_outer = ttk.LabelFrame(pane, text="Catálogo", padding=6)
+        sel_outer = ttk.LabelFrame(pane, text="Materiales de carga", padding=6)
+        res_outer = ttk.LabelFrame(pane, text="Composición resultante", padding=6)
+        pane.add(cat_outer, weight=3)
+        pane.add(sel_outer, weight=3)
+        pane.add(res_outer, weight=2)
 
-        left_sf = ScrollFrame(left_outer)
-        left_sf.pack(fill="both", expand=True)
+        # ---- Panel catálogo ----
+        filter_row = ttk.Frame(cat_outer)
+        filter_row.pack(fill="x", pady=(0, 4))
+        ttk.Label(filter_row, text="Buscar:").pack(side="left")
+        filter_var = tk.StringVar()
+        ttk.Entry(filter_row, textvariable=filter_var, width=22).pack(side="left", padx=4)
 
-        left_footer = ttk.Frame(left_outer)
-        left_footer.pack(fill="x", pady=(4, 0))
-        lbl_total_kg = ttk.Label(left_footer, text="Total cargado: — kg")
+        cat_cols = ("nombre", "tipo", "rend")
+        tree_wrap = ttk.Frame(cat_outer)
+        tree_wrap.pack(fill="both", expand=True)
+        cat_tree = ttk.Treeview(tree_wrap, columns=cat_cols, show="headings",
+                                selectmode="browse", height=18)
+        cat_tree.heading("nombre", text="Nombre")
+        cat_tree.heading("tipo",   text="Tipo")
+        cat_tree.heading("rend",   text="Rend %")
+        cat_tree.column("nombre", width=200)
+        cat_tree.column("tipo",   width=110)
+        cat_tree.column("rend",   width=58, anchor="center")
+        cat_ysb = ttk.Scrollbar(tree_wrap, orient="vertical", command=cat_tree.yview)
+        cat_tree.configure(yscrollcommand=cat_ysb.set)
+        cat_tree.pack(side="left", fill="both", expand=True)
+        cat_ysb.pack(side="right", fill="y")
+
+        ttk.Label(cat_outer, text="Doble clic o arrastrar → Materiales de carga",
+                  foreground="#888", font=("Segoe UI", 8)).pack(anchor="w", pady=(4, 0))
+
+        def _populate_cat(q=""):
+            cat_tree.delete(*cat_tree.get_children())
+            q_low = q.strip().lower()
+            for a in sorted(self.alloys, key=lambda x: x.get("nombre", "").lower()):
+                name = a.get("nombre", "")
+                tipo = a.get("tipo", "")
+                rend = to_float(a.get("rendimiento", 100.0))
+                if q_low and q_low not in name.lower() and q_low not in tipo.lower():
+                    continue
+                cat_tree.insert("", "end", iid=name, values=(name, tipo, fmt(rend, 1)))
+
+        _populate_cat()
+        filter_var.trace_add("write", lambda *_: _populate_cat(filter_var.get()))
+
+        # ---- Panel materiales seleccionados ----
+        sel_sf = ScrollFrame(sel_outer)
+        sel_sf.pack(fill="both", expand=True)
+
+        sel_footer = ttk.Frame(sel_outer)
+        sel_footer.pack(fill="x", pady=(4, 0))
+        lbl_total_kg = ttk.Label(sel_footer, text="Total cargado: — kg")
         lbl_total_kg.pack(side="left")
-        lbl_total_eff = ttk.Label(left_footer, text="   Total efectivo: — kg", foreground="#888")
+        lbl_total_eff = ttk.Label(sel_footer, text="   Total efectivo: — kg", foreground="#888")
         lbl_total_eff.pack(side="left")
 
-        right_sf = ScrollFrame(right_outer)
-        right_sf.pack(fill="both", expand=True)
+        # ---- Panel resultados ----
+        res_sf = ScrollFrame(res_outer)
+        res_sf.pack(fill="both", expand=True)
 
         result_vars = {}
         for i, el in enumerate(ELEMENTS):
-            row = ttk.Frame(right_sf.inner)
-            row.grid(row=i, column=0, sticky="ew", pady=1)
-            ttk.Label(row, text=el, width=5, anchor="w").pack(side="left")
+            rrow = ttk.Frame(res_sf.inner)
+            rrow.grid(row=i, column=0, sticky="ew", pady=1)
+            ttk.Label(rrow, text=el, width=5, anchor="w").pack(side="left")
             v = tk.StringVar(value="—")
-            ttk.Label(row, textvariable=v, width=12, anchor="e").pack(side="left", padx=4)
-            ttk.Label(row, text="%").pack(side="left")
+            ttk.Label(rrow, textvariable=v, width=12, anchor="e").pack(side="left", padx=4)
+            ttk.Label(rrow, text="%").pack(side="left")
             result_vars[el] = v
 
-        lbl_ce = ttk.Label(right_outer, text="CE (Fundición): —", font=("Segoe UI", 10, "bold"))
+        lbl_ce = ttk.Label(res_outer, text="CE (Fundición): —",
+                           font=("Segoe UI", 10, "bold"))
         lbl_ce.pack(anchor="w", pady=(6, 0))
 
-        # lista de materiales añadidos: (nombre, alloy_dict, kg_var, row_widget)
-        rows = []
+        # ---- Lógica compartida ----
+        rows = []  # (nombre, alloy_dict, kg_var, row_widget)
 
         def recalc():
             total_loaded = 0.0
@@ -3108,32 +3143,81 @@ class TabAjuste(ttk.Frame):
                         return
             return _remove
 
-        def add_material():
-            name = mat_var.get().strip()
+        def add_material(name):
             if not name:
                 return
             alloy = next((a for a in self.alloys if a["nombre"] == name), None)
             if not alloy:
-                messagebox.showerror("Catálogo", f"Material '{name}' no encontrado.", parent=win)
                 return
             kg_var = tk.StringVar(value="0")
-            row_w = ttk.Frame(left_sf.inner)
+            row_w = ttk.Frame(sel_sf.inner)
             row_w.pack(fill="x", pady=2)
-            ttk.Label(row_w, text=name, width=26, anchor="w").pack(side="left")
+            ttk.Label(row_w, text=name, width=24, anchor="w").pack(side="left")
             tipo = alloy.get("tipo", "")
             rend = to_float(alloy.get("rendimiento", 100.0))
-            ttk.Label(row_w, text=f"{tipo}  ({fmt(rend, 1)}%)",
-                      width=20, anchor="w", foreground="#888").pack(side="left")
+            ttk.Label(row_w, text=f"{tipo} ({fmt(rend, 1)}%)",
+                      width=18, anchor="w", foreground="#888").pack(side="left")
             ent = ttk.Entry(row_w, textvariable=kg_var, width=10)
             ent.pack(side="left", padx=4)
             ent.bind("<KeyRelease>", lambda _e: recalc())
-            ttk.Button(row_w, text="✕", width=3, command=make_remove(row_w)).pack(side="left", padx=2)
+            ttk.Button(row_w, text="✕", width=3,
+                       command=make_remove(row_w)).pack(side="left", padx=2)
             rows.append((name, alloy, kg_var, row_w))
             ent.focus_set()
             recalc()
 
-        ttk.Button(add_frame, text="Agregar", command=add_material).pack(side="left", padx=(6, 0))
-        combo.bind("<Return>", lambda _e: add_material())
+        # ---- Drag & drop desde catálogo ----
+        _drag = {"item": None, "lbl": None}
+
+        def _drag_start(event):
+            item = cat_tree.identify_row(event.y)
+            _drag["item"] = cat_tree.item(item, "values")[0] if item else None
+
+        def _drag_motion(event):
+            if not _drag["item"]:
+                return
+            rx = event.x_root - win.winfo_rootx() + 14
+            ry = event.y_root - win.winfo_rooty() + 10
+            if _drag["lbl"] is None:
+                lbl = tk.Label(win, text=_drag["item"],
+                               background="#3a7bd5", foreground="white",
+                               relief="solid", padx=6, pady=2,
+                               font=("Segoe UI", 9))
+                lbl.place(x=rx, y=ry)
+                _drag["lbl"] = lbl
+            else:
+                _drag["lbl"].place(x=rx, y=ry)
+            # cambiar cursor si está sobre la zona de destino
+            rx_p, ry_p = event.x_root, event.y_root
+            if (sel_outer.winfo_rootx() <= rx_p <= sel_outer.winfo_rootx() + sel_outer.winfo_width()
+                    and sel_outer.winfo_rooty() <= ry_p <= sel_outer.winfo_rooty() + sel_outer.winfo_height()):
+                win.configure(cursor="plus")
+            else:
+                win.configure(cursor="")
+
+        def _drag_release(event):
+            if _drag["lbl"]:
+                _drag["lbl"].destroy()
+                _drag["lbl"] = None
+            win.configure(cursor="")
+            name = _drag["item"]
+            _drag["item"] = None
+            if not name:
+                return
+            rx_p, ry_p = event.x_root, event.y_root
+            if (sel_outer.winfo_rootx() <= rx_p <= sel_outer.winfo_rootx() + sel_outer.winfo_width()
+                    and sel_outer.winfo_rooty() <= ry_p <= sel_outer.winfo_rooty() + sel_outer.winfo_height()):
+                add_material(name)
+
+        def _dbl_click(event):
+            item = cat_tree.identify_row(event.y)
+            if item:
+                add_material(cat_tree.item(item, "values")[0])
+
+        cat_tree.bind("<ButtonPress-1>",   _drag_start)
+        cat_tree.bind("<B1-Motion>",       _drag_motion)
+        cat_tree.bind("<ButtonRelease-1>", _drag_release)
+        cat_tree.bind("<Double-1>",        _dbl_click)
 
         def clear_all():
             for _, _, _, w in list(rows):

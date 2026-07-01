@@ -357,6 +357,8 @@ class TabAjuste(ttk.Frame):
         self.btn_calcular.pack(side="left")
         ttk.Button(btns, text="Calculadora de composicion por dilucion",
                    command=self.open_dilution_calculator).pack(side="left", padx=(6, 0))
+        ttk.Button(btns, text="Cálculo de carga",
+                   command=self.open_charge_calculator).pack(side="left", padx=(6, 0))
         self.btn_calcular_pct = ttk.Button(btns, text="Calcular %", command=self.calculate_partial)
         self.btn_calcular_pct.pack(side="left", padx=6)
         self.btn_aplicar = ttk.Button(btns, text="Aplicar", command=self.apply_adjustment)
@@ -3001,6 +3003,147 @@ class TabAjuste(ttk.Frame):
         actions.pack(fill="x", pady=(8, 0))
         ttk.Button(actions, text="Calcular", command=calculate).pack(side="right")
         ttk.Button(actions, text="Limpiar", command=clear).pack(side="right", padx=6)
+        ttk.Button(actions, text="Cerrar", command=win.destroy).pack(side="right")
+
+    # ----------------------- calculadora de carga -----------------------
+    def open_charge_calculator(self):
+        win = tk.Toplevel(self)
+        win.title("Cálculo de carga")
+        win.transient(self)
+        win.geometry("900x600")
+        win.minsize(700, 460)
+
+        root = ttk.Frame(win, padding=10)
+        root.pack(fill="both", expand=True)
+
+        # -- fila superior: agregar material --
+        add_frame = ttk.LabelFrame(root, text="Agregar material del catálogo", padding=6)
+        add_frame.pack(fill="x", pady=(0, 8))
+
+        all_names = sorted(set(a["nombre"] for a in self.alloys))
+        mat_var = tk.StringVar()
+        combo = ttk.Combobox(add_frame, textvariable=mat_var, values=all_names, width=36)
+        combo.pack(side="left")
+
+        # -- panel central: izquierda materiales / derecha resultados --
+        pane = ttk.PanedWindow(root, orient="horizontal")
+        pane.pack(fill="both", expand=True)
+
+        left_outer = ttk.LabelFrame(pane, text="Materiales de carga", padding=6)
+        right_outer = ttk.LabelFrame(pane, text="Composición resultante", padding=6)
+        pane.add(left_outer, weight=3)
+        pane.add(right_outer, weight=2)
+
+        left_sf = ScrollFrame(left_outer)
+        left_sf.pack(fill="both", expand=True)
+
+        left_footer = ttk.Frame(left_outer)
+        left_footer.pack(fill="x", pady=(4, 0))
+        lbl_total_kg = ttk.Label(left_footer, text="Total cargado: — kg")
+        lbl_total_kg.pack(side="left")
+        lbl_total_eff = ttk.Label(left_footer, text="   Total efectivo: — kg", foreground="#888")
+        lbl_total_eff.pack(side="left")
+
+        right_sf = ScrollFrame(right_outer)
+        right_sf.pack(fill="both", expand=True)
+
+        result_vars = {}
+        for i, el in enumerate(ELEMENTS):
+            row = ttk.Frame(right_sf.inner)
+            row.grid(row=i, column=0, sticky="ew", pady=1)
+            ttk.Label(row, text=el, width=5, anchor="w").pack(side="left")
+            v = tk.StringVar(value="—")
+            ttk.Label(row, textvariable=v, width=12, anchor="e").pack(side="left", padx=4)
+            ttk.Label(row, text="%").pack(side="left")
+            result_vars[el] = v
+
+        lbl_ce = ttk.Label(right_outer, text="CE (Fundición): —", font=("Segoe UI", 10, "bold"))
+        lbl_ce.pack(anchor="w", pady=(6, 0))
+
+        # lista de materiales añadidos: (nombre, alloy_dict, kg_var, row_widget)
+        rows = []
+
+        def recalc():
+            total_loaded = 0.0
+            total_eff = 0.0
+            masses = {e: 0.0 for e in ELEMENTS}
+            for _name, alloy, kg_var, _ in rows:
+                try:
+                    kg = float(kg_var.get().replace(",", ".") or 0)
+                except Exception:
+                    kg = 0.0
+                if kg <= 0:
+                    continue
+                rend = to_float(alloy.get("rendimiento", 100.0)) / 100.0
+                eff_kg = kg * rend
+                total_loaded += kg
+                total_eff += eff_kg
+                comp = alloy.get("composicion") or {}
+                for e in ELEMENTS:
+                    masses[e] += eff_kg * to_float(comp.get(e, 0.0)) / 100.0
+
+            if total_eff > 0:
+                comp_pct = {e: 100.0 * masses[e] / total_eff for e in ELEMENTS}
+                for el, v in result_vars.items():
+                    pct = comp_pct[el]
+                    v.set(fmt(pct, 4) if pct >= 0.0001 else "—")
+                ce = ce_from_percent(comp_pct, "FUNDICION")
+                lbl_ce.config(text=f"CE (Fundición): {fmt(ce, 4)}")
+                lbl_total_kg.config(text=f"Total cargado: {fmt(total_loaded, 3)} kg")
+                lbl_total_eff.config(text=f"   Total efectivo: {fmt(total_eff, 3)} kg")
+            else:
+                for v in result_vars.values():
+                    v.set("—")
+                lbl_ce.config(text="CE (Fundición): —")
+                lbl_total_kg.config(text="Total cargado: — kg")
+                lbl_total_eff.config(text="   Total efectivo: — kg")
+
+        def make_remove(rw):
+            def _remove():
+                for i2, entry in enumerate(rows):
+                    if entry[3] is rw:
+                        rows.pop(i2)
+                        rw.destroy()
+                        recalc()
+                        return
+            return _remove
+
+        def add_material():
+            name = mat_var.get().strip()
+            if not name:
+                return
+            alloy = next((a for a in self.alloys if a["nombre"] == name), None)
+            if not alloy:
+                messagebox.showerror("Catálogo", f"Material '{name}' no encontrado.", parent=win)
+                return
+            kg_var = tk.StringVar(value="0")
+            row_w = ttk.Frame(left_sf.inner)
+            row_w.pack(fill="x", pady=2)
+            ttk.Label(row_w, text=name, width=26, anchor="w").pack(side="left")
+            tipo = alloy.get("tipo", "")
+            rend = to_float(alloy.get("rendimiento", 100.0))
+            ttk.Label(row_w, text=f"{tipo}  ({fmt(rend, 1)}%)",
+                      width=20, anchor="w", foreground="#888").pack(side="left")
+            ent = ttk.Entry(row_w, textvariable=kg_var, width=10)
+            ent.pack(side="left", padx=4)
+            ent.bind("<KeyRelease>", lambda _e: recalc())
+            ttk.Button(row_w, text="✕", width=3, command=make_remove(row_w)).pack(side="left", padx=2)
+            rows.append((name, alloy, kg_var, row_w))
+            ent.focus_set()
+            recalc()
+
+        ttk.Button(add_frame, text="Agregar", command=add_material).pack(side="left", padx=(6, 0))
+        combo.bind("<Return>", lambda _e: add_material())
+
+        def clear_all():
+            for _, _, _, w in list(rows):
+                w.destroy()
+            rows.clear()
+            recalc()
+
+        actions = ttk.Frame(root)
+        actions.pack(fill="x", pady=(8, 0))
+        ttk.Button(actions, text="Limpiar todo", command=clear_all).pack(side="right", padx=6)
         ttk.Button(actions, text="Cerrar", command=win.destroy).pack(side="right")
 
     # ------------------------------- UI auxiliares --------------------------

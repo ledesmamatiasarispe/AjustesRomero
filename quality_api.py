@@ -299,11 +299,6 @@ class _QualityHandler(BaseHTTPRequestHandler):
 
     # ---- MJPEG stream ----
     def _handle_mjpeg(self):
-        if is_desktop_camera_open():
-            err_frame = _error_jpeg("Cámara en uso por la app desktop")
-            self._send_single_mjpeg(err_frame)
-            return
-
         _streamer.acquire()
         try:
             self.send_response(200)
@@ -354,9 +349,6 @@ class _QualityHandler(BaseHTTPRequestHandler):
 
     # ---- Capturar frame ----
     def _handle_capture(self):
-        if is_desktop_camera_open():
-            _json_response(self, {"error": "desktop_camera_open"}, 409)
-            return
         frame_bgr = _streamer.get_bgr()
         if frame_bgr is None:
             _json_response(self, {"error": "no_frame"}, 503)

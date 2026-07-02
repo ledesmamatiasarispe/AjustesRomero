@@ -2029,39 +2029,34 @@ class TabCalidad(ttk.Frame):
             messagebox.showinfo("Camara", "Pillow (PIL) no esta disponible.", parent=self)
             return
 
-        cap = None
-        backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, 0]
-        for idx in range(3):
-            for backend in backends:
-                try:
-                    c = cv2.VideoCapture(idx, backend) if backend else cv2.VideoCapture(idx)
-                    if c.isOpened():
-                        ret, _ = c.read()
-                        if ret:
-                            cap = c
-                            break
-                    c.release()
-                except Exception:
-                    pass
-            if cap is not None:
+        # Usar el streamer compartido con la app web (quality_api) para no abrir
+        # la cámara dos veces y permitir uso simultáneo.
+        try:
+            from quality_api import _streamer
+        except Exception as ex:
+            messagebox.showinfo("Camara", f"No se pudo acceder al streamer de cámara: {ex}", parent=self)
+            return
+
+        _streamer.acquire()
+
+        # Esperar el primer frame (máx ~3 s)
+        import time as _time
+        _first = None
+        for _ in range(90):
+            _first = _streamer.get_bgr()
+            if _first is not None:
                 break
-        if cap is None:
+            _time.sleep(0.033)
+
+        if _first is None:
+            _streamer.release_client()
+            err = _streamer.error or "No se pudo abrir la cámara"
             messagebox.showinfo("Camara",
-                "No se pudo abrir la camara.\n"
-                "Verificar que no este siendo usada por otra aplicacion.",
+                err + "\nVerificar que no esté siendo usada por otra aplicación.",
                 parent=self)
             return
 
-        # Solicitar máxima resolución y buffer mínimo
-        for res in ((3840, 2160), (1920, 1080), (1280, 720)):
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH,  res[0])
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, res[1])
-            ret, test = cap.read()
-            if ret and test is not None:
-                break
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        cam_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        cam_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        cam_h, cam_w = _first.shape[:2]
 
         PREVIEW_W, PREVIEW_H = 820, 616   # valores iniciales; el canvas puede crecer
 
@@ -2781,8 +2776,8 @@ class TabCalidad(ttk.Frame):
                 return
             # Leer cámara solo en live; en freeze el frame ya está en captured_frame[0]
             if live[0]:
-                ret, frame = cap.read()
-                if ret:
+                frame = _streamer.get_bgr()
+                if frame is not None:
                     try:
                         _show_frame(frame)
                     except Exception:
@@ -2824,10 +2819,7 @@ class TabCalidad(ttk.Frame):
                 _update_live()
                 return
             # Capturar frame actual
-            frame = None
-            for _ in range(3):
-                ret, f = cap.read()
-                if ret: frame = f
+            frame = _streamer.get_bgr()
             if frame is None:
                 return
             captured_frame[0] = frame
@@ -3112,13 +3104,7 @@ class TabCalidad(ttk.Frame):
             return picked["v"]
 
         def _fresh_frame():
-            """Lee 3 frames para vaciar el buffer y devuelve el más reciente."""
-            f = None
-            for _ in range(3):
-                ret, fr = cap.read()
-                if ret:
-                    f = fr
-            return f
+            return _streamer.get_bgr()
 
         def _do_save():
             frame = captured_frame[0]
@@ -3428,7 +3414,7 @@ class TabCalidad(ttk.Frame):
             except Exception:
                 pass
             try:
-                cap.release()
+                _streamer.release_client()
             except Exception:
                 pass
             try:

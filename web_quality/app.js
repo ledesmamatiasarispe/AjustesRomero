@@ -303,11 +303,7 @@ n.btnCapture.addEventListener("click", async () => {
     const r = await fetch("/api/capture", { method: "POST" });
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
-      if (d.error === "desktop_camera_open") {
-        setStatus("La cámara está en uso por la app desktop", "error");
-      } else {
-        setStatus("Error al capturar: " + (d.error || r.status), "error");
-      }
+      setStatus("Error al capturar: " + (d.error || r.status), "error");
       return;
     }
     const blob = await r.blob();

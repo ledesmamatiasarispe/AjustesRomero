@@ -271,6 +271,8 @@ class _QualityHandler(BaseHTTPRequestHandler):
             self._handle_calibraciones()
         elif path == "/api/mjpeg":
             self._handle_mjpeg()
+        elif path == "/api/frame":
+            self._handle_frame()
         elif path == "/api/captured":
             self._handle_captured_get()
         else:
@@ -346,6 +348,28 @@ class _QualityHandler(BaseHTTPRequestHandler):
         ).encode()
         self.wfile.write(header + frame + b"\r\n")
         self.wfile.flush()
+
+    # ---- Frame único (para polling desde móviles que no soportan MJPEG) ----
+    def _handle_frame(self):
+        _streamer.acquire()
+        frame = _streamer.get_jpeg()
+        _streamer.release_client()
+        if frame is None:
+            if _streamer.error:
+                frame = _error_jpeg(_streamer.error or "Sin señal")
+            else:
+                self.send_error(503)
+                return
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(frame)))
+        self.send_header("Cache-Control", "no-store, no-cache")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        try:
+            self.wfile.write(frame)
+        except (BrokenPipeError, OSError):
+            pass
 
     # ---- Capturar frame ----
     def _handle_capture(self):

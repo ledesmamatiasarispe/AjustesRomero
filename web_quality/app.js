@@ -317,6 +317,7 @@ n.btnCapture.addEventListener("click", async () => {
     });
 
     S.live = false;
+    stopLivePolling();
     n.liveStream.style.display = "none";
     n.capturedImg.removeAttribute("hidden");
     n.capturedImg.style.display = "";
@@ -780,11 +781,41 @@ n.btnPDF.addEventListener("click", async () => {
   }
 });
 
+// ── Live stream polling (compatible con iOS Safari y todos los móviles) ────────
+// En lugar de MJPEG (no soportado en Safari), pedimos un JPEG por vez en loop.
+let _pollTimer = null;
+
+function startLivePolling() {
+  if (_pollTimer !== null || !S.live) return;
+  function poll() {
+    if (!S.live) { _pollTimer = null; return; }
+    const img = new Image();
+    img.onload = () => {
+      if (S.live) {
+        n.liveStream.src = img.src;
+        drawOverlay();
+      }
+      _pollTimer = setTimeout(poll, 67); // ~15 fps
+    };
+    img.onerror = () => {
+      _pollTimer = setTimeout(poll, 1000);
+    };
+    img.src = `/api/frame?t=${Date.now()}`;
+  }
+  poll();
+}
+
+function stopLivePolling() {
+  if (_pollTimer !== null) { clearTimeout(_pollTimer); _pollTimer = null; }
+}
+
+// Al reanudar stream, reiniciar el polling
+const _origBtnResumeClick = n.btnResume.onclick;
+n.btnResume.addEventListener("click", () => { startLivePolling(); });
+
 // ── Init ─────────────────────────────────────────────────────────────────────
 loadCalibrations();
 drawOverlay();
-
-// Cuando el stream en vivo carga su primer frame, actualizamos las dimensiones
-n.liveStream.addEventListener("load", () => drawOverlay());
+startLivePolling();
 
 setStatus("Stream en vivo. Presioná Capturar para congelar la imagen.");

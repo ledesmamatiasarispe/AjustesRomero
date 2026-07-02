@@ -54,7 +54,6 @@ const n = {
   btnClearMeasures: document.getElementById("btnClearMeasures"),
   chkOverlay:    document.getElementById("chkOverlay"),
   chkBinary:     document.getElementById("chkBinary"),
-  btnAnalyze:    document.getElementById("btnAnalyze"),
   btnDownload:   document.getElementById("btnDownload"),
   btnPDF:        document.getElementById("btnPDF"),
   statusBar:     document.getElementById("statusBar"),
@@ -338,7 +337,13 @@ n.btnCapture.addEventListener("click", async () => {
     S.showOverlay = false;
     S.showBinary = false;
 
-    setStatus("Imagen capturada", "ok");
+    setStatus("Imagen capturada — analizando…");
+    const ok = await analyze();
+    if (ok) {
+      S.showOverlay = true;
+      n.chkOverlay.checked = true;
+      drawOverlay();
+    }
   } catch (ex) {
     setStatus("Error de red: " + ex.message, "error");
   } finally {
@@ -470,7 +475,6 @@ async function analyze() {
   if (S.live) { setStatus("Captura una imagen primero", "error"); return false; }
   if (S.analyzing) return false;
   S.analyzing = true;
-  n.btnAnalyze.disabled = true;
   n.btnPDF.disabled = true;
   setStatus("Analizando…");
   try {
@@ -499,12 +503,9 @@ async function analyze() {
     return false;
   } finally {
     S.analyzing = false;
-    n.btnAnalyze.disabled = false;
     n.btnPDF.disabled = false;
   }
 }
-
-n.btnAnalyze.addEventListener("click", () => analyze());
 
 // ── Render estadísticas ───────────────────────────────────────────────────────
 function renderStats(stats) {

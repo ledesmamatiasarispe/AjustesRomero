@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Calidad — Cámara</title>
+<link rel="stylesheet" href="/app.css">
+<!-- jsPDF + autoTable desde CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+</head>
+<body>
+
+<!-- ── Panel izquierdo: controles ──────────────────────────── -->
+<aside id="controls">
+  <div class="ctrl-section">
+    <label class="ctrl-label">Calibración</label>
+    <select id="calSelect"><option value="">Sin calibrar</option></select>
+    <button id="btnReloadCal" class="btn-icon" title="Recargar calibraciones">↺</button>
+  </div>
+
+  <div class="ctrl-section">
+    <label class="ctrl-label">Modo análisis</label>
+    <select id="modeSelect">
+      <option value="nodular">Nodular</option>
+      <option value="laminar">Laminar</option>
+    </select>
+  </div>
+
+  <div class="ctrl-section">
+    <label class="ctrl-label">Umbral <span id="threshVal">auto</span></label>
+    <input id="threshSlider" type="range" min="0" max="255" value="0">
+  </div>
+
+  <div class="ctrl-section">
+    <label class="ctrl-label">Área mínima (px²)</label>
+    <input id="minAreaInput" type="number" value="100" min="1" max="9999">
+  </div>
+
+  <div class="ctrl-section">
+    <label><input id="useOpenChk" type="checkbox" checked> OPEN morfológico</label>
+  </div>
+
+  <hr>
+
+  <div class="ctrl-section btn-group">
+    <button id="btnCapture" class="btn-primary">Capturar</button>
+    <button id="btnResume" class="btn-secondary" disabled>Continuar stream</button>
+  </div>
+
+  <hr>
+
+  <div class="ctrl-section btn-group">
+    <button id="btnMeasure" class="btn-toggle">Medir</button>
+    <button id="btnClearMeasures" class="btn-secondary">Borrar medidas</button>
+  </div>
+
+  <hr>
+
+  <div class="ctrl-section">
+    <label><input id="chkOverlay" type="checkbox"> Ver contornos</label>
+    <label><input id="chkBinary" type="checkbox"> Ver umbral</label>
+  </div>
+
+  <hr>
+
+  <div class="ctrl-section btn-group-v">
+    <button id="btnAnalyze" class="btn-primary">Analizar</button>
+    <button id="btnDownload" class="btn-secondary">Descargar imagen</button>
+    <button id="btnPDF" class="btn-secondary">Calcular y PDF</button>
+  </div>
+
+  <div id="statusBar"></div>
+</aside>
+
+<!-- ── Centro: vista de imagen ─────────────────────────────── -->
+<main id="viewBox">
+  <img id="liveStream" src="/api/mjpeg" alt="stream en vivo">
+  <img id="capturedImg" alt="captura" hidden>
+  <canvas id="overlay"></canvas>
+  <div id="hint"></div>
+</main>
+
+<!-- ── Panel derecho: estadísticas ─────────────────────────── -->
+<aside id="statsPanel">
+  <div id="statsContent">
+    <p class="stats-empty">Sin análisis.<br>Capturá una imagen y presioná <strong>Analizar</strong>.</p>
+  </div>
+</aside>
+
+<script src="/app.js"></script>
+</body>
+</html>

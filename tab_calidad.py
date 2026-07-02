@@ -2484,6 +2484,14 @@ class TabCalidad(ttk.Frame):
 
         # Ahora que cam_cal_var y _cam_px_mm están definidos, conectar el trace del área
         cam_cal_var.trace_add("write", lambda *_: _update_area_var())
+
+        # Notificar a quality_api que el popup está abierto y cuál calibración usa
+        try:
+            from quality_api import set_active_camera_cal
+            set_active_camera_cal(_cam_cal_id())
+            cam_cal_var.trace_add("write", lambda *_: set_active_camera_cal(_cam_cal_id()))
+        except Exception:
+            pass
         _update_area_var()
 
         cal_row = ttk.Frame(win, padding=(8, 2))
@@ -3421,6 +3429,11 @@ class TabCalidad(ttk.Frame):
                 pass
             try:
                 cap.release()
+            except Exception:
+                pass
+            try:
+                from quality_api import set_active_camera_cal
+                set_active_camera_cal(None)
             except Exception:
                 pass
             try:

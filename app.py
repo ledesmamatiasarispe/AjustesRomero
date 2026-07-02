@@ -21,6 +21,7 @@ from tab_pie_horno import TabPieHorno
 from storage import load_alloys, save_alloys
 from config import THEME, BG, FG, BG_ENTRY, ACCENT
 from host_api import HOST_API_PORT, HostAPIServer, get_host_api_port
+from quality_api import QualityAPIServer
 from widgets import ScrollFrame
 
 APP_TITLE = "Ajuste de Composición"
@@ -278,6 +279,7 @@ class App(tk.Frame):
         self._debug_mode_var = tk.BooleanVar(value=False)
         self._host_api_port_var = tk.StringVar(value=str(HOST_API_PORT))
         self._host_api = None
+        self._quality_api = None
 
         self.alloys = load_alloys()
 
@@ -929,6 +931,12 @@ class App(tk.Frame):
         except Exception as ex:
             self._host_api = None
             print(f"[HOST API] No se pudo iniciar: {ex}")
+        try:
+            self._quality_api = QualityAPIServer().start()
+            print(f"[QUALITY API] LAN escuchando en {self._quality_api.url()}")
+        except Exception as ex:
+            self._quality_api = None
+            print(f"[QUALITY API] No se pudo iniciar: {ex}")
 
     def _apply_host_api_port(self, port, save=True):
         try:
@@ -1065,6 +1073,11 @@ class App(tk.Frame):
         try:
             if self._host_api is not None:
                 self._host_api.stop()
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_quality_api", None) is not None:
+                self._quality_api.stop()
         except Exception:
             pass
         self.master.destroy()

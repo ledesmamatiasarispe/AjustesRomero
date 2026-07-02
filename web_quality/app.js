@@ -332,7 +332,7 @@ n.btnCapture.addEventListener("click", async () => {
     _binaryImg = null;
     drawOverlay();
 
-    n.btnResume.disabled = false;
+    n.btnResume.removeAttribute("hidden");
     n.chkOverlay.checked = false;
     n.chkBinary.checked = false;
     S.showOverlay = false;
@@ -351,7 +351,7 @@ n.btnResume.addEventListener("click", () => {
   n.capturedImg.style.display = "none";
   n.capturedImg.setAttribute("hidden", "");
   n.liveStream.style.display = "";
-  n.btnResume.disabled = true;
+  n.btnResume.setAttribute("hidden", "");
   S.lastStats = null;
   S.overlayDataUrl = null;
   S.binaryDataUrl = null;

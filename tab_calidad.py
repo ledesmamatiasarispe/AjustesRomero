@@ -31,19 +31,23 @@ except Exception:
 
 DEFAULT_SECTION_OPTIONS = ["Hasta 13 mm", "De 12 a 25 mm", "De 20 a 50 mm"]
 GRAPHITE_TYPE_OPTIONS = (
-    "A 100%",
+    # Puro A
     "A",
-    "A-B",
-    "A80/B20",
-    "A85/B15",
-    "A90",
-    "A90/B10",
-    "A90/C10",
-    "A 95% / B 5%",
+    "A 100%",
+    # Mezclas A/B — de menor a mayor contenido de B
     "A95/B05",
-    "A95/C05",
+    "A 95% / B 5%",
+    "A90/B10",
     "A 90% / B 10%",
+    "A85/B15",
     "A 85% / B 15%",
+    "A80/B20",
+    # Mezclas A/C
+    "A95/C05",
+    "A90/C10",
+    "A90",
+    # Genérico
+    "A-B",
 )
 GRAPHITE_SIZE_OPTIONS = (
     "1",

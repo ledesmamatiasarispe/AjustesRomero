@@ -7991,6 +7991,12 @@ class TabCalidad(ttk.Frame):
         saved_id = report.get("id")
         self._confirmed_snapshot = self._normalize_report_payload(report)
         self._draft_fields = set()
+        if self._draft_job is not None:
+            try:
+                self.after_cancel(self._draft_job)
+            except Exception:
+                pass
+            self._draft_job = None
         save_quality_reports(self.reports)
         self.refresh()
         self._set_draft_ui(False)

@@ -186,6 +186,13 @@ class TabCalidad(ttk.Frame):
         self._report_images = []
         self._image_preview_photo = None
 
+        # Chat de cámara
+        self._chat_win = None
+        self._chat_text = None
+        self._chat_input_var = None
+        self._chat_last_id = 0
+        self._chat_initialized = False
+
         self._reload_final_material_catalog()
 
         top = ttk.Frame(self)
@@ -208,6 +215,7 @@ class TabCalidad(ttk.Frame):
         ttk.Button(action_bar, text="Comparar", command=self._open_compare_window).pack(side="left", padx=(6, 0))
         ttk.Button(action_bar, text="Camara", command=self._open_camera_popup).pack(side="left", padx=(6, 0))
         ttk.Button(action_bar, text="Calibraciones", command=self._open_calibrations_manager).pack(side="left", padx=(6, 0))
+        ttk.Button(action_bar, text="Chat", command=self._open_chat_window).pack(side="left", padx=(6, 0))
         ttk.Button(action_bar, text="Eliminar", command=self._delete_selected).pack(side="right")
         ttk.Button(action_bar, text="Eliminar grupo", command=self._delete_selected_group).pack(side="right", padx=(0, 6))
         self.lbl_bases_help = None
@@ -484,6 +492,7 @@ class TabCalidad(ttk.Frame):
             "matriz": self.ent_matriz,
         }
         self.refresh()
+        self.after(800, self._poll_chat_messages)
 
     def _catalog_final_entry(self, alloy):
         meta = alloy.get("calidad_meta", {}) if isinstance(alloy, dict) else {}
@@ -7975,11 +7984,25 @@ class TabCalidad(ttk.Frame):
             if not report.get("id"):
                 report["id"] = self.reports[self._selected_index].get("id") or uuid.uuid4().hex
             self.reports[self._selected_index] = report
+        saved_id = report.get("id")
         self._confirmed_snapshot = self._normalize_report_payload(report)
         self._draft_fields = set()
         save_quality_reports(self.reports)
         self.refresh()
         self._set_draft_ui(False)
+        # re-seleccionar el informe que se acaba de guardar
+        if saved_id:
+            new_idx = next((i for i, r in enumerate(self.reports) if r.get("id") == saved_id), None)
+            if new_idx is not None:
+                child_iid = f"report:{new_idx}"
+                try:
+                    self.tree.selection_set(child_iid)
+                    self.tree.focus(child_iid)
+                    self.tree.see(child_iid)
+                except Exception:
+                    pass
+                self._load_selected()
+                return
         self._clear_form()
 
     def _delete_selected(self):
@@ -8014,3 +8037,120 @@ class TabCalidad(ttk.Frame):
         save_quality_reports(self.reports)
         self.refresh()
         self._clear_form()
+
+    # ── Chat de cámara ──────────────────────────────────────────────────────────
+
+    def _open_chat_window(self):
+        if self._chat_win and self._chat_win.winfo_exists():
+            self._chat_win.lift()
+            return
+
+        win = tk.Toplevel(self)
+        win.title("💬 Chat de Cámara")
+        win.geometry("400x500")
+        win.resizable(True, True)
+
+        msg_frame = ttk.Frame(win, padding=(6, 6, 6, 0))
+        msg_frame.pack(fill="both", expand=True)
+        msg_frame.rowconfigure(0, weight=1)
+        msg_frame.columnconfigure(0, weight=1)
+
+        self._chat_text = tk.Text(
+            msg_frame, wrap="word", state="disabled",
+            bg=BG, fg=FG, relief="flat", font=("", 10), padx=6, pady=4,
+            cursor="arrow",
+        )
+        sb = ttk.Scrollbar(msg_frame, command=self._chat_text.yview)
+        self._chat_text.configure(yscrollcommand=sb.set)
+        self._chat_text.grid(row=0, column=0, sticky="nsew")
+        sb.grid(row=0, column=1, sticky="ns")
+
+        self._chat_text.tag_configure("author", foreground="#888888", font=("", 9))
+        self._chat_text.tag_configure("manager_msg", foreground="#d4a800", font=("", 10, "bold"))
+        self._chat_text.tag_configure("other_msg", foreground="#80c0ff", font=("", 10))
+
+        input_frame = ttk.Frame(win, padding=(6, 4, 6, 4))
+        input_frame.pack(fill="x")
+        self._chat_input_var = tk.StringVar()
+        ent = ttk.Entry(input_frame, textvariable=self._chat_input_var)
+        ent.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        ent.bind("<Return>", lambda _: self._send_chat_message())
+        ttk.Button(input_frame, text="Enviar", command=self._send_chat_message).pack(side="right")
+
+        ttk.Label(win, text="Enviando como: 👑 Admin", foreground="#666666",
+                  font=("", 8)).pack(pady=(0, 4))
+
+        def _on_close():
+            self._chat_text = None
+            self._chat_input_var = None
+            win.destroy()
+
+        win.protocol("WM_DELETE_WINDOW", _on_close)
+        self._chat_win = win
+
+        self._load_all_chat_messages()
+        ent.focus_set()
+
+    def _load_all_chat_messages(self):
+        import storage as _st
+        try:
+            msgs = _st.get_chat_messages(since_id=0, limit=300)
+        except Exception:
+            return
+        if not msgs:
+            return
+        self._chat_last_id = msgs[-1]["id"]
+        self._chat_initialized = True
+        self._append_chat_messages(msgs)
+
+    def _append_chat_messages(self, msgs):
+        if not msgs or not self._chat_text:
+            return
+        self._chat_text.configure(state="normal")
+        for msg in msgs:
+            auth = msg["username"]
+            body = msg["body"]
+            ts   = (msg.get("ts") or "")[:16].replace("T", " ")
+            tag  = "manager_msg" if msg.get("is_manager") else "other_msg"
+            self._chat_text.insert("end", f"{auth}  {ts}\n", ("author",))
+            self._chat_text.insert("end", f"{body}\n\n", (tag,))
+        self._chat_text.configure(state="disabled")
+        self._chat_text.see("end")
+
+    def _send_chat_message(self):
+        if not self._chat_input_var:
+            return
+        body = self._chat_input_var.get().strip()
+        if not body:
+            return
+        self._chat_input_var.set("")
+        try:
+            import quality_api as _qapi
+            _qapi.send_manager_message(body)
+        except Exception as ex:
+            parent = self._chat_win if (self._chat_win and self._chat_win.winfo_exists()) else self
+            messagebox.showerror("Chat", f"Error al enviar: {ex}", parent=parent)
+
+    def _poll_chat_messages(self):
+        try:
+            import storage as _st
+            msgs = _st.get_chat_messages(since_id=self._chat_last_id, limit=50)
+            if msgs:
+                new_last = msgs[-1]["id"]
+                if not self._chat_initialized:
+                    # Primera ejecución: avanzar cursor sin mostrar histórico
+                    self._chat_last_id = new_last
+                    self._chat_initialized = True
+                elif self._chat_win and self._chat_win.winfo_exists():
+                    self._chat_last_id = new_last
+                    self._append_chat_messages(msgs)
+                elif any(not m.get("is_manager") for m in msgs):
+                    # Mensaje nuevo de un usuario web → abrir ventana
+                    self._open_chat_window()
+                else:
+                    self._chat_last_id = new_last
+            else:
+                self._chat_initialized = True
+        except Exception:
+            pass
+        self.after(2000, self._poll_chat_messages)

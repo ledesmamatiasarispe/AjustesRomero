@@ -417,6 +417,13 @@ body {
   min-height: 380px;
 }
 
+#cucharas-count-panel .table-wrap,
+#cucharas-stats-panel .table-wrap {
+  max-height: calc(100vh - 260px);
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .table-wrap.narrow {
   min-height: 380px;
 }
@@ -532,6 +539,11 @@ tbody tr:nth-child(even) {
 
 .qty-button-minus {
   min-width: 96px;
+}
+
+.qty-button-plus2 {
+  background: #1c5c28;
+  color: #b6f2b6;
 }
 
 .qty-button:hover,

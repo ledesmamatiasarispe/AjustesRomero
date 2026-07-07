@@ -64,6 +64,7 @@ const cucharasState = {
   counts: {},
   saving: false,
   canEdit: false,
+  family: "",
   initiated: false,        // true desde que el operador presionó Iniciar en PDH
   initiatedColada: "",     // colada activa al momento de iniciar
   initiatedMaterial: "",   // material activo al momento de iniciar
@@ -685,9 +686,11 @@ function renderCucharas(payload) {
     syncCucharasState(payload);
   }
 
+  cucharasState.family = payload?.family || "";
   nodes.cucharasBody.innerHTML = "";
   const rows = Array.isArray(payload?.rows) ? payload.rows : [];
   nodes.cucharasEmpty.classList.toggle("is-visible", rows.length === 0);
+  const isNodular = cucharasState.family === "Nodular";
 
   for (const row of rows) {
     const material = row.material_final;
@@ -723,6 +726,15 @@ function renderCucharas(payload) {
 
       tdActions.appendChild(minusBtn);
       tdActions.appendChild(plusBtn);
+
+      if (isNodular) {
+        const plus2Btn = document.createElement("button");
+        plus2Btn.type = "button";
+        plus2Btn.textContent = "+2";
+        plus2Btn.className = "qty-button qty-button-plus qty-button-plus2";
+        plus2Btn.addEventListener("click", () => changeCuchara(material, 2));
+        tdActions.appendChild(plus2Btn);
+      }
     }
     tr.appendChild(tdActions);
     nodes.cucharasBody.appendChild(tr);

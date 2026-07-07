@@ -117,6 +117,21 @@ def _ladle_material_options(material_objetivo):
     return _sorted_codes(options)
 
 
+def _family_for_material_objetivo(material_objetivo):
+    target = str(material_objetivo or "").strip()
+    if not target:
+        return ""
+    for alloy in load_alloys():
+        meta = alloy.get("calidad_meta", {}) if isinstance(alloy, dict) else {}
+        if not isinstance(meta, dict) or not meta.get("es_material_final"):
+            continue
+        bases = [str(b).strip() for b in (meta.get("bases") or []) if str(b).strip()]
+        if target not in bases:
+            continue
+        return str(meta.get("family", "") or "")
+    return ""
+
+
 def _cucharas_payload_for(material_objetivo):
     target = str(material_objetivo or "").strip()
     stored = load_ladles_state()
@@ -140,6 +155,7 @@ def _cucharas_payload_for(material_objetivo):
         "rows": rows,
         "total_cucharas": total,
         "updated_at": stored.get("updated_at"),
+        "family": _family_for_material_objetivo(target),
     }
 
 
@@ -348,6 +364,7 @@ def _cucharas_payload_from_state(state):
         "saved_count": saved_count,
         "already_saved": saved_count > 0,
         "last_saved_at": last_saved_at,
+        "family": _family_for_material_objetivo(target),
     }
 
 

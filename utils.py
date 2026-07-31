@@ -28,6 +28,33 @@ def _norm(s):
               .replace("Á","A").replace("É","E").replace("Ú","U"))
 
 
+def simulate_staged(comp0, stage_specs, elements, get_alloy, effective_add, effective_total_perkg):
+    """Simula la inoculación por etapas secuenciales.
+
+    stage_specs: iterable de (mass_kg, [(nombre, kg), ...]).
+    Cada etapa aplica sus inoculantes a mass_kg kg de metal con la composición
+    resultante de la etapa anterior. Devuelve la composición final (%).
+    """
+    comp = {e: to_float(comp0.get(e, 0.0)) for e in elements}
+    for mass_kg, items in stage_specs:
+        if not items or mass_kg <= 0:
+            continue
+        masses = {e: mass_kg * comp.get(e, 0.0) / 100.0 for e in elements}
+        add_eff = 0.0
+        for name, kg in items:
+            a = get_alloy(name)
+            if not a:
+                continue
+            eff = effective_add(a, kg)
+            for e in elements:
+                masses[e] += eff[e]
+            add_eff += kg * effective_total_perkg(a)
+        M_new = mass_kg + add_eff
+        if M_new > 0:
+            comp = {e: 100.0 * masses[e] / M_new for e in elements}
+    return comp
+
+
 def simulate_with_plan(M0, comp0, plan, elements, get_alloy, effective_add, effective_total_perkg):
     masses = {e: M0 * to_float(comp0.get(e, 0.0)) / 100.0 for e in elements}
     add_total_eff = 0.0

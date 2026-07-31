@@ -12,12 +12,14 @@ import tkinter as tk
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from tkinter import ttk, messagebox
 
 from config import BG_ENTRY, FG, ACCENT
-from storage import attach_thermal_analysis, load_history, load_thermal_device_records, save_thermal_device_records, load_thermal_ips, save_thermal_ips
+from storage import (attach_thermal_analysis, set_thermal_analysis_field, load_history,
+                     load_thermal_device_records, save_thermal_device_records,
+                     load_thermal_ips, save_thermal_ips, load_inoc_momentos)
 from widgets import ScrollFrame
 from device_sync import DeviceSyncService, WatchService
 
@@ -29,6 +31,7 @@ THERMAL_DEVICE_TIMEOUT = 45
 THERMAL_DEVICE_RETRIES = 3
 THERMAL_AUTO_POLL_TIMEOUT = 8
 THERMAL_AUTO_POLL_RETRIES = 1
+THERMAL_MATCH_MAX_DELTA = timedelta(hours=6)
 THERMAL_INFO_ROWS = (
     ("ID", ("ID",)),
     ("IP", ("IP",)),
@@ -133,10 +136,15 @@ class TabAnalisisTermico(ttk.Frame):
         self._parsed_cache = {}
         self._device_records = self._normalize_device_records(load_thermal_device_records())
         self._linked_history_by_path = {}
+        self._history_link_by_path = {}
         self._payloads_by_token = {}
         self._current_payloads = []
         self._curve_visibility = {}
         self._curve_var_map = {}
+        self._carbon_tse_options = {}
+        self._carbon_tse_value = None
+        self._carbon_tl_value = None
+        self._micro_tse_value = None
         self._left_pane_visible = True
         self._ajuste_target = None
         self._device_poll_running = False
@@ -148,6 +156,7 @@ class TabAnalisisTermico(ttk.Frame):
         self.status_var = tk.StringVar(value="Sin archivos detectados.")
         self.selection_var = tk.StringVar(value="Selecciona uno o mas archivos para ver curvas y resultados.")
         self.toggle_list_var = tk.StringVar(value="Ocultar lista")
+        self.var_carbon_tse = tk.StringVar()
 
         # Servicio de sincronización automática en background
         self._sync_service = DeviceSyncService(
@@ -166,6 +175,7 @@ class TabAnalisisTermico(ttk.Frame):
         self._auto_ajuste_var = tk.BooleanVar(value=False)
 
         self._build_ui()
+        self.bind("<<HistoryUpdated>>", lambda e: self.refresh())
         self.refresh()
 
         # Arranca sync al abrir la pestaña (no bloquea la UI)
@@ -298,6 +308,9 @@ class TabAnalisisTermico(ttk.Frame):
         ttk.Button(top, text="Descargar dispositivo", command=self._download_from_device).pack(side="right", padx=(0, 6))
         ttk.Button(top, text="Cargar C/Si en Ajuste", command=self._send_carbon_to_ajuste_v2).pack(side="right", padx=(0, 6))
         ttk.Button(top, text="Adjuntar a Historicos", command=self._attach_selected_to_history).pack(side="right", padx=(0, 6))
+        ttk.Button(top, text="Editar vinculo", command=self._edit_thermal_link).pack(side="right", padx=(0, 6))
+        ttk.Button(top, text="Setear Microestructura", command=lambda: self._auto_set_thermal_mode("Microestructura")).pack(side="right", padx=(0, 6))
+        ttk.Button(top, text="Setear Carbono", command=lambda: self._auto_set_thermal_mode("Carbono")).pack(side="right", padx=(0, 6))
         ttk.Button(top, text="Eliminar", command=self._delete_selected).pack(side="right", padx=(0, 6))
         # Botón Auto Ajuste (toggle): verde cuando está activo
         self._auto_ajuste_btn = tk.Button(
@@ -344,7 +357,7 @@ class TabAnalisisTermico(ttk.Frame):
 
         self.files_tree = ttk.Treeview(
             left,
-            columns=("archivo", "ip", "fecha"),
+            columns=("archivo", "ip", "fecha", "colada", "etapa"),
             show="headings",
             height=18,
             selectmode="extended",
@@ -352,9 +365,15 @@ class TabAnalisisTermico(ttk.Frame):
         self.files_tree.heading("archivo", text="Archivo")
         self.files_tree.heading("ip", text="IP")
         self.files_tree.heading("fecha", text="Modificado")
-        self.files_tree.column("archivo", width=160, anchor="w")
-        self.files_tree.column("ip", width=110, anchor="w")
-        self.files_tree.column("fecha", width=110, anchor="w")
+        self.files_tree.heading("colada", text="Vinculado a")
+        self.files_tree.heading("etapa", text="Etapa / Orden")
+        self.files_tree.column("archivo", width=130, anchor="w")
+        self.files_tree.column("ip", width=80, anchor="w")
+        self.files_tree.column("fecha", width=95, anchor="w")
+        self.files_tree.column("colada", width=100, anchor="w")
+        self.files_tree.column("etapa", width=100, anchor="w")
+        self.files_tree.configure(displaycolumns=("fecha", "colada", "etapa"))
+        self.files_tree.tag_configure("needs_review", background="#fffde7", foreground="#000000")
         self.files_tree.pack(side="left", fill="both", expand=True)
         self.files_tree.bind("<<TreeviewSelect>>", lambda e: self._on_select_files())
 
@@ -374,15 +393,12 @@ class TabAnalisisTermico(ttk.Frame):
 
         info_box = ttk.Frame(self.side_nb, padding=8)
         compare_box = ttk.Frame(self.side_nb, padding=8)
-        stats_box = ttk.Frame(self.side_nb, padding=8)
         expansion_box = ttk.Frame(self.side_nb, padding=8)
         self.info_box = info_box
         self.compare_box = compare_box
-        self.stats_box = stats_box
         self.expansion_box = expansion_box
         self.side_nb.add(info_box, text="Informacion")
         self.side_nb.add(compare_box, text="Comparacion")
-        self.side_nb.add(stats_box, text="Estadisticas")
         self.side_nb.add(expansion_box, text="Expansion")
         self._build_expansion_tab(expansion_box)
 
@@ -390,6 +406,17 @@ class TabAnalisisTermico(ttk.Frame):
         self.curves_box.pack(fill="x", pady=(0, 8))
         self.curves_inner = ttk.Frame(self.curves_box)
         self.curves_inner.pack(fill="x")
+
+        self.carbon_tse_box = ttk.Frame(chart_box)
+        self.carbon_tse_box.pack(fill="x", pady=(0, 8))
+        ttk.Label(self.carbon_tse_box, text="TS / TL de Carbono vinculado").pack(side="left")
+        self.cb_carbon_tse = ttk.Combobox(
+            self.carbon_tse_box, textvariable=self.var_carbon_tse, state="readonly", width=42,
+        )
+        self.cb_carbon_tse.pack(side="left", padx=(6, 6))
+        self.cb_carbon_tse.bind("<<ComboboxSelected>>", lambda e: self._on_carbon_tse_selected())
+        ttk.Button(self.carbon_tse_box, text="Quitar linea", command=self._clear_carbon_tse_line).pack(side="left")
+        self.carbon_tse_box.pack_forget()
 
         self.chart_host = ttk.Frame(chart_box, width=THERMAL_CHART_WIDTH, height=THERMAL_CHART_HEIGHT)
         self.chart_host.pack(fill="both", expand=True)
@@ -432,33 +459,6 @@ class TabAnalisisTermico(ttk.Frame):
         )
         self.compare_text.pack(fill="both", expand=False, pady=(8, 0))
         self.compare_text.configure(state="disabled")
-
-        stats_top = ttk.Frame(stats_box)
-        stats_top.pack(fill="both", expand=True)
-        self.stats_tree = ttk.Treeview(stats_top, columns=("metrica", "carbono", "micro"), show="headings", height=18)
-        for cid, title, width in (
-            ("metrica", "Metrica", 210),
-            ("carbono", "Carbono", 170),
-            ("micro", "Microestructura", 170),
-        ):
-            self.stats_tree.heading(cid, text=title)
-            self.stats_tree.column(cid, width=width, anchor="w")
-        self.stats_tree.pack(side="left", fill="both", expand=True)
-        stats_scroll = ttk.Scrollbar(stats_top, orient="vertical", command=self.stats_tree.yview)
-        stats_scroll.pack(side="right", fill="y")
-        self.stats_tree.configure(yscrollcommand=stats_scroll.set)
-        self.stats_text = tk.Text(
-            stats_box,
-            width=54,
-            height=8,
-            wrap="word",
-            bg=BG_ENTRY,
-            fg=FG,
-            insertbackground=FG,
-            relief="flat",
-        )
-        self.stats_text.pack(fill="both", expand=False, pady=(8, 0))
-        self.stats_text.configure(state="disabled")
 
         ttk.Label(detail_bottom, textvariable=self.selection_var).pack(anchor="w")
         ttk.Label(detail_bottom, textvariable=self.status_var, foreground="#666666").pack(anchor="w", pady=(6, 0))
@@ -512,10 +512,94 @@ class TabAnalisisTermico(ttk.Frame):
         widget.configure(yscrollcommand=scroll.set)
         return widget
 
+    def _build_history_link_map(self, sessions=None):
+        links = {}
+        if sessions is None:
+            try:
+                sessions = load_history()
+            except Exception:
+                sessions = []
+        for session in sessions:
+            if not isinstance(session, dict):
+                continue
+            colada = str(session.get("colada", "") or "").strip()
+            if not colada:
+                continue
+            analyses = session.get("thermal_analysis", [])
+            if not isinstance(analyses, list):
+                continue
+            for entry in analyses:
+                if not isinstance(entry, dict):
+                    continue
+                source_file = str(entry.get("source_file", "") or "").strip()
+                if not source_file:
+                    continue
+                entry_info = entry.get("info", {}) if isinstance(entry.get("info"), dict) else {}
+                mode_group = self._device_mode_group(entry_info.get("Modo", ""))
+                if mode_group == "Carbono":
+                    orden = entry.get("orden")
+                    etapa_display = f"#{int(orden)}" if isinstance(orden, (int, float)) else "(sin orden)"
+                else:
+                    etapa = str(entry.get("etapa_muestra", "") or "").strip()
+                    etapa_display = etapa if etapa else "(pendiente)"
+                info = links.setdefault(source_file, {"coladas": [], "etapas": []})
+                if colada not in info["coladas"]:
+                    info["coladas"].append(colada)
+                if etapa_display not in info["etapas"]:
+                    info["etapas"].append(etapa_display)
+        return {
+            path: (", ".join(info["coladas"]), ", ".join(info["etapas"]))
+            for path, info in links.items()
+        }
+
+    def _get_or_parse_payload(self, item):
+        path = str((item or {}).get("path", "") or "").strip()
+        if not path:
+            return None
+        if item.get("source") == "device" and isinstance(item.get("payload"), dict):
+            return item["payload"]
+        cached = self._parsed_cache.get(path)
+        if cached is not None:
+            return cached
+        try:
+            payload = self._parse_file_plain(Path(path))
+            payload["path"] = path
+            payload["name"] = item.get("name", Path(path).name)
+        except Exception:
+            return None
+        self._parsed_cache[path] = payload
+        return payload
+
+    def _thermal_needs_review(self, path, item, history):
+        if not path or path in self._history_link_by_path:
+            return False
+        payload = None
+        if item.get("source") == "device" and isinstance(item.get("payload"), dict):
+            payload = item["payload"]
+        else:
+            payload = self._parsed_cache.get(path)
+        if payload is None:
+            return False
+        mode_group = self._payload_mode_group(payload)
+        if mode_group not in ("Carbono", "Microestructura"):
+            return False
+        curve_dt = self._payload_datetime(payload)
+        if curve_dt is None:
+            return True
+        colada, delta = self._best_match_for_datetime(curve_dt, history)
+        if not colada or delta is None or delta > THERMAL_MATCH_MAX_DELTA:
+            return True
+        return False
+
     def refresh(self):
         self._log_backend(f"Refresh vista. Modo={self.mode_var.get()} cache_dispositivo={len(self._device_records)}")
         self._records = self._scan_files() + self._filtered_device_records()
         self._record_map = {item["path"]: item for item in self._records}
+        try:
+            history = load_history()
+        except Exception:
+            history = []
+        self._history_link_by_path = self._build_history_link_map(history)
         selected = [path for path in self._selected_paths if path in self._record_map]
 
         self.files_tree.delete(*self.files_tree.get_children())
@@ -525,10 +609,15 @@ class TabAnalisisTermico(ttk.Frame):
             if iid in seen_iids:
                 continue
             seen_iids.add(iid)
-            self.files_tree.insert("", "end", iid=iid, values=(item["name"], self._record_ip(item), item["modified"]))
+            colada_display, etapa_display = self._history_link_by_path.get(iid, ("", ""))
+            tags = ("needs_review",) if self._thermal_needs_review(iid, item, history) else ()
+            self.files_tree.insert(
+                "", "end", iid=iid,
+                values=(item["name"], self._record_ip(item), item["modified"], colada_display, etapa_display),
+                tags=tags,
+            )
 
         self.status_var.set(f"{len(self._records)} archivo(s) detectado(s) en {self.folder}.")
-        self._refresh_stats_tab()
 
         if selected:
             self.files_tree.selection_set(selected)
@@ -1749,6 +1838,7 @@ class TabAnalisisTermico(ttk.Frame):
         self._current_payloads = []
         self._curve_visibility = {}
         self._rebuild_curve_controls([])
+        self._refresh_carbon_tse_options([])
         self._clear_chart()
         self._clear_compare_table()
         self._set_text(self.compare_text, "")
@@ -1779,6 +1869,7 @@ class TabAnalisisTermico(ttk.Frame):
         self._current_payloads = list(payloads)
         self._sync_curve_visibility(payloads)
         self._rebuild_curve_controls(payloads)
+        self._refresh_carbon_tse_options(payloads)
         self._draw_chart(payloads)
         self._fill_info(payloads)
         self._apply_mode_tabs(payloads)
@@ -1803,6 +1894,7 @@ class TabAnalisisTermico(ttk.Frame):
         self._current_payloads = []
         self._curve_visibility = {}
         self._rebuild_curve_controls([])
+        self._refresh_carbon_tse_options([])
         self._clear_chart()
         self._clear_compare_table()
         self._set_text(self.compare_text, "")
@@ -1900,7 +1992,8 @@ class TabAnalisisTermico(ttk.Frame):
             ("Tiempo TSE / tag2", lambda metric, payload: self._fmt_nullable(metric["tag2"], " s")),
             ("Tiempo TRE / tag3", lambda metric, payload: self._fmt_nullable(metric["tag3"], " s")),
             ("Tiempo TF / tag4", lambda metric, payload: self._fmt_nullable(metric["tag4"], " s")),
-            ("TL - TSE", lambda metric, payload: self._fmt_nullable(metric["solid_interval"], " C")),
+            ("Intervalo de solidificacion (TL - TSE)", lambda metric, payload: self._fmt_nullable(metric["solid_interval"], " C")),
+            ("Intervalo de solidificacion (tiempo)", lambda metric, payload: self._fmt_nullable(metric["solid_interval_time"], " s")),
             ("Expansion gris", lambda metric, payload: self._fmt_pct_or_nd(metric["gray_expansion"])),
             ("Expansion nodular", lambda metric, payload: self._fmt_pct_or_nd(metric["nodular_expansion"])),
             ("VPS (°)", lambda metric, payload: self._fmt_nullable(
@@ -1913,132 +2006,6 @@ class TabAnalisisTermico(ttk.Frame):
             for metric, payload in zip(metrics_per_curve, payloads):
                 values.append(formatter(metric, payload))
             self.compare_tree.insert("", "end", values=values)
-
-    def _refresh_stats_tab(self):
-        if not hasattr(self, "stats_tree"):
-            return
-        for item in self.stats_tree.get_children():
-            self.stats_tree.delete(item)
-        carbon = self._thermal_stats_for_group("Carbono")
-        micro = self._thermal_stats_for_group("Microestructura")
-
-        rows = [
-            ("Cantidad analisis", self._fmt_count(carbon["count"]), self._fmt_count(micro["count"])),
-            ("Temperatura solido", self._fmt_stat(carbon, "ts"), self._fmt_stat(micro, "tse")),
-            ("Promedio TL", self._fmt_stat(carbon, "tl"), self._fmt_stat(micro, "tl")),
-            ("Promedio TF", self._fmt_stat(carbon, "tf"), self._fmt_stat(micro, "tf")),
-            ("Tiempo TS/TSE", self._fmt_stat(carbon, "tag2", " s"), self._fmt_stat(micro, "tag2", " s")),
-            ("Tiempo final", self._fmt_stat(carbon, "tag3", " s"), self._fmt_stat(micro, "tag4", " s")),
-            ("Promedio CE", self._fmt_stat(carbon, "ce", ""), ""),
-            ("Promedio C", self._fmt_stat(carbon, "c", "%"), ""),
-            ("Promedio Si", self._fmt_stat(carbon, "si", "%"), ""),
-            ("Promedio TRE", "", self._fmt_stat(micro, "tre")),
-            ("Promedio REC", "", self._fmt_stat(micro, "rec")),
-            ("Intervalo TL-TSE", "", self._fmt_stat(micro, "solid_interval")),
-            ("Expansion gris", "", self._fmt_stat(micro, "gray_expansion", "%", scale=100.0)),
-            ("Expansion nodular", "", self._fmt_stat(micro, "nodular_expansion", "%", scale=100.0)),
-        ]
-        for values in rows:
-            self.stats_tree.insert("", "end", values=values)
-
-        lines = []
-        if carbon["values"].get("ts"):
-            max_item = carbon["max_items"].get("ts", {})
-            lines.append(
-                "Carbono: TS promedio "
-                f"{self._fmt_number(carbon['avg'].get('ts'))} C; maximo "
-                f"{self._fmt_number(carbon['max'].get('ts'))} C en {max_item.get('name', '')}."
-            )
-        if carbon["values"].get("tag2"):
-            max_time = carbon["max_items"].get("tag2", {})
-            lines.append(
-                "Carbono: tiempo TS promedio "
-                f"{self._fmt_number(carbon['avg'].get('tag2'))} s; mas largo "
-                f"{self._fmt_number(carbon['max'].get('tag2'))} s en {max_time.get('name', '')}."
-            )
-        if micro["values"].get("tse"):
-            max_item = micro["max_items"].get("tse", {})
-            lines.append(
-                "Microestructura: TSE promedio "
-                f"{self._fmt_number(micro['avg'].get('tse'))} C; maximo "
-                f"{self._fmt_number(micro['max'].get('tse'))} C en {max_item.get('name', '')}."
-            )
-        if carbon["values"].get("ts") and micro["values"].get("tse"):
-            delta = carbon["avg"].get("ts") - micro["avg"].get("tse")
-            lines.append(f"Diferencia promedio Carbono TS vs Micro TSE: {delta:.2f} C.")
-        self._set_text(self.stats_text, "\n".join(lines) if lines else "Sin datos estadisticos suficientes.")
-
-    def _thermal_stats_for_group(self, group):
-        stats = {
-            "count": 0,
-            "values": {},
-            "avg": {},
-            "min": {},
-            "max": {},
-            "max_items": {},
-        }
-        metric_aliases = {
-            "tl": ("TL",),
-            "ts": ("TS", "TSE"),
-            "tse": ("TSE",),
-            "tre": ("TRE",),
-            "rec": ("REC",),
-            "tf": ("TF",),
-            "ce": ("CE %",),
-            "c": ("C %", "Carbono %"),
-            "si": ("Si %", "Silicio %"),
-            "tag1": ("tag1", "tag1 / TL (s)"),
-            "tag2": ("tag2", "tag2 / TSE (s)"),
-            "tag3": ("tag3", "tag3 / TRE (s)"),
-            "tag4": ("tag4", "tag4 / TF (s)"),
-            "solid_interval": (),
-            "gray_expansion": (),
-            "nodular_expansion": (),
-        }
-        for item in self._device_records:
-            if str(item.get("mode_group", "") or "") != group:
-                continue
-            payload = item.get("payload", {}) if isinstance(item.get("payload"), dict) else {}
-            info = payload.get("info", {}) if isinstance(payload.get("info"), dict) else {}
-            metrics = self._result_metrics(info)
-            stats["count"] += 1
-            for key, aliases in metric_aliases.items():
-                if key in ("solid_interval", "gray_expansion", "nodular_expansion"):
-                    value = metrics.get(key)
-                else:
-                    value = self._parse_decimal(self._info_alias_value(info, *aliases))
-                if value is None:
-                    continue
-                stats["values"].setdefault(key, []).append(value)
-                if key not in stats["max"] or value > stats["max"][key]:
-                    stats["max"][key] = value
-                    stats["max_items"][key] = {
-                        "name": item.get("name", ""),
-                        "path": item.get("path", ""),
-                        "date": info.get("Dt Inicio", "") or item.get("modified", ""),
-                    }
-                if key not in stats["min"] or value < stats["min"][key]:
-                    stats["min"][key] = value
-        for key, values in stats["values"].items():
-            stats["avg"][key] = sum(values) / len(values)
-        return stats
-
-    def _fmt_count(self, value):
-        return str(int(value or 0))
-
-    def _fmt_number(self, value, decimals=2):
-        if value is None:
-            return "N/D"
-        return f"{float(value):.{decimals}f}"
-
-    def _fmt_stat(self, stats, key, suffix=" C", scale=1.0):
-        values = stats["values"].get(key, [])
-        if not values:
-            return "N/D"
-        avg = stats["avg"].get(key) * scale
-        mn = stats["min"].get(key) * scale
-        mx = stats["max"].get(key) * scale
-        return f"prom {avg:.2f}{suffix} | min {mn:.2f} | max {mx:.2f}"
 
     def _fill_results_tabs(self, payloads):
         first = payloads[0] if payloads else None
@@ -2131,6 +2098,80 @@ class TabAnalisisTermico(ttk.Frame):
                 continue
         return periodos, temperaturas, derivadas
 
+    def _refresh_carbon_tse_options(self, payloads):
+        self._carbon_tse_value = None
+        self._carbon_tl_value = None
+        self._carbon_tse_options = {}
+        self._micro_tse_value = None
+        self.var_carbon_tse.set("")
+        if len(payloads) != 1 or self._payload_mode_group(payloads[0]) != "Microestructura":
+            self.carbon_tse_box.pack_forget()
+            return
+        self._micro_tse_value = self._parse_decimal(
+            self._info_alias_value(payloads[0].get("info", {}) or {}, "TSE")
+        )
+        path = str(payloads[0].get("path", "") or "").strip()
+        colada_display, _etapa_display = self._history_link_by_path.get(path, ("", ""))
+        coladas = [c.strip() for c in colada_display.split(",") if c.strip()]
+        if not coladas:
+            self.carbon_tse_box.pack_forget()
+            return
+
+        try:
+            history = load_history()
+        except Exception:
+            history = []
+        sessions_by_colada = {
+            str(session.get("colada", "") or "").strip(): session
+            for session in history if isinstance(session, dict)
+        }
+
+        options = {}
+        for colada in coladas:
+            session = sessions_by_colada.get(colada)
+            if not isinstance(session, dict):
+                continue
+            for entry in session.get("thermal_analysis", []) or []:
+                if not isinstance(entry, dict):
+                    continue
+                entry_info = entry.get("info", {}) if isinstance(entry.get("info"), dict) else {}
+                if self._device_mode_group(entry_info.get("Modo", "")) != "Carbono":
+                    continue
+                ts = self._parse_decimal(self._info_alias_value(entry_info, "TS", "TSE"))
+                if ts is None:
+                    continue
+                tl = self._parse_decimal(self._info_alias_value(entry_info, "TL"))
+                orden = entry.get("orden")
+                orden_label = f"#{int(orden)}" if isinstance(orden, (int, float)) else "(sin orden)"
+                source_name = str(entry.get("source_name", "") or "").strip()
+                tl_text = f"{tl:.1f}" if tl is not None else "N/D"
+                label = f"{colada} - {orden_label} - {source_name} - TS {ts:.1f} - TL {tl_text}"
+                options[label] = {"ts": ts, "tl": tl}
+
+        self._carbon_tse_options = options
+        if not options:
+            self.cb_carbon_tse.configure(state="disabled")
+            self.cb_carbon_tse["values"] = ()
+            self.var_carbon_tse.set("(sin curvas de Carbono vinculadas a esta colada)")
+        else:
+            self.cb_carbon_tse.configure(state="readonly")
+            self.cb_carbon_tse["values"] = list(options.keys())
+        self.carbon_tse_box.pack(fill="x", pady=(0, 8), before=self.chart_host)
+
+    def _on_carbon_tse_selected(self):
+        picked = self._carbon_tse_options.get(self.var_carbon_tse.get()) or {}
+        self._carbon_tse_value = picked.get("ts")
+        self._carbon_tl_value = picked.get("tl")
+        if self._current_payloads:
+            self._draw_chart(self._current_payloads)
+
+    def _clear_carbon_tse_line(self):
+        self._carbon_tse_value = None
+        self._carbon_tl_value = None
+        self.var_carbon_tse.set("")
+        if self._current_payloads:
+            self._draw_chart(self._current_payloads)
+
     def _draw_chart(self, payloads):
         self._clear_chart()
         if not payloads:
@@ -2142,6 +2183,7 @@ class TabAnalisisTermico(ttk.Frame):
             matplotlib.use("TkAgg")
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
             from matplotlib.figure import Figure
+            from matplotlib.transforms import blended_transform_factory
         except Exception as ex:
             self.chart_placeholder.configure(text=f"No se pudo cargar matplotlib.\n{ex}")
             self.chart_placeholder.pack(anchor="center", expand=True)
@@ -2180,9 +2222,10 @@ class TabAnalisisTermico(ttk.Frame):
                 current_max = max(temperaturas)
                 temp_y_max = current_max if temp_y_max is None else max(temp_y_max, current_max)
             info = payload.get("info", {}) or {}
+            tag2_label = "TS" if self._payload_mode_group(payload) == "Carbono" else "TSE"
             tag_specs = (
                 ("tag1", "TL"),
-                ("tag2", "TSE"),
+                ("tag2", tag2_label),
                 ("tag3", "TRE"),
                 ("tag4", "TF"),
             )
@@ -2228,7 +2271,8 @@ class TabAnalisisTermico(ttk.Frame):
                 continue
             color = THERMAL_COLORS[index % len(THERMAL_COLORS)]
             info = payload.get("info", {}) or {}
-            for tag_key, tag_label in (("tag1", "TL"), ("tag2", "TSE"), ("tag3", "TRE"), ("tag4", "TF")):
+            tag2_label = "TS" if self._payload_mode_group(payload) == "Carbono" else "TSE"
+            for tag_key, tag_label in (("tag1", "TL"), ("tag2", tag2_label), ("tag3", "TRE"), ("tag4", "TF")):
                 tag_value = self._parse_decimal(self._info_alias_value(info, tag_key, f"{tag_key} / {tag_label} (s)"))
                 if tag_value is None:
                     continue
@@ -2244,10 +2288,69 @@ class TabAnalisisTermico(ttk.Frame):
                     zorder=7,
                     clip_on=False,
                 )
+
+        ref_line_extras = {}
+        value_transform = blended_transform_factory(ax_temp.transAxes, ax_temp.transData)
+
+        def _add_ref_line(value, color, linestyle, base_label):
+            line = ax_temp.axhline(
+                value, color=color, linewidth=1.6, linestyle=linestyle, alpha=0.95, zorder=8,
+            )
+            value_text = ax_temp.text(
+                0.995, value, f"{value:.1f} C",
+                transform=value_transform,
+                color=color, fontsize=7.5, fontweight="bold",
+                va="center", ha="right", zorder=9, clip_on=False,
+            )
+            handles.append(line)
+            labels.append(f"{base_label} ({value:.1f} C)")
+            ref_line_extras[line] = value_text
+
+        if self._carbon_tse_value is not None:
+            _add_ref_line(self._carbon_tse_value, "#e91e63", (0, (6, 3)), "TS Carbono")
+        if self._carbon_tl_value is not None:
+            _add_ref_line(self._carbon_tl_value, "#9c27b0", (0, (1, 2)), "TL Carbono")
+        if self._micro_tse_value is not None:
+            _add_ref_line(self._micro_tse_value, "#43a047", (0, (2, 2)), "TSE Microestructura")
+
+        axis_ticks = {}
+        if self._carbon_tl_value is not None:
+            axis_ticks[round(self._carbon_tl_value, 2)] = "#9c27b0"
+        if self._carbon_tse_value is not None:
+            axis_ticks[round(self._carbon_tse_value, 2)] = "#e91e63"
+        if len(payloads) == 1 and self._payload_mode_group(payloads[0]) == "Microestructura":
+            micro_metrics = self._result_metrics(payloads[0].get("info", {}) or {})
+            for metric_key, tick_color in (
+                ("tl", "#4ea1ff"), ("tse", "#43a047"), ("tre", "#ff9f43"), ("tf", "#7bd389"),
+            ):
+                metric_value = micro_metrics.get(metric_key)
+                if metric_value is not None:
+                    axis_ticks[round(metric_value, 2)] = tick_color
+        if axis_ticks:
+            base_ticks = [round(float(t), 2) for t in ax_temp.get_yticks()]
+            combined_ticks = sorted(set(base_ticks) | set(axis_ticks.keys()))
+            ax_temp.set_yticks(combined_ticks)
+            ax_temp.set_yticklabels([f"{v:g}" for v in combined_ticks])
+            for tick_value, tick_label in zip(combined_ticks, ax_temp.get_yticklabels()):
+                if tick_value in axis_ticks:
+                    tick_label.set_color(axis_ticks[tick_value])
+                    tick_label.set_fontweight("bold")
+                else:
+                    tick_label.set_color(FG)
+
+        legend_line_map = {}
         if handles:
             legend = ax_temp.legend(handles, labels, loc="upper right", frameon=False, fontsize=8)
             for text in legend.get_texts():
                 text.set_color(FG)
+            legend_handles = getattr(legend, "legend_handles", None) or getattr(legend, "legendHandles", [])
+            for leg_artist, real_line in zip(legend_handles, handles):
+                try:
+                    leg_artist.set_picker(True)
+                    leg_artist.set_pickradius(6)
+                except Exception:
+                    continue
+                legend_line_map[leg_artist] = real_line
         fig.tight_layout()
 
         self._chart_canvas = FigureCanvasTkAgg(fig, master=self.chart_host)
@@ -2256,6 +2359,27 @@ class TabAnalisisTermico(ttk.Frame):
         self._chart_widget.configure(width=THERMAL_CHART_WIDTH, height=THERMAL_CHART_HEIGHT)
         self._chart_widget.pack(fill="both", expand=True)
         self._bind_chart_interactions(self._chart_canvas, ax_temp, ax_der)
+        if legend_line_map:
+            self._bind_legend_toggle(self._chart_canvas, legend_line_map, ref_line_extras)
+
+    def _bind_legend_toggle(self, canvas, legend_line_map, ref_line_extras):
+        """Click en una entrada de la leyenda (arriba a la derecha) para mostrar/ocultar esa linea."""
+        def on_pick(event):
+            real_line = legend_line_map.get(event.artist)
+            if real_line is None:
+                return
+            visible = not real_line.get_visible()
+            real_line.set_visible(visible)
+            try:
+                event.artist.set_alpha(1.0 if visible else 0.25)
+            except Exception:
+                pass
+            extra_text = ref_line_extras.get(real_line)
+            if extra_text is not None:
+                extra_text.set_visible(visible)
+            canvas.draw_idle()
+
+        canvas.mpl_connect("pick_event", on_pick)
 
     def _bind_chart_interactions(self, canvas, ax_temp, ax_der):
         """Habilita zoom con la rueda del mouse y paneo con click izquierdo arrastrado."""
@@ -2450,6 +2574,7 @@ class TabAnalisisTermico(ttk.Frame):
         colada = str(picked.get("colada") or "").strip()
         material_base = str(picked.get("material_base") or "").strip()
         observations = picked.get("observations", {}) if isinstance(picked.get("observations", {}), dict) else {}
+        etapas = picked.get("etapas", {}) if isinstance(picked.get("etapas", {}), dict) else {}
         if not colada:
             return
 
@@ -2458,7 +2583,11 @@ class TabAnalisisTermico(ttk.Frame):
             for payload in payloads:
                 path = str(payload.get("path", "") or "").strip()
                 observation = str(observations.get(path, "") or "").strip()
-                attach_thermal_analysis(colada, self._build_history_analysis(payload, colada, material_base, observation))
+                etapa = str(etapas.get(path, "") or "").strip()
+                attach_thermal_analysis(
+                    colada,
+                    self._build_history_analysis(payload, colada, material_base, observation, etapa),
+                )
                 if path:
                     self._linked_history_by_path[path] = {"colada": colada, "material_base": material_base}
                 attached += 1
@@ -2471,6 +2600,282 @@ class TabAnalisisTermico(ttk.Frame):
             self.event_generate("<<HistoryUpdated>>", when="tail")
         except Exception:
             pass
+
+    def _all_records_unfiltered(self):
+        """Archivos + dispositivo, sin aplicar el filtro del combo 'Modo' de la lista."""
+        seen = set()
+        out = []
+        for item in self._scan_files() + sorted(self._device_records, key=self._record_sort_datetime, reverse=True):
+            path = str(item.get("path", "") or "").strip()
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            out.append(item)
+        return out
+
+    def _auto_set_thermal_mode(self, mode_group):
+        history = load_history()
+        if not history:
+            messagebox.showinfo("Analisis termico", "No hay coladas guardadas en Historicos para vincular.", parent=self)
+            return
+
+        candidates = []
+        for item in self._all_records_unfiltered():
+            path = str(item.get("path", "") or "").strip()
+            if not path or path in self._history_link_by_path:
+                continue
+            payload = self._get_or_parse_payload(item)
+            if payload is None:
+                continue
+            if self._payload_mode_group(payload) != mode_group:
+                continue
+            candidates.append((path, payload))
+
+        if not candidates:
+            messagebox.showinfo("Analisis termico", f"No hay curvas de {mode_group} sin vincular.", parent=self)
+            return
+
+        matched_by_colada = {}
+        unmatched = 0
+        for path, payload in candidates:
+            curve_dt = self._payload_datetime(payload)
+            if curve_dt is None:
+                unmatched += 1
+                continue
+            colada, delta = self._best_match_for_datetime(curve_dt, history)
+            if not colada or delta is None or delta > THERMAL_MATCH_MAX_DELTA:
+                unmatched += 1
+                continue
+            matched_by_colada.setdefault(colada, []).append((path, payload, curve_dt))
+
+        attached = 0
+        errors = []
+        for colada, items in matched_by_colada.items():
+            try:
+                if mode_group == "Carbono":
+                    attached += self._attach_carbon_group(colada, items, history)
+                else:
+                    attached += self._attach_microstructure_group(colada, items)
+            except Exception as ex:
+                errors.append(f"{colada}: {ex}")
+
+        self.refresh()
+        try:
+            self.event_generate("<<HistoryUpdated>>", when="tail")
+        except Exception:
+            pass
+
+        msg = (
+            f"{attached} curva(s) de {mode_group} vinculada(s). "
+            f"{unmatched} sin coincidencia de horario (marcadas en amarillo para revisar)."
+        )
+        if errors:
+            messagebox.showwarning("Analisis termico", msg + "\n\nErrores:\n" + "\n".join(errors), parent=self)
+        else:
+            messagebox.showinfo("Analisis termico", msg, parent=self)
+
+    def _attach_carbon_group(self, colada, items, history):
+        session = next(
+            (s for s in history if isinstance(s, dict) and str(s.get("colada", "") or "").strip() == colada),
+            None,
+        )
+        existing = []
+        if isinstance(session, dict):
+            for entry in session.get("thermal_analysis", []) or []:
+                if not isinstance(entry, dict):
+                    continue
+                entry_info = entry.get("info", {}) if isinstance(entry.get("info"), dict) else {}
+                if self._device_mode_group(entry_info.get("Modo", "")) != "Carbono":
+                    continue
+                source_file = str(entry.get("source_file", "") or "").strip()
+                if not source_file:
+                    continue
+                entry_dt = (
+                    self._parse_device_info_datetime(entry_info.get("Dt Termino"))
+                    or self._parse_device_info_datetime(entry_info.get("Dt Inicio"))
+                )
+                existing.append({"source_file": source_file, "dt": entry_dt or datetime.min, "orden": entry.get("orden")})
+
+        combined = existing + [
+            {"path": path, "payload": payload, "dt": curve_dt or datetime.min}
+            for path, payload, curve_dt in items
+        ]
+        combined.sort(key=lambda x: x["dt"])
+
+        attached = 0
+        for order_idx, entry in enumerate(combined, start=1):
+            if "payload" in entry:
+                payload = entry["payload"]
+                material_base = str((payload.get("info", {}) or {}).get("Material", "") or "").strip()
+                analysis = self._build_history_analysis(
+                    payload, colada, material_base, observacion="", etapa="", orden=order_idx,
+                )
+                attach_thermal_analysis(colada, analysis)
+                path = entry["path"]
+                if path:
+                    self._linked_history_by_path[path] = {"colada": colada, "material_base": material_base}
+                attached += 1
+            elif entry.get("orden") != order_idx:
+                set_thermal_analysis_field(colada, entry["source_file"], {"orden": order_idx})
+        return attached
+
+    def _attach_microstructure_group(self, colada, items):
+        attached = 0
+        for path, payload, _curve_dt in items:
+            material_base = str((payload.get("info", {}) or {}).get("Material", "") or "").strip()
+            analysis = self._build_history_analysis(payload, colada, material_base, observacion="", etapa="")
+            attach_thermal_analysis(colada, analysis)
+            if path:
+                self._linked_history_by_path[path] = {"colada": colada, "material_base": material_base}
+            attached += 1
+        return attached
+
+    def _find_thermal_entries_for_path(self, path):
+        results = []
+        try:
+            sessions = load_history()
+        except Exception:
+            sessions = []
+        for session in sessions:
+            if not isinstance(session, dict):
+                continue
+            colada = str(session.get("colada", "") or "").strip()
+            if not colada:
+                continue
+            for entry in session.get("thermal_analysis", []) or []:
+                if isinstance(entry, dict) and str(entry.get("source_file", "") or "").strip() == path:
+                    results.append((colada, entry))
+        return results
+
+    def _edit_thermal_link(self):
+        sel = list(self.files_tree.selection())
+        if not sel:
+            messagebox.showinfo("Analisis termico", "Selecciona una curva vinculada para editar.", parent=self)
+            return
+        if len(sel) > 1:
+            messagebox.showinfo("Analisis termico", "Selecciona una sola curva para editar el vinculo.", parent=self)
+            return
+        path = sel[0]
+        entries = self._find_thermal_entries_for_path(path)
+        if not entries:
+            messagebox.showinfo(
+                "Analisis termico", "Esta curva todavia no esta vinculada a ningun historico.", parent=self,
+            )
+            return
+        self._open_thermal_link_editor(path, entries)
+
+    def _open_thermal_link_editor(self, path, entries):
+        win = tk.Toplevel(self)
+        win.title("Editar vinculo de analisis termico")
+        win.transient(self.winfo_toplevel())
+        win.grab_set()
+        win.resizable(False, False)
+
+        box = ttk.Frame(win, padding=12)
+        box.pack(fill="both", expand=True)
+
+        colada_options = [colada for colada, _ in entries]
+        entries_by_colada = {colada: entry for colada, entry in entries}
+        var_colada = tk.StringVar(value=colada_options[0])
+
+        row = 0
+        cb_colada = None
+        if len(entries) > 1:
+            ttk.Label(box, text="Colada").grid(row=row, column=0, sticky="w", pady=(0, 6))
+            cb_colada = ttk.Combobox(box, textvariable=var_colada, values=colada_options, state="readonly", width=28)
+            cb_colada.grid(row=row, column=1, sticky="ew", pady=(0, 6))
+            row += 1
+
+        ttk.Label(box, text="Modo").grid(row=row, column=0, sticky="w", pady=(0, 6))
+        mode_label = ttk.Label(box, text="")
+        mode_label.grid(row=row, column=1, sticky="w", pady=(0, 6))
+        row += 1
+
+        field_row = row
+        field_frame = ttk.Frame(box)
+        field_frame.grid(row=field_row, column=0, columnspan=2, sticky="ew", pady=(0, 6))
+        row += 1
+
+        var_orden = tk.StringVar()
+        var_etapa = tk.StringVar()
+        var_obs = tk.StringVar()
+
+        ttk.Label(box, text="Observacion").grid(row=row, column=0, sticky="w", pady=(0, 6))
+        ttk.Entry(box, textvariable=var_obs, width=32).grid(row=row, column=1, sticky="ew", pady=(0, 6))
+        row += 1
+
+        def _load_entry(*_args):
+            colada = var_colada.get()
+            entry = entries_by_colada.get(colada, {})
+            entry_info = entry.get("info", {}) if isinstance(entry.get("info"), dict) else {}
+            mode_group = self._device_mode_group(entry_info.get("Modo", ""))
+            mode_label.config(text=mode_group or "Desconocido")
+            var_obs.set(str(entry.get("observacion", "") or ""))
+            for child in list(field_frame.winfo_children()):
+                child.destroy()
+            if mode_group == "Carbono":
+                ttk.Label(field_frame, text="Orden").pack(side="left")
+                orden = entry.get("orden")
+                var_orden.set(str(int(orden)) if isinstance(orden, (int, float)) else "")
+                ttk.Entry(field_frame, textvariable=var_orden, width=8).pack(side="left", padx=(6, 0))
+            else:
+                ttk.Label(field_frame, text="Etapa").pack(side="left")
+                var_etapa.set(str(entry.get("etapa_muestra", "") or ""))
+                ttk.Combobox(
+                    field_frame, textvariable=var_etapa,
+                    values=self._etapa_muestra_options(), state="readonly", width=20,
+                ).pack(side="left", padx=(6, 0))
+
+        if cb_colada is not None:
+            cb_colada.bind("<<ComboboxSelected>>", _load_entry)
+        _load_entry()
+
+        def _save():
+            colada = var_colada.get()
+            entry = entries_by_colada.get(colada, {})
+            entry_info = entry.get("info", {}) if isinstance(entry.get("info"), dict) else {}
+            mode_group = self._device_mode_group(entry_info.get("Modo", ""))
+            patch = {"observacion": var_obs.get().strip()}
+            if mode_group == "Carbono":
+                raw = var_orden.get().strip()
+                if raw:
+                    try:
+                        patch["orden"] = int(raw)
+                    except ValueError:
+                        messagebox.showwarning("Analisis termico", "El orden debe ser un numero entero.", parent=win)
+                        return
+                else:
+                    patch["orden"] = None
+            else:
+                patch["etapa_muestra"] = var_etapa.get().strip()
+            try:
+                set_thermal_analysis_field(colada, path, patch)
+            except Exception as ex:
+                messagebox.showerror("Analisis termico", f"No se pudo guardar el vinculo.\n\n{ex}", parent=win)
+                return
+            win.destroy()
+            self.refresh()
+            try:
+                self.event_generate("<<HistoryUpdated>>", when="tail")
+            except Exception:
+                pass
+
+        footer = ttk.Frame(box)
+        footer.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        ttk.Button(footer, text="Cancelar", command=win.destroy).pack(side="right", padx=(6, 0))
+        ttk.Button(footer, text="Guardar", command=_save).pack(side="right")
+
+        win.update_idletasks()
+        root = self.winfo_toplevel()
+        x = root.winfo_rootx() + max(0, (root.winfo_width() - win.winfo_width()) // 2)
+        y = root.winfo_rooty() + max(0, (root.winfo_height() - win.winfo_height()) // 2)
+        win.geometry(f"+{x}+{y}")
+        win.wait_window()
+
+    def _etapa_muestra_options(self):
+        momentos = load_inoc_momentos()
+        labels = [str(m.get("label", "") or "").strip() for m in momentos if isinstance(m, dict)]
+        return [label for label in labels if label]
 
     def _payloads_for_paths(self, paths):
         current_by_path = {
@@ -2493,6 +2898,59 @@ class TabAnalisisTermico(ttk.Frame):
             payloads.append(payload)
         return payloads
 
+    def _payload_datetime(self, payload):
+        if not isinstance(payload, dict):
+            return None
+        info = payload.get("info", {}) if isinstance(payload.get("info"), dict) else {}
+        return (
+            self._parse_device_info_datetime(info.get("Dt Termino"))
+            or self._parse_device_info_datetime(info.get("Dt Inicio"))
+            or self._parse_device_info_datetime(payload.get("modified", ""))
+        )
+
+    def _best_match_for_datetime(self, curve_dt, history):
+        best_colada = ""
+        best_delta = None
+        for session in history:
+            if not isinstance(session, dict):
+                continue
+            colada = str(session.get("colada", "") or "").strip()
+            if not colada:
+                continue
+            start_dt = self._parse_session_datetime(session.get("started_at"))
+            if start_dt is None:
+                continue
+            end_dt = self._parse_session_datetime(session.get("ended_at")) or datetime.now()
+            if end_dt < start_dt:
+                end_dt = start_dt
+            if start_dt <= curve_dt <= end_dt:
+                delta = timedelta(0)
+            elif curve_dt < start_dt:
+                delta = start_dt - curve_dt
+            else:
+                delta = curve_dt - end_dt
+            if best_delta is None or delta < best_delta:
+                best_delta = delta
+                best_colada = colada
+        return best_colada, best_delta
+
+    def _best_history_match_colada(self, payloads, history):
+        payload_times = [dt for dt in (self._payload_datetime(p) for p in payloads) if dt is not None]
+        best_colada = ""
+        best_delta = None
+        for curve_dt in payload_times:
+            colada, delta = self._best_match_for_datetime(curve_dt, history)
+            if colada and delta is not None and (best_delta is None or delta < best_delta):
+                best_delta = delta
+                best_colada = colada
+        return best_colada
+
+    def _best_history_match_for_payload(self, payload, history):
+        curve_dt = self._payload_datetime(payload)
+        if curve_dt is None:
+            return "", None
+        return self._best_match_for_datetime(curve_dt, history)
+
     def _prompt_history_attach_data(self, payloads):
         history = load_history()
         coladas = [
@@ -2501,13 +2959,14 @@ class TabAnalisisTermico(ttk.Frame):
             if str((session or {}).get("colada", "") or "").strip()
         ]
         coladas = list(dict.fromkeys(reversed(coladas)))
-        suggested_colada = ""
-        try:
-            target = getattr(self, "_ajuste_target", None)
-            if target is not None:
-                suggested_colada = str(target.colada.get() or "").strip()
-        except Exception:
-            suggested_colada = ""
+        suggested_colada = self._best_history_match_colada(payloads, history)
+        if not suggested_colada:
+            try:
+                target = getattr(self, "_ajuste_target", None)
+                if target is not None:
+                    suggested_colada = str(target.colada.get() or "").strip()
+            except Exception:
+                suggested_colada = ""
         if not suggested_colada and coladas:
             suggested_colada = coladas[0]
 
@@ -2540,27 +2999,56 @@ class TabAnalisisTermico(ttk.Frame):
         var_base = tk.StringVar(value=suggested_base)
         ttk.Entry(content, textvariable=var_base, width=32).grid(row=2, column=1, sticky="ew", padx=(8, 0), pady=(8, 0))
 
-        obs_box = ttk.LabelFrame(content, text="Observacion por curva", padding=6)
+        obs_box = ttk.LabelFrame(content, text="Observacion y etapa por curva", padding=6)
         obs_box.grid(row=3, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
+
+        etapa_options = self._etapa_muestra_options()
+        if not etapa_options:
+            ttk.Label(
+                obs_box,
+                text=("No hay etapas de inoculacion configuradas. Definilas en Catalogo, "
+                      "editando una Aleacion final > Protocolo de inoculacion > Editar etapas."),
+                foreground="#c0392b",
+                wraplength=560,
+            ).pack(anchor="w", pady=(0, 6))
+
         obs_frame = ScrollFrame(obs_box)
         obs_frame.pack(fill="both", expand=True)
         obs_frame.canvas.configure(height=220)
         obs_vars = {}
-        for row_idx, payload in enumerate(payloads):
+        etapa_vars = {}
+        ttk.Label(obs_frame.inner, text="Curva", font=("", 9, "bold")).grid(row=0, column=0, sticky="w", padx=(0, 8))
+        ttk.Label(obs_frame.inner, text="Observacion", font=("", 9, "bold")).grid(row=0, column=1, sticky="w")
+        ttk.Label(obs_frame.inner, text="Etapa *", font=("", 9, "bold")).grid(row=0, column=2, sticky="w", padx=(8, 0))
+        for row_idx, payload in enumerate(payloads, start=1):
             path = str(payload.get("path", "") or "").strip()
-            name = str(payload.get("name", "") or Path(path).name or f"Curva {row_idx + 1}")
-            ttk.Label(obs_frame.inner, text=name, wraplength=260).grid(row=row_idx, column=0, sticky="w", padx=(0, 8), pady=2)
+            name = str(payload.get("name", "") or Path(path).name or f"Curva {row_idx}")
+            ttk.Label(obs_frame.inner, text=name, wraplength=220).grid(row=row_idx, column=0, sticky="w", padx=(0, 8), pady=2)
             var_obs = tk.StringVar()
-            ttk.Entry(obs_frame.inner, textvariable=var_obs, width=48).grid(row=row_idx, column=1, sticky="ew", pady=2)
+            ttk.Entry(obs_frame.inner, textvariable=var_obs, width=36).grid(row=row_idx, column=1, sticky="ew", pady=2)
             obs_vars[path] = var_obs
+            var_etapa = tk.StringVar()
+            cb_etapa = ttk.Combobox(obs_frame.inner, textvariable=var_etapa, values=etapa_options,
+                                     state="readonly", width=18)
+            cb_etapa.grid(row=row_idx, column=2, sticky="ew", pady=2, padx=(8, 0))
+            etapa_vars[path] = var_etapa
         obs_frame.inner.columnconfigure(1, weight=1)
 
         def accept():
             nonlocal picked
+            missing_etapa = [path for path, var in etapa_vars.items() if not var.get().strip()]
+            if missing_etapa:
+                messagebox.showwarning(
+                    "Analisis termico",
+                    "Selecciona la etapa de toma de muestra para cada curva antes de adjuntar.",
+                    parent=win,
+                )
+                return
             picked = {
                 "colada": var_colada.get().strip(),
                 "material_base": var_base.get().strip(),
                 "observations": {path: var.get().strip() for path, var in obs_vars.items()},
+                "etapas": {path: var.get().strip() for path, var in etapa_vars.items()},
             }
             win.destroy()
 
@@ -2579,14 +3067,15 @@ class TabAnalisisTermico(ttk.Frame):
             return None
         return picked
 
-    def _build_history_analysis(self, payload, colada, material_base, observacion=""):
+    def _build_history_analysis(self, payload, colada, material_base, observacion="", etapa="", orden=None):
         info = dict(payload.get("info", {}) or {})
         series = list(payload.get("series", []) or [])
-        return {
+        entry = {
             "attached_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "colada": str(colada or "").strip(),
             "material_base": str(material_base or "").strip(),
             "observacion": str(observacion or "").strip(),
+            "etapa_muestra": str(etapa or "").strip(),
             "source_file": str(payload.get("path", "") or "").strip(),
             "source_name": str(payload.get("name", "") or "").strip(),
             "info": info,
@@ -2595,8 +3084,13 @@ class TabAnalisisTermico(ttk.Frame):
             "result_metrics": self._result_metrics(info),
             "result_text": self._build_results_text(info, series),
         }
+        if orden is not None:
+            entry["orden"] = orden
+        return entry
 
     def _build_results_text(self, info, series):
+        if self._device_mode_group(info.get("Modo", "")) == "Carbono":
+            return self._build_carbon_results_text(info, series)
         metrics = self._result_metrics(info)
         lines = [
             "Resumen calculado",
@@ -2615,7 +3109,8 @@ class TabAnalisisTermico(ttk.Frame):
             f"- Tiempo TF / tag4: {self._fmt_or_nd(metrics['tag4'], ' s')}",
             "",
             "Indicadores calculados",
-            f"Intervalo de solidificacion (TL - TSE): {self._fmt_or_nd(metrics['solid_interval'], ' C')}",
+            f"Intervalo de solidificacion (TL - TSE): {self._fmt_or_nd(metrics['solid_interval'], ' C')} "
+            f"| tiempo: {self._fmt_or_nd(metrics['solid_interval_time'], ' s')}",
             f"Puntos de curva: {len(series)}",
             f"Expansion gris por tiempo ((tag4-tag2)/(tag4-tag1)): {self._fmt_pct_or_nd(metrics['gray_expansion'])}",
             f"Expansion nodular por tiempo ((tag4-tag3)/(tag4-tag1)): {self._fmt_pct_or_nd(metrics['nodular_expansion'])}",
@@ -2637,6 +3132,41 @@ class TabAnalisisTermico(ttk.Frame):
         ]
         return "\n".join(lines).strip()
 
+    def _build_carbon_results_text(self, info, series):
+        tl = self._parse_decimal(self._info_alias_value(info, "TL"))
+        ts = self._parse_decimal(self._info_alias_value(info, "TS", "TSE"))
+        tf = self._parse_decimal(self._info_alias_value(info, "TF"))
+        ce = self._parse_decimal(self._info_alias_value(info, "CE %"))
+        c_pct = self._parse_decimal(self._info_alias_value(info, "C %", "Carbono %"))
+        si_pct = self._parse_decimal(self._info_alias_value(info, "Si %", "Silicio %"))
+        tag1 = self._parse_decimal(self._info_alias_value(info, "tag1", "tag1 / TL (s)"))
+        tag2 = self._parse_decimal(self._info_alias_value(info, "tag2", "tag2 / TSE (s)"))
+        solid_interval = (tl - ts) if tl is not None and ts is not None else None
+        solid_interval_time = (tag2 - tag1) if tag1 is not None and tag2 is not None else None
+        lines = [
+            "Resumen calculado (Carbono)",
+            "",
+            "Temperaturas",
+            f"- TL: {self._fmt_or_nd(tl, ' C')}",
+            f"- TS (solidus): {self._fmt_or_nd(ts, ' C')}",
+            f"- TF: {self._fmt_or_nd(tf, ' C')}",
+            "",
+            "Composicion",
+            f"- CE: {self._fmt_or_nd(ce, ' %')}",
+            f"- C: {self._fmt_or_nd(c_pct, ' %')}",
+            f"- Si: {self._fmt_or_nd(si_pct, ' %')}",
+            "",
+            "Tiempos (segundos)",
+            f"- Tiempo TL / tag1: {self._fmt_or_nd(tag1, ' s')}",
+            f"- Tiempo TS / tag2: {self._fmt_or_nd(tag2, ' s')}",
+            "",
+            "Indicadores calculados",
+            f"Intervalo de solidificacion (TL - TS): {self._fmt_or_nd(solid_interval, ' C')} "
+            f"| tiempo: {self._fmt_or_nd(solid_interval_time, ' s')}",
+            f"Puntos de curva: {len(series)}",
+        ]
+        return "\n".join(lines).strip()
+
     def _build_comparison_text(self, first, second, extra_count=0):
         m1 = self._result_metrics(first.get("info", {}))
         m2 = self._result_metrics(second.get("info", {}))
@@ -2653,7 +3183,8 @@ class TabAnalisisTermico(ttk.Frame):
             self._compare_metric_line("TRE", m1["tre"], m2["tre"], " C"),
             self._compare_metric_line("REC", m1["rec"], m2["rec"], " C"),
             self._compare_metric_line("TF", m1["tf"], m2["tf"], " C"),
-            self._compare_metric_line("TL - TSE", m1["solid_interval"], m2["solid_interval"], " C"),
+            self._compare_metric_line("Intervalo de solidificacion (TL - TSE)", m1["solid_interval"], m2["solid_interval"], " C"),
+            self._compare_metric_line("Intervalo de solidificacion (tiempo)", m1["solid_interval_time"], m2["solid_interval_time"], " s"),
             self._compare_metric_line("Expansion gris", self._to_pct(m1["gray_expansion"]), self._to_pct(m2["gray_expansion"]), "%"),
             self._compare_metric_line("Expansion nodular", self._to_pct(m1["nodular_expansion"]), self._to_pct(m2["nodular_expansion"]), "%"),
             self._compare_metric_line("VPS", self._compute_vps(first.get("series", []), m1["tag4"]),
@@ -2708,7 +3239,7 @@ class TabAnalisisTermico(ttk.Frame):
 
     def _result_metrics(self, info):
         tl = self._parse_decimal(self._info_alias_value(info, "TL"))
-        tse = self._parse_decimal(self._info_alias_value(info, "TSE"))
+        tse = self._parse_decimal(self._info_alias_value(info, "TSE", "TS"))
         tre = self._parse_decimal(self._info_alias_value(info, "TRE"))
         rec = self._parse_decimal(self._info_alias_value(info, "REC"))
         tf = self._parse_decimal(self._info_alias_value(info, "TF"))
@@ -2719,6 +3250,7 @@ class TabAnalisisTermico(ttk.Frame):
         if rec is None and tre is not None and tse is not None:
             rec = tre - tse
         solid_interval = (tl - tse) if tl is not None and tse is not None else None
+        solid_interval_time = (tag2 - tag1) if tag1 is not None and tag2 is not None else None
         gray_expansion = None
         nodular_expansion = None
         if tag1 is not None and tag2 is not None and tag4 is not None and tag4 != tag1:
@@ -2736,6 +3268,7 @@ class TabAnalisisTermico(ttk.Frame):
             "tag3": tag3,
             "tag4": tag4,
             "solid_interval": solid_interval,
+            "solid_interval_time": solid_interval_time,
             "gray_expansion": gray_expansion,
             "nodular_expansion": nodular_expansion,
         }

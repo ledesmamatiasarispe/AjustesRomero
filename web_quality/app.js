@@ -40,6 +40,7 @@ const S = {
 const n = {
   liveStream:    document.getElementById("liveStream"),
   capturedImg:   document.getElementById("capturedImg"),
+  viewBox:       document.getElementById("viewBox"),
   overlay:       document.getElementById("overlay"),
   calSelect:     document.getElementById("calSelect"),
   btnReloadCal:  document.getElementById("btnReloadCal"),
@@ -156,12 +157,10 @@ function getDisplayRect() {
 
   const cw = n.overlay.width;
   const ch = n.overlay.height;
-  const natW = S.live ? el.naturalWidth || cw : (S.imgNatW || el.naturalWidth || cw);
-  const natH = S.live ? el.naturalHeight || ch : (S.imgNatH || el.naturalHeight || ch);
-
+  const natW = S.live ? (el.naturalWidth || cw) : (S.imgNatW || el.naturalWidth || cw);
+  const natH = S.live ? (el.naturalHeight || ch) : (S.imgNatH || el.naturalHeight || ch);
   if (!natW || !natH) return null;
 
-  // object-fit: contain calcula el rect de la imagen en el canvas
   const scale = Math.min(cw / natW, ch / natH);
   const dw = natW * scale;
   const dh = natH * scale;
@@ -317,7 +316,7 @@ n.btnCapture.addEventListener("click", async () => {
     });
 
     S.live = false;
-    stopLivePolling();
+    n.liveStream.src = "";
     n.liveStream.style.display = "none";
     n.capturedImg.removeAttribute("hidden");
     n.capturedImg.style.display = "";
@@ -356,6 +355,7 @@ n.btnResume.addEventListener("click", () => {
   S.live = true;
   n.capturedImg.style.display = "none";
   n.capturedImg.setAttribute("hidden", "");
+  n.liveStream.src = "/api/mjpeg?t=" + Date.now();
   n.liveStream.style.display = "";
   n.btnResume.setAttribute("hidden", "");
   S.lastStats = null;
@@ -391,7 +391,7 @@ n.btnMeasure.addEventListener("click", () => {
   S.measuring = !S.measuring;
   S.pendingPt = null;
   n.btnMeasure.classList.toggle("active", S.measuring);
-  n.overlay.style.cursor = S.measuring ? "crosshair" : "grab";
+  n.viewBox.style.cursor = S.measuring ? "crosshair" : "grab";
   showHint(S.measuring ? "Clic en punto 1 y luego punto 2" : "Modo medir desactivado");
 });
 
@@ -413,31 +413,35 @@ function calcLabel(x1, y1, x2, y2) {
   return dist_px.toFixed(0) + " px";
 }
 
-// ── Canvas pointer events ────────────────────────────────────────────────────
-n.overlay.style.cursor = "grab";
+// ── Interacción con la vista (pan / zoom / medir) ────────────────────────────
+// Los eventos van al #viewBox (no al canvas) para que el botón de pantalla
+// completa —también hijo de #viewBox— pueda recibir sus propios clics.
+n.viewBox.style.cursor = "grab";
 
-n.overlay.addEventListener("pointerdown", (e) => {
+n.viewBox.addEventListener("pointerdown", (e) => {
+  if (e.target === document.getElementById("btnFullscreen")) return;
   if (S.measuring) return;
   S.dragging = true;
   S.dragStart = { x: e.clientX - S.panX, y: e.clientY - S.panY };
-  n.overlay.setPointerCapture(e.pointerId);
-  n.overlay.style.cursor = "grabbing";
+  n.viewBox.setPointerCapture(e.pointerId);
+  n.viewBox.style.cursor = "grabbing";
 });
 
-n.overlay.addEventListener("pointermove", (e) => {
+n.viewBox.addEventListener("pointermove", (e) => {
   if (!S.dragging || S.measuring) return;
   S.panX = e.clientX - S.dragStart.x;
   S.panY = e.clientY - S.dragStart.y;
   drawOverlay();
 });
 
-n.overlay.addEventListener("pointerup", () => {
+n.viewBox.addEventListener("pointerup", () => {
   S.dragging = false;
-  n.overlay.style.cursor = S.measuring ? "crosshair" : "grab";
+  n.viewBox.style.cursor = S.measuring ? "crosshair" : "grab";
 });
 
-n.overlay.addEventListener("click", (e) => {
+n.viewBox.addEventListener("click", (e) => {
   if (!S.measuring) return;
+  if (e.target === document.getElementById("btnFullscreen")) return;
   const rect = n.overlay.getBoundingClientRect();
   const cx = e.clientX - rect.left;
   const cy = e.clientY - rect.top;
@@ -463,7 +467,7 @@ n.overlay.addEventListener("click", (e) => {
 });
 
 // Zoom con rueda
-n.overlay.addEventListener("wheel", (e) => {
+n.viewBox.addEventListener("wheel", (e) => {
   e.preventDefault();
   const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
   S.zoom = Math.max(1, Math.min(10, S.zoom * factor));
@@ -511,7 +515,7 @@ async function analyze() {
 // ── Render estadísticas ───────────────────────────────────────────────────────
 function renderStats(stats) {
   if (!stats) {
-    n.statsContent.innerHTML = '<p class="stats-empty">Sin análisis.<br>Capturá una imagen y presioná <strong>Analizar</strong>.</p>';
+    n.statsContent.innerHTML = '<p class="stats-empty">Sin análisis.<br>Capturá una imagen para ver los resultados.</p>';
     return;
   }
 
@@ -781,41 +785,158 @@ n.btnPDF.addEventListener("click", async () => {
   }
 });
 
-// ── Live stream polling (compatible con iOS Safari y todos los móviles) ────────
-// En lugar de MJPEG (no soportado en Safari), pedimos un JPEG por vez en loop.
-let _pollTimer = null;
-
-function startLivePolling() {
-  if (_pollTimer !== null || !S.live) return;
-  function poll() {
-    if (!S.live) { _pollTimer = null; return; }
-    const img = new Image();
-    img.onload = () => {
-      if (S.live) {
-        n.liveStream.src = img.src;
-        drawOverlay();
-      }
-      _pollTimer = setTimeout(poll, 67); // ~15 fps
-    };
-    img.onerror = () => {
-      _pollTimer = setTimeout(poll, 1000);
-    };
-    img.src = `/api/frame?t=${Date.now()}`;
-  }
-  poll();
-}
-
-function stopLivePolling() {
-  if (_pollTimer !== null) { clearTimeout(_pollTimer); _pollTimer = null; }
-}
-
-// Al reanudar stream, reiniciar el polling
-const _origBtnResumeClick = n.btnResume.onclick;
-n.btnResume.addEventListener("click", () => { startLivePolling(); });
+// ── Pantalla completa ─────────────────────────────────────────────────────────
+document.getElementById("btnFullscreen").addEventListener("click", () => {
+  const full = document.body.classList.toggle("fs");
+  document.getElementById("btnFullscreen").textContent = full ? "✕" : "⛶";
+  // El ResizeObserver redibuja el canvas automáticamente al cambiar tamaño
+});
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 loadCalibrations();
 drawOverlay();
-startLivePolling();
-
 setStatus("Stream en vivo. Presioná Capturar para congelar la imagen.");
+
+// ── Chat ─────────────────────────────────────────────────────────────────────
+const Chat = (() => {
+  let _user = localStorage.getItem("chatUser") || null;
+  let _pass = localStorage.getItem("chatPass") || null;
+  let _lastId = 0;
+  let _sse = null;
+
+  const el = {
+    panel:    document.getElementById("chatPanel"),
+    header:   document.getElementById("chatHeader"),
+    toggle:   document.getElementById("btnChatToggle"),
+    body:     document.getElementById("chatBody"),
+    login:    document.getElementById("chatLogin"),
+    active:   document.getElementById("chatActive"),
+    userIn:   document.getElementById("chatUser"),
+    passIn:   document.getElementById("chatPass"),
+    btnLogin: document.getElementById("btnChatLogin"),
+    btnReg:   document.getElementById("btnChatRegister"),
+    errMsg:   document.getElementById("chatLoginError"),
+    messages: document.getElementById("chatMessages"),
+    input:    document.getElementById("chatInput"),
+    btnSend:  document.getElementById("btnChatSend"),
+  };
+
+  function setErr(msg) { el.errMsg.textContent = msg || ""; }
+
+  function expand() {
+    el.panel.classList.remove("collapsed", "has-new");
+    el.toggle.textContent = "▼";
+  }
+
+  function _renderMsg(msg) {
+    const isManager = msg.is_manager;
+    const isOwn = !isManager && msg.username === _user;
+    const div = document.createElement("div");
+    div.className = "chat-msg " + (isManager ? "manager" : isOwn ? "own" : "other");
+    const auth = document.createElement("div");
+    auth.className = "chat-msg-author";
+    auth.textContent = msg.username;
+    const body = document.createElement("div");
+    body.textContent = msg.body;
+    div.appendChild(auth);
+    div.appendChild(body);
+    el.messages.appendChild(div);
+    el.messages.scrollTop = el.messages.scrollHeight;
+    if (msg.id > _lastId) _lastId = msg.id;
+  }
+
+  async function _fetchMsgs(since) {
+    try {
+      const r = await fetch("/api/chat/messages?since=" + (since || 0));
+      if (!r.ok) return;
+      const msgs = await r.json();
+      msgs.forEach(_renderMsg);
+    } catch (_) {}
+  }
+
+  function _connectSSE() {
+    if (_sse) { _sse.close(); _sse = null; }
+    _sse = new EventSource("/api/chat/events");
+    _sse.addEventListener("new_message", () => {
+      _fetchMsgs(_lastId);
+      if (el.panel.classList.contains("collapsed")) {
+        el.panel.classList.add("has-new");
+        expand();
+      }
+    });
+    _sse.onerror = () => {
+      if (_sse) { _sse.close(); _sse = null; }
+      setTimeout(_connectSSE, 5000);
+    };
+  }
+
+  function _showActive() {
+    el.login.hidden = true;
+    el.active.removeAttribute("hidden");
+  }
+
+  async function _doAuth(register) {
+    const u = el.userIn.value.trim();
+    const p = el.passIn.value;
+    if (!u || !p) { setErr("Completá nombre y contraseña"); return; }
+    setErr("");
+    el.btnLogin.disabled = true;
+    el.btnReg.disabled = true;
+    try {
+      const r = await fetch(register ? "/api/chat/register" : "/api/chat/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: u, password: p }),
+      });
+      const data = await r.json();
+      if (data.error) {
+        setErr(data.error);
+      } else {
+        _user = u; _pass = p;
+        localStorage.setItem("chatUser", u);
+        localStorage.setItem("chatPass", p);
+        _showActive();
+        _fetchMsgs(0);
+        _connectSSE();
+      }
+    } catch (_) {
+      setErr("Error de red");
+    } finally {
+      el.btnLogin.disabled = false;
+      el.btnReg.disabled = false;
+    }
+  }
+
+  async function _sendMsg() {
+    const body = el.input.value.trim();
+    if (!body || !_user) return;
+    el.input.value = "";
+    try {
+      await fetch("/api/chat/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: _user, password: _pass, body }),
+      });
+    } catch (_) {}
+  }
+
+  // Init
+  el.header.addEventListener("click", (e) => {
+    if (!e.target.closest("#chatActive") && !e.target.closest("#chatLogin")) {
+      el.panel.classList.toggle("collapsed");
+      el.panel.classList.remove("has-new");
+      el.toggle.textContent = el.panel.classList.contains("collapsed") ? "▲" : "▼";
+    }
+  });
+  el.btnLogin.addEventListener("click", () => _doAuth(false));
+  el.btnReg.addEventListener("click", () => _doAuth(true));
+  el.btnSend.addEventListener("click", _sendMsg);
+  el.input.addEventListener("keydown", (e) => { if (e.key === "Enter") _sendMsg(); });
+
+  // Auto-login si hay credenciales guardadas
+  if (_user && _pass) {
+    el.userIn.value = _user;
+    el.passIn.value = _pass;
+    _doAuth(false);
+  }
+})();

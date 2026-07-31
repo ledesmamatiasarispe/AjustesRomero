@@ -7,7 +7,7 @@ import json
 import re
 from datetime import datetime
 
-from storage import DuplicateColadaError, load_history, load_ladles_state, save_ladles_state, prune_ladles_history_for_sessions, update_session, delete_session, update_adjustment, delete_adjustment
+from storage import DuplicateColadaError, load_history, load_ladles_state, save_ladles_state, prune_ladles_history_for_sessions, update_session, delete_session, update_adjustment, delete_adjustment, detach_thermal_analysis, set_thermal_analysis_field, load_inoc_momentos
 from widgets import ScrollFrame
 from config import ELEMENTS
 from utils import fmt, to_float, simulate_with_plan
@@ -21,6 +21,15 @@ def split_colada(s):
     if not m:
         return ("", "", s or "")
     return (m.group(1), m.group(2), m.group(3))
+
+
+def _thermal_mode_group(mode_value):
+    mode = str(mode_value or "").upper()
+    if "MICR" in mode:
+        return "Microestructura"
+    if "CARB" in mode:
+        return "Carbono"
+    return "Todos"
 
 
 class TabHistoricos(ttk.Frame):
@@ -166,25 +175,32 @@ class TabHistoricos(ttk.Frame):
         for i in self.tree.get_children():
             self.tree.delete(i)
         crisol_counter = 0
+        crisol_displays = []
         for s in self.hist:
             if s.get("primer_sinterizado"):
                 crisol_counter = 1
             else:
                 crisol_counter += 1
+            crisol_displays.append(f"[S] {crisol_counter}" if s.get("primer_sinterizado") else str(crisol_counter))
+
+        # Se muestra de mas reciente a mas antigua (id mayor arriba de todo), pero el
+        # iid de cada fila es su indice real en self.hist/DB, no la posicion visual.
+        for idx in range(len(self.hist) - 1, -1, -1):
+            s = self.hist[idx]
             colada_raw = s.get("colada", "")
             idn, yy, mat = split_colada(colada_raw)
             id_show = idn if idn else colada_raw
-            crisol_display = f"[S] {crisol_counter}" if s.get("primer_sinterizado") else str(crisol_counter)
             self.tree.insert(
                 "",
                 "end",
+                iid=str(idx),
                 values=(
                     id_show,
                     s.get("objetivo", ""),
                     "Auto" if s.get("auto_saved") else "",
                     s.get("started_at", ""),
                     s.get("ended_at", ""),
-                    crisol_display,
+                    crisol_displays[idx],
                     len(s.get("ajustes", [])),
                 ),
             )
@@ -206,7 +222,7 @@ class TabHistoricos(ttk.Frame):
         if not sel:
             messagebox.showinfo("Historial", "Selecciona una colada primero.", parent=self)
             return
-        idx = self.tree.index(sel[0])
+        idx = int(sel[0])
         self._generate_quality_report(idx)
 
     def view_selected_in_adjust(self):
@@ -214,7 +230,7 @@ class TabHistoricos(ttk.Frame):
         if not sel:
             messagebox.showinfo("Historial", "Selecciona una colada primero.", parent=self)
             return
-        idx = self.tree.index(sel[0])
+        idx = int(sel[0])
         if idx < 0 or idx >= len(self.hist):
             return
         if self._adjust_tab is None or self._root_notebook is None:
@@ -329,7 +345,7 @@ class TabHistoricos(ttk.Frame):
         sel = self.tree.selection()
         if not sel:
             return
-        idx = self.tree.index(sel[0])
+        idx = int(sel[0])
         if idx < 0 or idx >= len(self.hist):
             return
 
@@ -343,6 +359,9 @@ class TabHistoricos(ttk.Frame):
         tab = ttk.Frame(self.nb, padding=8)
         self.nb.add(tab, text=self._session_title(s))
         self.nb.select(tab)
+
+        colada_display = ttk.Label(tab, text="", font=("TkDefaultFont", 22, "bold"))
+        colada_display.pack(anchor="w", pady=(0, 4))
 
         summary = ttk.Label(tab, text="", justify="left")
         summary.pack(anchor="w", pady=(0, 6))
@@ -503,6 +522,8 @@ class TabHistoricos(ttk.Frame):
         tree_thermal.bind("<Double-Button-1>", lambda e: self._open_thermal_in_analysis_tab(idx))
         thermal_btns = ttk.Frame(tab_thermal)
         thermal_btns.pack(fill="x", pady=(6, 0))
+        ttk.Button(thermal_btns, text="Desvincular", command=lambda i=idx: self._detach_thermal_from_session(i)).pack(side="left")
+        ttk.Button(thermal_btns, text="Editar", command=lambda i=idx: self._edit_thermal_in_session(i)).pack(side="left", padx=(6, 0))
         ttk.Button(thermal_btns, text="Cerrar pestaÃ±a", command=lambda: self._close_session_tab(idx)).pack(side="right")
 
         # Detalle (dock interno)
@@ -578,6 +599,7 @@ class TabHistoricos(ttk.Frame):
 
         self._session_tabs[idx] = {
             "frame": tab,
+            "colada_display": colada_display,
             "summary": summary,
             "tree_adj": tree_adj,
             "tree_calc": tree_calc,
@@ -626,6 +648,7 @@ class TabHistoricos(ttk.Frame):
         data = self._session_tabs.get(idx)
         if not data:
             return
+        data["colada_display"].config(text=s.get("colada", ""))
         data["summary"].config(text=self._summary_text(s))
         try:
             self.nb.tab(data["frame"], text=self._session_title(s))
@@ -754,11 +777,10 @@ class TabHistoricos(ttk.Frame):
         ladle_entry = self._ladle_entry_for_session(session)
         ladles_count = int((ladle_entry or {}).get("total_cucharas", 0) or 0)
         return (
-            f"Colada: {session.get('colada', '')}\\n"
-            f"Objetivo: {session.get('objetivo', '')}\\n"
-            f"Guardado: {'Automatico' if session.get('auto_saved') else 'Manual'}\\n"
-            f"Inicio: {session.get('started_at', '')}\\n"
-            f"Fin: {session.get('ended_at', '')}\\n"
+            f"Objetivo: {session.get('objetivo', '')}\n"
+            f"Guardado: {'Automatico' if session.get('auto_saved') else 'Manual'}\n"
+            f"Inicio: {session.get('started_at', '')}\n"
+            f"Fin: {session.get('ended_at', '')}\n"
             f"Ajustes: {len(session.get('ajustes', []))} | Calculos: {len(session.get('calculos', []))} | "
             f"Carbono: {len(session.get('carbono', []) or [])} | Cucharas: {ladles_count} | "
             f"Analisis termico: {len(session.get('thermal_analysis', []) or [])}"
@@ -796,6 +818,147 @@ class TabHistoricos(ttk.Frame):
             )
             return
         self._root_notebook.select(self._thermal_tab)
+
+    def _detach_thermal_from_session(self, idx):
+        data = self._session_tabs.get(idx)
+        if not data:
+            return
+        tree_thermal = data.get("tree_thermal")
+        if tree_thermal is None:
+            return
+        selection = tree_thermal.selection()
+        if not selection:
+            messagebox.showinfo("Historial", "Selecciona un analisis termico para desvincular.", parent=self)
+            return
+        row_idx = tree_thermal.index(selection[0])
+        thermal_items = data.get("thermal_items", [])
+        if row_idx < 0 or row_idx >= len(thermal_items):
+            return
+        if idx < 0 or idx >= len(self.hist):
+            return
+        session = self.hist[idx]
+        if not messagebox.askyesno(
+            "Historial",
+            "¿Desvincular el analisis termico seleccionado de esta colada?",
+            parent=self,
+        ):
+            return
+        try:
+            detach_thermal_analysis(session.get("colada", ""), row_idx)
+        except Exception as ex:
+            messagebox.showerror("Historial", f"No se pudo desvincular el analisis termico.\n\n{ex}", parent=self)
+            return
+        self.refresh()
+        try:
+            self.event_generate("<<HistoryUpdated>>", when="tail")
+        except Exception:
+            pass
+
+    def _edit_thermal_in_session(self, idx):
+        data = self._session_tabs.get(idx)
+        if not data:
+            return
+        tree_thermal = data.get("tree_thermal")
+        if tree_thermal is None:
+            return
+        selection = tree_thermal.selection()
+        if not selection:
+            messagebox.showinfo("Historial", "Selecciona un analisis termico para editar.", parent=self)
+            return
+        row_idx = tree_thermal.index(selection[0])
+        thermal_items = data.get("thermal_items", [])
+        if row_idx < 0 or row_idx >= len(thermal_items):
+            return
+        entry = thermal_items[row_idx]
+        if not isinstance(entry, dict):
+            return
+        if idx < 0 or idx >= len(self.hist):
+            return
+        session = self.hist[idx]
+        colada = str(session.get("colada", "") or "").strip()
+        source_file = str(entry.get("source_file", "") or "").strip()
+        if not colada or not source_file:
+            messagebox.showinfo("Historial", "Este analisis no tiene origen vinculado para editar.", parent=self)
+            return
+        self._open_thermal_edit_dialog(colada, source_file, entry)
+
+    def _open_thermal_edit_dialog(self, colada, source_file, entry):
+        info = entry.get("info", {}) if isinstance(entry.get("info"), dict) else {}
+        mode_group = _thermal_mode_group(info.get("Modo", ""))
+
+        win = tk.Toplevel(self)
+        win.title("Editar vinculo de analisis termico")
+        win.transient(self.winfo_toplevel())
+        win.grab_set()
+        win.resizable(False, False)
+
+        box = ttk.Frame(win, padding=12)
+        box.pack(fill="both", expand=True)
+
+        ttk.Label(box, text=f"Colada: {colada}").grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 4))
+        ttk.Label(box, text=f"Modo: {mode_group or 'Desconocido'}").grid(
+            row=1, column=0, columnspan=2, sticky="w", pady=(0, 8)
+        )
+
+        var_orden = tk.StringVar()
+        var_etapa = tk.StringVar()
+        var_obs = tk.StringVar(value=str(entry.get("observacion", "") or ""))
+
+        if mode_group == "Carbono":
+            ttk.Label(box, text="Orden").grid(row=2, column=0, sticky="w", pady=(0, 6))
+            orden = entry.get("orden")
+            var_orden.set(str(int(orden)) if isinstance(orden, (int, float)) else "")
+            ttk.Entry(box, textvariable=var_orden, width=10).grid(row=2, column=1, sticky="w", pady=(0, 6))
+        else:
+            ttk.Label(box, text="Etapa").grid(row=2, column=0, sticky="w", pady=(0, 6))
+            var_etapa.set(str(entry.get("etapa_muestra", "") or ""))
+            momentos = load_inoc_momentos()
+            etapas = [str(m.get("label", "") or "").strip() for m in momentos if isinstance(m, dict)]
+            etapas = [e for e in etapas if e]
+            ttk.Combobox(box, textvariable=var_etapa, values=etapas, state="readonly", width=22).grid(
+                row=2, column=1, sticky="ew", pady=(0, 6)
+            )
+
+        ttk.Label(box, text="Observacion").grid(row=3, column=0, sticky="w", pady=(0, 6))
+        ttk.Entry(box, textvariable=var_obs, width=32).grid(row=3, column=1, sticky="ew", pady=(0, 6))
+
+        def _save():
+            patch = {"observacion": var_obs.get().strip()}
+            if mode_group == "Carbono":
+                raw = var_orden.get().strip()
+                if raw:
+                    try:
+                        patch["orden"] = int(raw)
+                    except ValueError:
+                        messagebox.showwarning("Historial", "El orden debe ser un numero entero.", parent=win)
+                        return
+                else:
+                    patch["orden"] = None
+            else:
+                patch["etapa_muestra"] = var_etapa.get().strip()
+            try:
+                set_thermal_analysis_field(colada, source_file, patch)
+            except Exception as ex:
+                messagebox.showerror("Historial", f"No se pudo guardar el vinculo.\n\n{ex}", parent=win)
+                return
+            win.destroy()
+            self.refresh()
+            try:
+                self.event_generate("<<HistoryUpdated>>", when="tail")
+            except Exception:
+                pass
+
+        footer = ttk.Frame(box)
+        footer.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        ttk.Button(footer, text="Cancelar", command=win.destroy).pack(side="right", padx=(6, 0))
+        ttk.Button(footer, text="Guardar", command=_save).pack(side="right")
+
+        win.update_idletasks()
+        root = self.winfo_toplevel()
+        x = root.winfo_rootx() + max(0, (root.winfo_width() - win.winfo_width()) // 2)
+        y = root.winfo_rooty() + max(0, (root.winfo_height() - win.winfo_height()) // 2)
+        win.geometry(f"+{x}+{y}")
+        win.wait_window()
 
     def _ladle_entries_for_session(self, session):
         entry = self._ladle_entry_for_session(session)
@@ -1132,7 +1295,7 @@ class TabHistoricos(ttk.Frame):
         sel = self.tree.selection()
         if not sel:
             return None
-        return self.tree.index(sel[0])
+        return int(sel[0])
 
     def edit_session_meta(self):
         idx = self._selected_session_index()

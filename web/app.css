@@ -977,11 +977,11 @@ tbody tr:nth-child(even) {
 }
 
 .raspi-kiosk #cucharas-count-panel .table-wrap {
-  max-height: calc(100vh - 205px);
+  max-height: calc(100vh - 265px);
 }
 
 .raspi-kiosk #cucharas-stats-panel .table-wrap {
-  max-height: calc(100vh - 245px);
+  max-height: calc(100vh - 295px);
 }
 
 .raspi-kiosk th,

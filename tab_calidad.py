@@ -12,8 +12,8 @@ import uuid
 import webbrowser
 from pathlib import Path
 
-from storage import load_quality_reports, save_quality_reports, ensure_quality_images_dir, load_history
-from utils import fmt, simulate_with_plan, to_float
+from storage import (load_quality_reports, save_quality_reports, ensure_quality_images_dir, load_history)
+from utils import fmt, simulate_with_plan, simulate_staged, to_float
 from config import BG, BG_ENTRY, FG, ACCENT, ELEMENTS
 from widgets import ScrollFrame
 from ce import ce_from_percent
@@ -285,7 +285,6 @@ class TabCalidad(ttk.Frame):
         ttk.Label(finals, text="Si final").grid(row=1, column=0, sticky="w", pady=2)
         self.ent_si_final = ttk.Entry(finals, textvariable=self.var_si_final, width=14)
         self.ent_si_final.grid(row=1, column=1, sticky="ew", pady=2, padx=(0, 8))
-
         props = ttk.LabelFrame(form, text="Propiedades", padding=6)
         props.grid(row=6, column=0, columnspan=2, sticky="ew", pady=(8, 6))
         props.columnconfigure(1, weight=1)
@@ -304,6 +303,7 @@ class TabCalidad(ttk.Frame):
         self.var_perlita = tk.StringVar()
         self.var_ferrita = tk.StringVar()
         self.var_cementita = tk.StringVar(value="0")
+        self.var_cementita_chk = tk.BooleanVar(value=False)
         self.var_matriz = tk.StringVar()
 
         ttk.Label(props, text="Traccion (kg/mm2)").grid(row=0, column=0, sticky="w", pady=2)
@@ -357,8 +357,9 @@ class TabCalidad(ttk.Frame):
         self.lbl_alargamiento.grid(row=5, column=0, sticky="w", pady=2)
         self.ent_alargamiento = ttk.Entry(props, textvariable=self.var_alargamiento, width=14)
         self.ent_alargamiento.grid(row=5, column=1, sticky="ew", pady=2, padx=(0, 8))
-        ttk.Label(props, text="Cementita %").grid(row=6, column=0, sticky="w", pady=2)
-        self.ent_cementita = ttk.Entry(props, textvariable=self.var_cementita, width=14)
+        ttk.Checkbutton(props, text="Cementita %", variable=self.var_cementita_chk,
+                        command=self._toggle_cementita).grid(row=6, column=0, sticky="w", pady=2)
+        self.ent_cementita = ttk.Entry(props, textvariable=self.var_cementita, width=14, state="disabled")
         self.ent_cementita.grid(row=6, column=1, sticky="ew", pady=2, padx=(0, 8))
         ttk.Label(props, text="Seccion muestra").grid(row=6, column=2, sticky="w", pady=2)
         self.cb_seccion = ttk.Combobox(props, textvariable=self.var_seccion, state="readonly", width=14)
@@ -903,7 +904,6 @@ class TabCalidad(ttk.Frame):
             return
         parent_iid = str(sel[0])
         if not parent_iid.startswith("group:"):
-            # si seleccionó un informe hijo, usar su grupo padre
             parent_iid = self.tree.parent(parent_iid)
         if not parent_iid or not parent_iid.startswith("group:"):
             return
@@ -914,7 +914,7 @@ class TabCalidad(ttk.Frame):
         if not group_rpts:
             return
 
-        lote     = group_rpts[0].get("lote", "")
+        lote      = group_rpts[0].get("lote", "")
         base_disp = group_rpts[0].get("base_display", group_rpts[0].get("base", ""))
 
         base_comp = {}
@@ -937,51 +937,55 @@ class TabCalidad(ttk.Frame):
             a = _get_alloy(nombre)
             return (a.get("gramos_cucharin1", 0) or 0) if a else 0
 
-        # Calcular composición por material
-        results = {}  # material → comp_dict
+        # Orden, etiquetas y masas default según la configuración del usuario
+        from storage import load_inoc_momentos
+        _momentos_cfg  = load_inoc_momentos()
+        _momentos_lbl  = {m["key"]: m["label"]           for m in _momentos_cfg}
+        _momentos_masa = {m["key"]: m.get("masa_default", 50) for m in _momentos_cfg}
+        _ordered_keys  = [m["key"] for m in _momentos_cfg]
+
+        # Construir inoculantes agrupados por etapa para cada material
+        # mat -> {momento: [(nombre, kg)]}
+        mat_stages = {}
         for rpt in group_rpts:
             mat      = rpt.get("material", "")
             snapshot = rpt.get("inoculacion_snapshot", {})
             if not isinstance(snapshot, dict):
                 snapshot = {}
-            inoc = snapshot.get("protocolo", [])
-            if not inoc:
-                results[mat] = dict(base_comp)
-                continue
-            plan = {}
-            for e in inoc:
+            inoc_list = snapshot.get("protocolo") or snapshot.get("inoculacion") or []
+            if not isinstance(inoc_list, list):
+                inoc_list = []
+            per_stage = {}
+            for e in inoc_list:
                 if isinstance(e, str):
-                    nombre, cant = e, 1.0
+                    nombre, cant, mom = e, 1.0, "horno"
                 elif isinstance(e, dict):
                     nombre = e.get("nombre", "")
                     try:
                         cant = float(e.get("cantidad_dosis", 1) or 1)
                     except Exception:
                         cant = 1.0
+                    mom = e.get("momento", "horno") or "horno"
                 else:
                     continue
                 g = _gramos(nombre)
                 if g and cant:
-                    plan[nombre] = (g * cant) / 1000
-            if plan:
-                try:
-                    _, comp = simulate_with_plan(
-                        50, base_comp, plan, ELEMENTS,
-                        get_alloy=_get_alloy,
-                        effective_add=_eff_add,
-                        effective_total_perkg=lambda a: to_float(a.get("rendimiento",100))/100,
-                    )
-                    results[mat] = comp
-                except Exception:
-                    results[mat] = dict(base_comp)
-            else:
-                results[mat] = dict(base_comp)
+                    per_stage.setdefault(mom, []).append((nombre, (g * cant) / 1000))
+            mat_stages[mat] = per_stage
 
-        if not results:
+        # Etapas activas en el orden del usuario; etapas desconocidas van al final
+        all_moments = set()
+        for ps in mat_stages.values():
+            all_moments |= set(ps.keys())
+        extra_keys = [k for k in all_moments if k not in _ordered_keys]
+        active = [(s, _momentos_lbl.get(s, s))
+                  for s in (_ordered_keys + extra_keys) if s in all_moments]
+
+        if not active:
             messagebox.showinfo("Composición estimada", "No hay datos de inoculación para este grupo.")
             return
 
-        # Diálogo resultado
+        # ── Diálogo ──────────────────────────────────────────────────────────
         win = tk.Toplevel(self)
         win.title(f"Composición estimada — Base {base_disp} / {lote}")
         win.transient(self)
@@ -991,12 +995,25 @@ class TabCalidad(ttk.Frame):
         frm = ttk.Frame(win, padding=12)
         frm.pack(fill="both", expand=True)
         frm.columnconfigure(0, weight=1)
-        frm.rowconfigure(0, weight=1)
+        frm.rowconfigure(1, weight=1)
 
-        # La columna "Hierro base" va primero, luego cada material inoculado
+        # Entradas de masa por etapa
+        mass_vars = {}
+        sf = ttk.LabelFrame(frm, text="Masa del baño por etapa (kg)", padding=6)
+        sf.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 8))
+        for s, lbl in active:
+            r = ttk.Frame(sf); r.pack(side="left", padx=14, pady=2)
+            ttk.Label(r, text=f"{lbl}:").pack(anchor="w")
+            default = _momentos_masa.get(s, 50)
+            v = tk.StringVar(value=str(int(default) if default == int(default) else default))
+            ttk.Entry(r, textvariable=v, width=8).pack(anchor="w")
+            mass_vars[s] = v
+
+        # Treeview de resultados
         BASE_COL = "Hierro base"
-        all_cols  = [BASE_COL] + list(results.keys())
-        col_ids   = ("el",) + tuple(f"c{i}" for i in range(len(all_cols)))
+        mat_list = list(mat_stages.keys())
+        all_cols = [BASE_COL] + mat_list
+        col_ids  = ("el",) + tuple(f"c{i}" for i in range(len(all_cols)))
 
         tv = ttk.Treeview(frm, columns=col_ids, show="headings", height=16, selectmode="none")
         tv.heading("el", text="Elemento")
@@ -1005,31 +1022,60 @@ class TabCalidad(ttk.Frame):
             tv.heading(cid, text=label)
             tv.column(cid, width=max(90, len(label) * 8), anchor="center")
 
-
         tv_sb_y = ttk.Scrollbar(frm, orient="vertical",   command=tv.yview)
         tv_sb_x = ttk.Scrollbar(frm, orient="horizontal", command=tv.xview)
         tv.configure(yscrollcommand=tv_sb_y.set, xscrollcommand=tv_sb_x.set)
-        tv_sb_y.grid(row=0, column=1, sticky="ns")
-        tv_sb_x.grid(row=1, column=0, sticky="ew")
-        tv.grid(row=0, column=0, sticky="nsew")
+        tv_sb_y.grid(row=1, column=1, sticky="ns")
+        tv_sb_x.grid(row=2, column=0, sticky="ew")
+        tv.grid(row=1, column=0, sticky="nsew")
 
-        def _row_vals(el):
-            base_v = to_float(base_comp.get(el, 0))
-            mat_vs = [to_float(results[m].get(el, 0)) for m in results]
-            return [base_v] + mat_vs
+        def calcular():
+            # Parsear masas
+            masses = {}
+            for s, lbl in active:
+                try:
+                    m = float(mass_vars[s].get().replace(",", "."))
+                    if m <= 0: raise ValueError
+                except ValueError:
+                    messagebox.showerror("Error", f"Masa inválida para '{lbl}'.", parent=win)
+                    return
+                masses[s] = m
 
-        # Filas de elementos
-        for el in ELEMENTS:
-            vals = _row_vals(el)
-            if any(v > 0.001 for v in vals):
-                tv.insert("", "end", values=(el,) + tuple(fmt(v, 4) for v in vals))
-        # Fila CE
-        ce_base = ce_from_percent(base_comp)
-        ce_mats = [ce_from_percent(results[m]) for m in results]
-        tv.insert("", "end", values=("CE",) + tuple(fmt(v, 4) for v in ([ce_base] + ce_mats)))
+            # Calcular composición por material usando etapas
+            results = {}
+            for mat, per_stage in mat_stages.items():
+                stage_specs = [(masses[s], per_stage[s])
+                               for s in (_ordered_keys + extra_keys)
+                               if per_stage.get(s)]
+                if not stage_specs:
+                    results[mat] = dict(base_comp)
+                else:
+                    try:
+                        results[mat] = simulate_staged(
+                            base_comp, stage_specs, ELEMENTS,
+                            get_alloy=_get_alloy,
+                            effective_add=_eff_add,
+                            effective_total_perkg=lambda a: to_float(a.get("rendimiento", 100)) / 100,
+                        )
+                    except Exception:
+                        results[mat] = dict(base_comp)
 
+            # Reconstruir filas
+            for row in tv.get_children(): tv.delete(row)
+            for el in ELEMENTS:
+                base_v = to_float(base_comp.get(el, 0))
+                mat_vs = [to_float(results[m].get(el, 0)) for m in mat_list]
+                if any(v > 0.001 for v in [base_v] + mat_vs):
+                    tv.insert("", "end", values=(el,) + tuple(fmt(v, 4) for v in [base_v] + mat_vs))
+            ce_base = ce_from_percent(base_comp)
+            ce_mats = [ce_from_percent(results[m]) for m in mat_list]
+            tv.insert("", "end", values=("CE",) + tuple(fmt(v, 4) for v in [ce_base] + ce_mats))
+
+        ttk.Button(frm, text="Calcular", command=calcular).grid(
+            row=3, column=0, columnspan=2, pady=(8, 0))
         ttk.Button(frm, text="Cerrar", command=win.destroy).grid(
-            row=2, column=0, columnspan=2, pady=(10, 0))
+            row=4, column=0, columnspan=2, pady=(4, 0))
+        calcular()
 
     def _build_inoc_snapshot(self, material_code, base=None):
         from storage import resolve_inoc_protocol
@@ -3150,6 +3196,25 @@ class TabCalidad(ttk.Frame):
             mat = target_mat_var.get()
             if _save_item_to_target(item):
                 status_var.set(f"Guardado en '{mat}'")
+            # Cancelar autosave pendiente: la camara ya guardó en disco directamente
+            if self._draft_job is not None:
+                try:
+                    self.after_cancel(self._draft_job)
+                except Exception:
+                    pass
+                self._draft_job = None
+            def _restore_focus():
+                try:
+                    g = self.winfo_toplevel().grab_current()
+                    if g:
+                        g.grab_release()
+                except Exception:
+                    pass
+                try:
+                    self.winfo_toplevel().focus_force()
+                except Exception:
+                    pass
+            self.after(20, _restore_focus)
 
         def _do_save_and_count():
             frame = captured_frame[0]
@@ -3406,6 +3471,25 @@ class TabCalidad(ttk.Frame):
                 messagebox.showwarning(title_msg, msg + "\n\nAvisos:\n" + "\n".join(errors), parent=win)
             else:
                 messagebox.showinfo(title_msg, msg, parent=win)
+            # Cancelar autosave pendiente: la camara ya guardó en disco directamente
+            if self._draft_job is not None:
+                try:
+                    self.after_cancel(self._draft_job)
+                except Exception:
+                    pass
+                self._draft_job = None
+            def _restore_focus_and_count():
+                try:
+                    g = self.winfo_toplevel().grab_current()
+                    if g:
+                        g.grab_release()
+                except Exception:
+                    pass
+                try:
+                    self.winfo_toplevel().focus_force()
+                except Exception:
+                    pass
+            self.after(20, _restore_focus_and_count)
 
         btn_save.config(command=_do_save)
         btn_save_count.config(command=_do_save_and_count)
@@ -5547,6 +5631,22 @@ class TabCalidad(ttk.Frame):
                 f"{graphite_size_control_name}: visible {graphite_size!r} -> interno {graphite_size_value!r}"
             )
             self._fundiciones_assign_control(graphite_size_control, graphite_size_control_name, graphite_size_value)
+            if not self._fundiciones_verify_control_value(graphite_size_control, graphite_size_value):
+                self._fundiciones_debug(
+                    f"{graphite_size_control_name}: quedo distinto al asignar, reintento sin Enter de confirmacion"
+                )
+                self._fundiciones_assign_control(
+                    graphite_size_control, graphite_size_control_name, graphite_size_value, enter=False,
+                )
+                if not self._fundiciones_verify_control_value(graphite_size_control, graphite_size_value):
+                    actual = self._fundiciones_read_control_value(graphite_size_control)
+                    self._fundiciones_debug(
+                        f"{graphite_size_control_name}: verificacion fallo. esperado={graphite_size_value!r} actual={actual!r}"
+                    )
+                    self._set_fundiciones_test_status(
+                        f"{graphite_size_control_name} quedo en {actual!r} en vez de {graphite_size!r}. Revisalo en Access."
+                    )
+                    return False
 
         return True
 
@@ -6226,6 +6326,10 @@ class TabCalidad(ttk.Frame):
     def _fundiciones_values_match(self, actual, expected):
         return self._fundiciones_compare_key(actual) == self._fundiciones_compare_key(expected)
 
+    def _fundiciones_verify_control_value(self, control, expected_value):
+        actual = self._fundiciones_read_control_value(control)
+        return self._fundiciones_values_match(actual, expected_value)
+
     def _fundiciones_review_add_value(self, diffs, label, control, expected, expected_label=None):
         actual = self._fundiciones_read_control_value(control)
         if not self._fundiciones_values_match(actual, expected):
@@ -6453,7 +6557,7 @@ class TabCalidad(ttk.Frame):
         self.var_alargamiento.set(first.get("alargamiento", ""))
         self.var_perlita.set(first.get("perlita", ""))
         self.var_ferrita.set(first.get("ferrita", ""))
-        self.var_cementita.set(first.get("cementita", ""))
+        self._set_cementita(first.get("cementita", ""))
         self.var_matriz.set(first.get("matriz", ""))
         self._sync_family_fields()
         self._update_microstructure()
@@ -6550,8 +6654,8 @@ class TabCalidad(ttk.Frame):
             self.var_perlita.set(defaults.get("perlita", ""))
         if force or not self.var_ferrita.get().strip():
             self.var_ferrita.set(defaults.get("ferrita", ""))
-        if force or not self.var_cementita.get().strip():
-            self.var_cementita.set(defaults.get("cementita", "0"))
+        if force or not self.var_cementita_chk.get():
+            self._set_cementita(defaults.get("cementita", "0"))
         self._update_microstructure()
 
     def _family_for_material(self, material):
@@ -6813,6 +6917,22 @@ class TabCalidad(ttk.Frame):
             self.var_pct_nod.set("")
             self.var_alargamiento.set("")
 
+    def _set_cementita(self, value_str):
+        """Carga un valor de cementita y sincroniza el checkbox y el estado del entry."""
+        val = to_float(value_str or "0")
+        chk = val > 1e-6
+        self.var_cementita_chk.set(chk)
+        self.var_cementita.set(value_str if chk else "0")
+        self.ent_cementita.config(state="normal" if chk else "disabled")
+
+    def _toggle_cementita(self):
+        if self.var_cementita_chk.get():
+            self.ent_cementita.config(state="normal")
+        else:
+            self.ent_cementita.config(state="disabled")
+            self.var_cementita.set("0")
+        self._update_microstructure()
+
     def _update_microstructure(self):
         if self._updating_micro:
             return
@@ -6822,7 +6942,9 @@ class TabCalidad(ttk.Frame):
             perlita = self._parse_optional_float(self.var_perlita.get())
             ferrita = self._parse_optional_float(self.var_ferrita.get())
             cementita = 0.0 if cementita is None else max(0.0, min(100.0, cementita))
-            if self.var_cementita.get().strip():
+            if not self.var_cementita_chk.get():
+                cementita = 0.0
+            if self.var_cementita.get().strip() and self.var_cementita_chk.get():
                 self.var_cementita.set(fmt(cementita, 2))
 
             restante = max(0.0, 100.0 - cementita)
@@ -7249,7 +7371,9 @@ class TabCalidad(ttk.Frame):
         self.var_alargamiento.set("")
         self.var_perlita.set("")
         self.var_ferrita.set("")
+        self.var_cementita_chk.set(False)
         self.var_cementita.set("0")
+        self.ent_cementita.config(state="disabled")
         self.var_matriz.set("")
         self.txt_data.delete("1.0", tk.END)
         self._report_images = []
@@ -7743,7 +7867,7 @@ class TabCalidad(ttk.Frame):
             self._clear_form()
         return archived
 
-    def _pick_groups_to_print(self, title="Imprimir grupos", label="Selecciona hasta 3 grupos para imprimir:"):
+    def _pick_groups_to_print(self, title="Imprimir grupos", label="Selecciona hasta 3 grupos para imprimir:", _show_report_items=True):
         groups = self._group_choices()
         if not groups:
             return None
@@ -7763,7 +7887,8 @@ class TabCalidad(ttk.Frame):
 
         ttk.Label(box, text=label).grid(row=0, column=0, sticky="w", pady=(0, 8))
 
-        checks_frame = ttk.LabelFrame(box, text="Grupos", padding=8)
+        frame_label = "Grupos e informes" if _show_report_items else "Grupos"
+        checks_frame = ttk.LabelFrame(box, text=frame_label, padding=8)
         checks_frame.grid(row=1, column=0, sticky="nsew")
         checks_frame.columnconfigure(0, weight=1)
         checks_frame.rowconfigure(0, weight=1)
@@ -7771,20 +7896,66 @@ class TabCalidad(ttk.Frame):
         scroll = ScrollFrame(checks_frame)
         scroll.pack(fill="both", expand=True)
 
+        # vars_by_group: list of (base, lote, all_reports, group_var, [(report, report_var)])
         vars_by_group = []
         for base, lote, reports, latest_fecha in groups:
             checked = (base, lote) in default_selected
-            var = tk.BooleanVar(value=checked)
+            group_var = tk.BooleanVar(value=checked)
             family = self._family_for_reports(reports)
-            row_label = f"Base {base} - {family} - {lote} ({len(reports)} informes, {latest_fecha})"
-            ttk.Checkbutton(scroll.inner, text=row_label, variable=var).pack(anchor="w")
-            vars_by_group.append(((base, lote, reports), var))
+            n = len(reports)
+
+            if _show_report_items:
+                group_label = f"Base {base} — {family} — {lote}  ({n} informe{'s' if n != 1 else ''}, {latest_fecha})"
+            else:
+                group_label = f"Base {base} - {family} - {lote} ({n} informes, {latest_fecha})"
+
+            report_vars = [(r, tk.BooleanVar(value=checked)) for r in reports]
+
+            if _show_report_items:
+                def make_group_toggle(gv, rvs):
+                    def _toggle():
+                        state = gv.get()
+                        for _, rv in rvs:
+                            rv.set(state)
+                    return _toggle
+
+                def make_report_trace(gv, rvs):
+                    def _trace():
+                        gv.set(any(rv.get() for _, rv in rvs))
+                    return _trace
+
+                ttk.Checkbutton(
+                    scroll.inner, text=group_label, variable=group_var,
+                    command=make_group_toggle(group_var, report_vars),
+                ).pack(anchor="w", pady=(6, 0))
+
+                for report, rvar in report_vars:
+                    mat = report.get("material", "")
+                    sec = report.get("seccion", "")
+                    inf = report.get("informe", "")
+                    parts = [p for p in [mat, sec, inf] if p]
+                    sub_label = "  ·  ".join(parts) if parts else "(sin datos)"
+                    ttk.Checkbutton(
+                        scroll.inner, text=sub_label, variable=rvar,
+                        command=make_report_trace(group_var, report_vars),
+                    ).pack(anchor="w", padx=(22, 0))
+            else:
+                ttk.Checkbutton(scroll.inner, text=group_label, variable=group_var).pack(anchor="w")
+
+            vars_by_group.append((base, lote, reports, group_var, report_vars))
 
         btns = ttk.Frame(box)
         btns.grid(row=2, column=0, sticky="ew", pady=(10, 0))
 
         def accept():
-            chosen = [group for group, var in vars_by_group if var.get()]
+            chosen = []
+            for base, lote, all_reports, group_var, report_vars in vars_by_group:
+                if _show_report_items:
+                    selected = [r for r, rv in report_vars if rv.get()]
+                else:
+                    selected = all_reports if group_var.get() else []
+                if selected:
+                    chosen.append((base, lote, selected))
             if len(chosen) > 3:
                 messagebox.showinfo("Calidad", "Puedes seleccionar hasta 3 grupos.", parent=win)
                 return
@@ -7800,9 +7971,8 @@ class TabCalidad(ttk.Frame):
 
         win.update_idletasks()
         root = self.winfo_toplevel()
-        # Altura máxima: 75% de la pantalla
         max_h = int(root.winfo_screenheight() * 0.75)
-        win_w = win.winfo_reqwidth()
+        win_w = max(win.winfo_reqwidth(), 480)
         win_h = min(win.winfo_reqheight(), max_h)
         x = root.winfo_rootx() + max(0, (root.winfo_width() - win_w) // 2)
         y = root.winfo_rooty() + max(0, (root.winfo_height() - win_h) // 2)
@@ -7815,6 +7985,7 @@ class TabCalidad(ttk.Frame):
         chosen = self._pick_groups_to_print(
             title="Archivar grupos",
             label="Selecciona los grupos a archivar:",
+            _show_report_items=False,
         )
         if chosen is None:
             return
@@ -7892,7 +8063,7 @@ class TabCalidad(ttk.Frame):
         self.var_alargamiento.set(report.get("alargamiento", ""))
         self.var_perlita.set(report.get("perlita", ""))
         self.var_ferrita.set(report.get("ferrita", ""))
-        self.var_cementita.set(report.get("cementita", ""))
+        self._set_cementita(report.get("cementita", ""))
         self.var_matriz.set(report.get("matriz", ""))
         self._sync_family_fields()
         self._update_microstructure()

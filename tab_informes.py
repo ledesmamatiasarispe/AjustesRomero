@@ -1452,19 +1452,31 @@ class TabInformes(ttk.Frame):
         if monthly and all_inocs:
             col_ids = ["mes"] + [f"i{i}" for i in range(len(all_inocs))]
             tree = ttk.Treeview(self.monthly_tree_host, columns=col_ids,
-                                show="headings", height=min(len(months_sorted), 10))
+                                show="headings", height=min(len(months_sorted) + 1, 11))
             tree.heading("mes", text="Mes")
             tree.column("mes", width=80, anchor="w")
             for i, inoc in enumerate(all_inocs):
                 cid = f"i{i}"
                 tree.heading(cid, text=inoc)
                 tree.column(cid, width=max(80, len(inoc) * 7), anchor="e")
+            col_totals = {inoc: 0.0 for inoc in all_inocs}
             for month in months_sorted:
-                row = [month] + [
-                    fmt(monthly[month].get(inoc, 0.0) / 1000, 3) if monthly[month].get(inoc, 0) else "—"
-                    for inoc in all_inocs
-                ]
-                tree.insert("", "end", values=row)
+                row_vals = []
+                for inoc in all_inocs:
+                    v = monthly[month].get(inoc, 0.0) / 1000
+                    col_totals[inoc] += v
+                    row_vals.append(fmt(v, 3) if v else "—")
+                tree.insert("", "end", values=[month] + row_vals)
+            # Fila de totales por inoculante
+            try:
+                tree.tag_configure("total_row", background="#d0e8ff", font=("", 9, "bold"))
+            except Exception:
+                pass
+            total_row = ["TOTAL"] + [
+                fmt(col_totals[inoc], 3) if col_totals[inoc] else "—"
+                for inoc in all_inocs
+            ]
+            tree.insert("", "end", values=total_row, tags=("total_row",))
             sb = ttk.Scrollbar(self.monthly_tree_host, orient="horizontal", command=tree.xview)
             tree.configure(xscrollcommand=sb.set)
             tree.pack(fill="x", expand=True)

@@ -4,19 +4,37 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Calidad — Cámara</title>
-<link rel="stylesheet" href="/app.css">
-<!-- jsPDF + autoTable desde CDN -->
+<link rel="stylesheet" href="/app.css?v=3">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
 </head>
 <body>
 
-<!-- ── Panel izquierdo: controles ──────────────────────────── -->
+<!-- ── Vista de cámara (ancho completo, arriba de todo) ───── -->
+<main id="viewBox">
+  <img id="liveStream" src="/api/mjpeg" alt="stream en vivo">
+  <img id="capturedImg" alt="captura" hidden>
+  <canvas id="overlay"></canvas>
+  <div id="hint"></div>
+  <button id="btnFullscreen" title="Pantalla completa">⛶</button>
+</main>
+
+<!-- ── Controles ──────────────────────────────────────────── -->
 <aside id="controls">
+
+  <div class="ctrl-section btn-group">
+    <button id="btnCapture" class="btn-primary">Capturar</button>
+    <button id="btnResume" class="btn-secondary" hidden>Continuar stream</button>
+  </div>
+
+  <hr>
+
   <div class="ctrl-section">
     <label class="ctrl-label">Calibración</label>
-    <select id="calSelect"><option value="">Sin calibrar</option></select>
-    <button id="btnReloadCal" class="btn-icon" title="Recargar calibraciones">↺</button>
+    <div class="ctrl-row">
+      <select id="calSelect"><option value="">Sin calibrar</option></select>
+      <button id="btnReloadCal" class="btn-icon" title="Recargar calibraciones">↺</button>
+    </div>
   </div>
 
   <div class="ctrl-section">
@@ -44,18 +62,9 @@
   <hr>
 
   <div class="ctrl-section btn-group">
-    <button id="btnCapture" class="btn-primary">Capturar</button>
-    <button id="btnResume" class="btn-secondary" hidden>Continuar stream</button>
-  </div>
-
-  <hr>
-
-  <div class="ctrl-section btn-group">
     <button id="btnMeasure" class="btn-toggle">Medir</button>
     <button id="btnClearMeasures" class="btn-secondary">Borrar medidas</button>
   </div>
-
-  <hr>
 
   <div class="ctrl-section">
     <label><input id="chkOverlay" type="checkbox"> Ver contornos</label>
@@ -72,21 +81,43 @@
   <div id="statusBar"></div>
 </aside>
 
-<!-- ── Centro: vista de imagen ─────────────────────────────── -->
-<main id="viewBox">
-  <img id="liveStream" alt="stream en vivo">
-  <img id="capturedImg" alt="captura" hidden>
-  <canvas id="overlay"></canvas>
-  <div id="hint"></div>
-</main>
-
-<!-- ── Panel derecho: estadísticas ─────────────────────────── -->
+<!-- ── Estadísticas ────────────────────────────────────────── -->
 <aside id="statsPanel">
   <div id="statsContent">
-    <p class="stats-empty">Sin análisis.<br>Capturá una imagen y presioná <strong>Analizar</strong>.</p>
+    <p class="stats-empty">Sin análisis.<br>Capturá una imagen para ver los resultados.</p>
   </div>
 </aside>
 
-<script src="/app.js"></script>
+<!-- ── Chat en vivo ────────────────────────────────────────── -->
+<section id="chatPanel">
+  <div id="chatHeader">
+    <span>💬 Chat</span>
+    <button id="btnChatToggle" title="Minimizar">▼</button>
+  </div>
+  <div id="chatBody">
+
+    <div id="chatLogin">
+      <p class="chat-login-title">Entrá al chat para hablar con el encargado</p>
+      <input id="chatUser" type="text" placeholder="Nombre de usuario" autocomplete="username" maxlength="30">
+      <input id="chatPass" type="password" placeholder="Contraseña" autocomplete="current-password">
+      <div class="chat-btn-row">
+        <button id="btnChatLogin" class="btn-primary">Entrar</button>
+        <button id="btnChatRegister" class="btn-secondary">Registrarse</button>
+      </div>
+      <p id="chatLoginError"></p>
+    </div>
+
+    <div id="chatActive" hidden>
+      <div id="chatMessages"></div>
+      <div id="chatInputRow">
+        <input id="chatInput" type="text" placeholder="Escribí tu mensaje…" maxlength="500" autocomplete="off">
+        <button id="btnChatSend" class="btn-primary">Enviar</button>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<script src="/app.js?v=3"></script>
 </body>
 </html>

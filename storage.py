@@ -1,4 +1,5 @@
 # storage.py
+import hashlib
 import os
 import json
 import re
@@ -156,6 +157,20 @@ def _create_tables(conn):
         CREATE TABLE IF NOT EXISTS thermal_records (
             id   INTEGER PRIMARY KEY AUTOINCREMENT,
             data TEXT
+        );
+        CREATE TABLE IF NOT EXISTS chat_users (
+            username      TEXT PRIMARY KEY,
+            password_hash TEXT NOT NULL,
+            salt          TEXT NOT NULL,
+            created_at    TEXT NOT NULL,
+            reserved      INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS chat_messages (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            username   TEXT NOT NULL,
+            body       TEXT NOT NULL,
+            ts         TEXT NOT NULL,
+            is_manager INTEGER NOT NULL DEFAULT 0
         );
     """)
 
@@ -338,6 +353,16 @@ def _migrate_from_json(conn):
                     pass
 
 
+def _init_chat_reserved(conn):
+    if conn.execute("SELECT 1 FROM chat_users WHERE username=?", ("👑 Admin",)).fetchone() is None:
+        import datetime as _dt
+        conn.execute(
+            "INSERT INTO chat_users (username, password_hash, salt, created_at, reserved) VALUES (?,?,?,?,1)",
+            ("👑 Admin", "", "", _dt.datetime.now().isoformat()),
+        )
+        conn.commit()
+
+
 def _init_db():
     global _db_initialized
     if _db_initialized:
@@ -350,6 +375,7 @@ def _init_db():
             _create_tables(conn)
             _migrate_from_json(conn)
             _migrate_types(conn)
+            _init_chat_reserved(conn)
         finally:
             conn.close()
         _db_initialized = True
@@ -613,6 +639,73 @@ def attach_thermal_analysis(colada, analysis_obj):
                         (json.dumps(session, ensure_ascii=False), row["id"])
                     )
                 return i
+            raise ValueError(f"No existe una sesion historica para la colada {key}.")
+        finally:
+            conn.close()
+
+
+def detach_thermal_analysis(colada, analysis_index):
+    _init_db()
+    key = normalize_colada_key(colada)
+    if not key:
+        raise ValueError("Colada vacia.")
+    with _db_lock:
+        conn = _get_conn()
+        try:
+            rows = conn.execute("SELECT id, data FROM sessions ORDER BY id").fetchall()
+            for row in rows:
+                session = json.loads(row["data"] or "{}")
+                if normalize_colada_key(session.get("colada", "")) != key:
+                    continue
+                analyses = session.get("thermal_analysis", [])
+                if not isinstance(analyses, list):
+                    analyses = []
+                if 0 <= analysis_index < len(analyses):
+                    del analyses[analysis_index]
+                    session["thermal_analysis"] = analyses
+                    with conn:
+                        conn.execute(
+                            "UPDATE sessions SET data=? WHERE id=?",
+                            (json.dumps(session, ensure_ascii=False), row["id"])
+                        )
+                return
+            raise ValueError(f"No existe una sesion historica para la colada {key}.")
+        finally:
+            conn.close()
+
+
+def set_thermal_analysis_field(colada, source_file, patch):
+    _init_db()
+    key = normalize_colada_key(colada)
+    if not key:
+        raise ValueError("Colada vacia.")
+    source_file = str(source_file or "").strip()
+    if not source_file:
+        raise ValueError("Archivo de origen vacio.")
+    with _db_lock:
+        conn = _get_conn()
+        try:
+            rows = conn.execute("SELECT id, data FROM sessions ORDER BY id").fetchall()
+            for row in rows:
+                session = json.loads(row["data"] or "{}")
+                if normalize_colada_key(session.get("colada", "")) != key:
+                    continue
+                analyses = session.get("thermal_analysis", [])
+                if not isinstance(analyses, list):
+                    analyses = []
+                updated = False
+                for entry in analyses:
+                    if isinstance(entry, dict) and str(entry.get("source_file", "") or "").strip() == source_file:
+                        entry.update(patch)
+                        updated = True
+                if updated:
+                    session["thermal_analysis"] = analyses
+                    with conn:
+                        conn.execute(
+                            "UPDATE sessions SET data=? WHERE id=?",
+                            (json.dumps(session, ensure_ascii=False), row["id"])
+                        )
+                return updated
             raise ValueError(f"No existe una sesion historica para la colada {key}.")
         finally:
             conn.close()
@@ -984,9 +1077,9 @@ def save_devices_state(state):
 
 _INOC_MOMENTOS_FILE = os.path.join(os.path.expanduser("~"), "ajuste_comp_inoc_momentos.json")
 _DEFAULT_INOC_MOMENTOS = [
-    {"key": "horno",          "label": "Horno"},
-    {"key": "cuchara_transp", "label": "C. transp."},
-    {"key": "cuchara_colar",  "label": "C. colar"},
+    {"key": "horno",          "label": "Horno",      "masa_default": 50},
+    {"key": "cuchara_transp", "label": "C. transp.", "masa_default": 50},
+    {"key": "cuchara_colar",  "label": "C. colar",   "masa_default": 50},
 ]
 
 def resolve_inoc_protocol(inoculacion_meta, base=None):
@@ -1013,7 +1106,8 @@ def load_inoc_momentos():
                 data = json.load(f)
             if isinstance(data, list):
                 result = [
-                    {"key": str(m["key"]), "label": str(m["label"])}
+                    {"key": str(m["key"]), "label": str(m["label"]),
+                     "masa_default": float(m["masa_default"]) if m.get("masa_default") else 50}
                     for m in data
                     if isinstance(m, dict) and m.get("key") and m.get("label")
                 ]
@@ -1028,6 +1122,7 @@ def save_inoc_momentos(momentos):
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(momentos, f, ensure_ascii=False, indent=2)
     os.replace(tmp, _INOC_MOMENTOS_FILE)
+
 
 
 _INOC_UNITS_FILE = os.path.join(os.path.expanduser("~"), "ajuste_comp_inoc_units.json")
@@ -1049,3 +1144,105 @@ def save_inoc_units(units):
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(units, f, ensure_ascii=False, indent=2)
     os.replace(tmp, _INOC_UNITS_FILE)
+
+
+# ---------- Chat ----------
+
+CHAT_MANAGER_NAME = "👑 Admin"
+_MAX_MSG_LEN = 500
+_MAX_USERNAME_LEN = 30
+
+
+def _hash_password(password: str, salt: str) -> str:
+    return hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt.encode("utf-8"), 200_000
+    ).hex()
+
+
+def register_chat_user(username: str, password: str):
+    """Registra usuario. Devuelve None si OK, string de error si falla."""
+    import datetime as _dt, secrets as _sec
+    _init_db()
+    username = (username or "").strip()
+    if not username or len(username) > _MAX_USERNAME_LEN:
+        return f"Nombre inválido (1–{_MAX_USERNAME_LEN} caracteres)"
+    if not password or len(password) < 4:
+        return "Contraseña demasiado corta (mínimo 4 caracteres)"
+    salt = _sec.token_hex(16)
+    pw_hash = _hash_password(password, salt)
+    with _db_lock:
+        conn = _get_conn()
+        try:
+            row = conn.execute(
+                "SELECT reserved FROM chat_users WHERE username=? COLLATE NOCASE", (username,)
+            ).fetchone()
+            if row:
+                return "Ese nombre está reservado" if row["reserved"] else "Ese nombre ya está en uso"
+            with conn:
+                conn.execute(
+                    "INSERT INTO chat_users (username, password_hash, salt, created_at, reserved) VALUES (?,?,?,?,0)",
+                    (username, pw_hash, salt, _dt.datetime.now().isoformat()),
+                )
+            return None
+        finally:
+            conn.close()
+
+
+def verify_chat_user(username: str, password: str) -> bool:
+    _init_db()
+    username = (username or "").strip()
+    with _db_lock:
+        conn = _get_conn()
+        try:
+            row = conn.execute(
+                "SELECT password_hash, salt, reserved FROM chat_users WHERE username=? COLLATE NOCASE",
+                (username,),
+            ).fetchone()
+            if not row or row["reserved"]:
+                return False
+            return _hash_password(password, row["salt"]) == row["password_hash"]
+        finally:
+            conn.close()
+
+
+def add_chat_message(username: str, body: str, is_manager: bool = False) -> int:
+    """Inserta mensaje y devuelve el id generado."""
+    import datetime as _dt
+    _init_db()
+    body = (body or "").strip()[:_MAX_MSG_LEN]
+    if not body:
+        return 0
+    with _db_lock:
+        conn = _get_conn()
+        try:
+            with conn:
+                cur = conn.execute(
+                    "INSERT INTO chat_messages (username, body, ts, is_manager) VALUES (?,?,?,?)",
+                    (username, body, _dt.datetime.now().isoformat(), 1 if is_manager else 0),
+                )
+                return cur.lastrowid
+        finally:
+            conn.close()
+
+
+def get_chat_messages(since_id: int = 0, limit: int = 100) -> list:
+    _init_db()
+    with _db_lock:
+        conn = _get_conn()
+        try:
+            rows = conn.execute(
+                "SELECT id, username, body, ts, is_manager FROM chat_messages WHERE id > ? ORDER BY id LIMIT ?",
+                (since_id, limit),
+            ).fetchall()
+            return [
+                {
+                    "id":         row["id"],
+                    "username":   row["username"],
+                    "body":       row["body"],
+                    "ts":         row["ts"],
+                    "is_manager": bool(row["is_manager"]),
+                }
+                for row in rows
+            ]
+        finally:
+            conn.close()

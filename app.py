@@ -328,6 +328,7 @@ class App(tk.Frame):
 
         self.tab_ajuste.bind("<<HistoryUpdated>>", lambda e: (self.tab_hist.refresh(), self.tab_info.refresh()))
         self.tab_analisis_termico.bind("<<HistoryUpdated>>", lambda e: self.tab_hist.refresh())
+        self.tab_hist.bind("<<HistoryUpdated>>", lambda e: self.tab_analisis_termico.refresh())
         self.tab_catalogo.bind("<<CatalogUpdated>>", lambda e: (self.tab_ajuste.refresh_objectives(), self.tab_hist.refresh_catalog(), self.tab_info.refresh(), self.tab_calidad.refresh_catalog()))
 
         self._save_job = None

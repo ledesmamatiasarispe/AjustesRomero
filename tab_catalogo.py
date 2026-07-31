@@ -7,7 +7,7 @@ import json, csv
 from widgets import ScrollFrame
 from config import ELEMENTS
 from storage import save_alloys, load_history, load_inoc_units, save_inoc_units, load_inoc_momentos, save_inoc_momentos
-from utils import to_float, to_float_or_none, fmt, fmt_opt, _norm, simulate_with_plan
+from utils import to_float, to_float_or_none, fmt, fmt_opt, _norm, simulate_with_plan, simulate_staged
 from config import ELEMENTS, BG_ENTRY, FG, ACCENT
 from ce import ce_from_percent
 
@@ -723,63 +723,82 @@ class TabCatalogo(ttk.Frame):
             d.resizable(False, False)
             frm = ttk.Frame(d, padding=12)
             frm.pack(fill="both", expand=True)
-            ttk.Label(frm, text="Editá los nombres de las etapas:").pack(anchor="w", pady=(0, 6))
+
+            # Encabezado de columnas
+            hdr = ttk.Frame(frm)
+            hdr.pack(fill="x", pady=(0, 2))
+            ttk.Label(hdr, text="Nombre de etapa", width=22, anchor="w").pack(side="left")
+            ttk.Label(hdr, text="Masa default (kg)", width=16, anchor="center").pack(side="left", padx=(6, 0))
 
             cur_moms = load_inoc_momentos()
-            # Lista de (key_original, StringVar_label); key=None para nuevas etapas
-            entries = []   # [(key_or_None, StringVar, row_frame), ...]
+            # entries: [(key_or_None, label_var, masa_var, row_frame), ...]
+            entries = []
 
             rows_frame = ttk.Frame(frm)
             rows_frame.pack(fill="x")
 
-            def _add_row(key, label):
+            def _add_row(key, label, masa):
                 row = ttk.Frame(rows_frame)
                 row.pack(fill="x", pady=2)
-                var = tk.StringVar(value=label)
-                ttk.Entry(row, textvariable=var, width=22).pack(side="left")
-                idx_ref = [len(entries)]   # captura posición
-                def _remove(r=row, ref=idx_ref):
-                    for i, (k, v, rf) in enumerate(entries):
-                        if rf is r:
+                lv = tk.StringVar(value=label)
+                mv = tk.StringVar(value=str(int(masa) if masa == int(masa) else masa))
+                ttk.Entry(row, textvariable=lv, width=22).pack(side="left")
+                ttk.Entry(row, textvariable=mv, width=8).pack(side="left", padx=(6, 0))
+                def _remove(r=row):
+                    for i, tup in enumerate(entries):
+                        if tup[3] is r:
                             entries.pop(i)
                             break
                     r.destroy()
                 tk.Button(row, text="×", width=2, relief="flat",
                           fg="#c0392b", bg="#f0f0f0",
                           command=_remove).pack(side="left", padx=(4, 0))
-                entries.append((key, var, row))
+                entries.append((key, lv, mv, row))
 
             for m in cur_moms:
-                _add_row(m["key"], m["label"])
+                _add_row(m["key"], m["label"], m.get("masa_default", 50))
 
             # Agregar nueva etapa
             ttk.Separator(frm, orient="horizontal").pack(fill="x", pady=(8, 4))
             add_row_f = ttk.Frame(frm)
             add_row_f.pack(fill="x")
-            new_var = tk.StringVar()
-            ttk.Entry(add_row_f, textvariable=new_var, width=22).pack(side="left")
+            new_lbl_var  = tk.StringVar()
+            new_masa_var = tk.StringVar(value="50")
+            ttk.Entry(add_row_f, textvariable=new_lbl_var,  width=22).pack(side="left")
+            ttk.Entry(add_row_f, textvariable=new_masa_var, width=8).pack(side="left", padx=(6, 0))
             def _add():
-                label = new_var.get().strip()
+                label = new_lbl_var.get().strip()
                 if not label:
                     return
-                existing = [v.get().strip() for _, v, _ in entries]
+                existing = [tup[1].get().strip() for tup in entries]
                 if label in existing:
                     messagebox.showwarning("Etapas", f"Ya existe una etapa '{label}'.", parent=d)
                     return
-                _add_row(None, label)
-                new_var.set("")
+                try:
+                    masa = float(new_masa_var.get().replace(",", "."))
+                    if masa <= 0: raise ValueError
+                except ValueError:
+                    messagebox.showwarning("Etapas", "Masa inválida.", parent=d)
+                    return
+                _add_row(None, label, masa)
+                new_lbl_var.set(""); new_masa_var.set("50")
             ttk.Button(add_row_f, text="+ Agregar etapa", command=_add).pack(side="left", padx=(6, 0))
 
             def _save_moms():
                 new_moms = []
-                for key, var, _ in entries:
-                    label = var.get().strip()
+                for key, lv, mv, _ in entries:
+                    label = lv.get().strip()
                     if not label:
                         continue
+                    try:
+                        masa = float(mv.get().replace(",", "."))
+                        if masa <= 0: raise ValueError
+                    except ValueError:
+                        messagebox.showerror("Error", f"Masa inválida para '{label}'.", parent=d)
+                        return
                     if key is None:
-                        # Etapa nueva: generar key desde el label
                         key = label.lower().replace(" ", "_").replace("/", "_")
-                    new_moms.append({"key": key, "label": label})
+                    new_moms.append({"key": key, "label": label, "masa_default": masa})
                 if not new_moms:
                     messagebox.showwarning("Etapas", "La lista no puede quedar vacía.", parent=d)
                     return
@@ -806,8 +825,8 @@ class TabCatalogo(ttk.Frame):
 
             btn_row = ttk.Frame(frm)
             btn_row.pack(fill="x", pady=(10, 0))
-            ttk.Button(btn_row, text="Guardar", command=_save_moms).pack(side="right")
-            ttk.Button(btn_row, text="Cancelar", command=d.destroy).pack(side="right", padx=(0, 6))
+            ttk.Button(btn_row, text="Guardar",   command=_save_moms).pack(side="right")
+            ttk.Button(btn_row, text="Cancelar",  command=d.destroy).pack(side="right", padx=(0, 6))
 
         inoc_top = ttk.Frame(inoc_panel)
         inoc_top.pack(fill="x", pady=(0, 4))
@@ -1461,6 +1480,25 @@ class TabCatalogo(ttk.Frame):
             messagebox.showinfo("Estimada", "Esta Aleación final no tiene bases configuradas.", parent=parent_win)
             return
 
+        # Agrupar inoculantes por etapa en el orden definido por el usuario
+        stage_items = {}  # momento -> [(nombre, cantidad_dosis, g_por_dosis)]
+        for e in inoculacion:
+            mom    = e.get("momento", "horno") or "horno"
+            nombre = e["nombre"]
+            cant   = e["cantidad_dosis"]
+            g      = self._gramos_cucharin1(nombre)
+            if cant > 0 and g:
+                stage_items.setdefault(mom, []).append((nombre, cant, g))
+
+        # Orden, etiquetas y masas default según la configuración del usuario
+        momentos_cfg  = load_inoc_momentos()
+        momentos_lbl  = {m["key"]: m["label"]        for m in momentos_cfg}
+        momentos_masa = {m["key"]: m.get("masa_default", 50) for m in momentos_cfg}
+        ordered_keys  = [m["key"] for m in momentos_cfg]
+        extra_keys    = [k for k in stage_items if k not in ordered_keys]
+        active = [(s, momentos_lbl.get(s, s))
+                  for s in (ordered_keys + extra_keys) if stage_items.get(s)]
+
         win = tk.Toplevel(parent_win)
         win.title(f"Composición estimada — {alloy.get('nombre','')}")
         win.transient(parent_win)
@@ -1470,17 +1508,27 @@ class TabCatalogo(ttk.Frame):
         frm = ttk.Frame(win, padding=12)
         frm.pack(fill="both", expand=True)
 
-        row0 = ttk.Frame(frm); row0.pack(fill="x", pady=(0, 6))
-        ttk.Label(row0, text="Base:", width=12).pack(side="left")
+        # Base
+        row_base = ttk.Frame(frm); row_base.pack(fill="x", pady=(0, 8))
+        ttk.Label(row_base, text="Base:", width=14).pack(side="left")
         base_var = tk.StringVar(value=bases[0])
-        ttk.Combobox(row0, textvariable=base_var, values=bases, state="readonly", width=16).pack(side="left", padx=4)
+        ttk.Combobox(row_base, textvariable=base_var, values=bases, state="readonly", width=14).pack(side="left", padx=4)
 
-        row1 = ttk.Frame(frm); row1.pack(fill="x", pady=(0, 10))
-        ttk.Label(row1, text="Masa baño (kg):", width=16).pack(side="left")
-        masa_var = tk.StringVar(value="50")
-        ttk.Entry(row1, textvariable=masa_var, width=10).pack(side="left", padx=4)
+        # Masa por etapa
+        mass_vars = {}
+        if active:
+            sf = ttk.LabelFrame(frm, text="Masa del baño por etapa (kg)", padding=6)
+            sf.pack(fill="x", pady=(0, 8))
+            for s, lbl in active:
+                r = ttk.Frame(sf); r.pack(side="left", padx=10, pady=2)
+                ttk.Label(r, text=f"{lbl}:").pack(anchor="w")
+                default = momentos_masa.get(s, 50)
+                v = tk.StringVar(value=str(int(default) if default == int(default) else default))
+                ttk.Entry(r, textvariable=v, width=8).pack(anchor="w")
+                mass_vars[s] = v
 
-        tv = ttk.Treeview(frm, columns=("el","pct"), show="headings", height=14, selectmode="none")
+        # Tabla de resultados (elemento → %)
+        tv = ttk.Treeview(frm, columns=("el", "pct"), show="headings", height=14, selectmode="none")
         tv.heading("el",  text="Elemento")
         tv.heading("pct", text="%")
         tv.column("el",  width=100, anchor="w")
@@ -1493,29 +1541,39 @@ class TabCatalogo(ttk.Frame):
         def calcular(*_):
             for row in tv.get_children(): tv.delete(row)
             base_alloy = next((a for a in self.model
-                               if str(a.get("nombre","")).strip() == base_var.get()), None)
+                               if str(a.get("nombre", "")).strip() == base_var.get()), None)
             if not base_alloy:
                 messagebox.showerror("Error", f"Base '{base_var.get()}' no encontrada.", parent=win)
                 return
-            try:
-                M0 = float(masa_var.get().replace(",","."))
-                if M0 <= 0: raise ValueError
-            except ValueError:
-                messagebox.showerror("Error", "Masa inválida.", parent=win)
-                return
-            plan = {e["nombre"]: (self._gramos_cucharin1(e["nombre"]) * e["cantidad_dosis"]) / 1000
-                    for e in inoculacion
-                    if e["cantidad_dosis"] > 0 and self._gramos_cucharin1(e["nombre"])}
-            try:
-                _, comp = simulate_with_plan(
-                    M0, base_alloy.get("composicion",{}), plan, ELEMENTS,
-                    get_alloy=lambda n: next((a for a in self.model if str(a.get("nombre","")).strip()==n), None),
-                    effective_add=_effective_add_inoc,
-                    effective_total_perkg=lambda a: to_float(a.get("rendimiento",100))/100,
-                )
-            except Exception as ex:
-                messagebox.showerror("Error de cálculo", str(ex), parent=win)
-                return
+
+            # Parsear masas por etapa
+            stage_specs = []
+            for s, lbl in active:
+                try:
+                    mass = float(mass_vars[s].get().replace(",", "."))
+                    if mass <= 0: raise ValueError
+                except ValueError:
+                    messagebox.showerror("Error", f"Masa inválida para '{lbl}'.", parent=win)
+                    return
+                items = [(nombre, (g * cant) / 1000) for nombre, cant, g in stage_items[s]]
+                stage_specs.append((mass, items))
+
+            if not stage_specs:
+                # Sin inoculantes: mostrar composición de la base tal cual
+                comp = base_alloy.get("composicion", {})
+            else:
+                try:
+                    comp = simulate_staged(
+                        base_alloy.get("composicion", {}), stage_specs, ELEMENTS,
+                        get_alloy=lambda n: next((a for a in self.model
+                                                  if str(a.get("nombre", "")).strip() == n), None),
+                        effective_add=_effective_add_inoc,
+                        effective_total_perkg=lambda a: to_float(a.get("rendimiento", 100)) / 100,
+                    )
+                except Exception as ex:
+                    messagebox.showerror("Error de cálculo", str(ex), parent=win)
+                    return
+
             for el in ELEMENTS:
                 v = to_float(comp.get(el, 0))
                 if v > 0.001:

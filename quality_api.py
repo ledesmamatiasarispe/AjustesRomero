@@ -5,6 +5,7 @@ Patrón idéntico a host_api.py (http.server + ThreadingHTTPServer).
 import base64
 import json
 import re
+import secrets
 import socket
 import sys
 import threading
@@ -13,13 +14,31 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import quality_analyzer as qa
+import storage
 
 QUALITY_API_HOST = "0.0.0.0"
 QUALITY_API_PORT = 50501
 QUALITY_WEB_DIR = Path(__file__).resolve().parent / "web_quality"
 MAX_BODY_BYTES = 4 * 1024           # body de /api/analyze (solo JSON pequeño)
+MAX_CHAT_BODY  = 4 * 1024           # body de endpoints de chat
 MJPEG_BOUNDARY = b"mjpegframe"
 STREAM_FPS = 15                     # fps para el stream MJPEG
+
+# ---------- Chat ----------
+_MANAGER_TOKEN   = secrets.token_hex(32)   # generado al arrancar; solo válido en este proceso
+_CHAT_CONDITION  = threading.Condition()
+_LAST_CHAT_ID    = 0                       # id del último mensaje insertado
+
+
+def send_manager_message(body: str) -> int:
+    """Envía un mensaje como 👑 Admin desde el escritorio."""
+    global _LAST_CHAT_ID
+    msg_id = storage.add_chat_message(storage.CHAT_MANAGER_NAME, body, is_manager=True)
+    if msg_id:
+        _LAST_CHAT_ID = msg_id
+        with _CHAT_CONDITION:
+            _CHAT_CONDITION.notify_all()
+    return msg_id
 
 # ---------- Estado de calibración activa (sincronizado con el popup desktop) ----------
 _active_camera_cal_id: str | None = None
@@ -226,6 +245,7 @@ def _static_response(handler, path: Path):
     handler.send_response(200)
     handler.send_header("Content-Type", mime)
     handler.send_header("Content-Length", str(len(data)))
+    handler.send_header("Cache-Control", "no-store")
     handler.end_headers()
     handler.wfile.write(data)
 
@@ -275,6 +295,10 @@ class _QualityHandler(BaseHTTPRequestHandler):
             self._handle_frame()
         elif path == "/api/captured":
             self._handle_captured_get()
+        elif path == "/api/chat/messages":
+            self._handle_chat_messages()
+        elif path == "/api/chat/events":
+            self._handle_chat_events()
         else:
             self.send_error(404)
 
@@ -284,6 +308,12 @@ class _QualityHandler(BaseHTTPRequestHandler):
             self._handle_capture()
         elif path == "/api/analyze":
             self._handle_analyze()
+        elif path == "/api/chat/register":
+            self._handle_chat_register()
+        elif path == "/api/chat/login":
+            self._handle_chat_login()
+        elif path == "/api/chat/send":
+            self._handle_chat_send()
         else:
             self.send_error(404)
 
@@ -349,11 +379,9 @@ class _QualityHandler(BaseHTTPRequestHandler):
         self.wfile.write(header + frame + b"\r\n")
         self.wfile.flush()
 
-    # ---- Frame único (para polling desde móviles que no soportan MJPEG) ----
+    # ---- Frame único para polling (cloudflared no soporta MJPEG) ----
     def _handle_frame(self):
-        _streamer.acquire()
-        frame = _streamer.get_jpeg()
-        _streamer.release_client()
+        frame = _streamer.get_jpeg()   # no acquire/release: la cámara corre siempre
         if frame is None:
             if _streamer.error:
                 frame = _error_jpeg(_streamer.error or "Sin señal")
@@ -455,6 +483,115 @@ class _QualityHandler(BaseHTTPRequestHandler):
             })
         except Exception as ex:
             _json_response(self, {"stats": None, "error": str(ex)}, 500)
+
+
+    # ---- Chat helpers ----
+    def _read_chat_body(self):
+        length = int(self.headers.get("Content-Length", 0))
+        if length > MAX_CHAT_BODY:
+            _json_response(self, {"error": "body_too_large"}, 413)
+            return None
+        try:
+            return json.loads(self.rfile.read(length).decode())
+        except Exception:
+            _json_response(self, {"error": "invalid_json"}, 400)
+            return None
+
+    # ---- Chat: registrar usuario ----
+    def _handle_chat_register(self):
+        body = self._read_chat_body()
+        if body is None:
+            return
+        username = str(body.get("username", "")).strip()
+        password = str(body.get("password", ""))
+        err = storage.register_chat_user(username, password)
+        if err:
+            _json_response(self, {"error": err}, 400)
+        else:
+            _json_response(self, {"ok": True})
+
+    # ---- Chat: verificar login ----
+    def _handle_chat_login(self):
+        body = self._read_chat_body()
+        if body is None:
+            return
+        username = str(body.get("username", "")).strip()
+        password = str(body.get("password", ""))
+        if storage.verify_chat_user(username, password):
+            _json_response(self, {"ok": True})
+        else:
+            _json_response(self, {"error": "Usuario o contraseña incorrectos"}, 401)
+
+    # ---- Chat: enviar mensaje ----
+    def _handle_chat_send(self):
+        global _LAST_CHAT_ID
+        body = self._read_chat_body()
+        if body is None:
+            return
+        msg_body = str(body.get("body", "")).strip()
+        if not msg_body:
+            _json_response(self, {"error": "Mensaje vacío"}, 400)
+            return
+        if body.get("manager_token") == _MANAGER_TOKEN:
+            username = storage.CHAT_MANAGER_NAME
+            is_manager = True
+        else:
+            username = str(body.get("username", "")).strip()
+            password = str(body.get("password", ""))
+            if not storage.verify_chat_user(username, password):
+                _json_response(self, {"error": "Credenciales inválidas"}, 401)
+                return
+            is_manager = False
+        msg_id = storage.add_chat_message(username, msg_body, is_manager=is_manager)
+        if msg_id:
+            _LAST_CHAT_ID = msg_id
+            with _CHAT_CONDITION:
+                _CHAT_CONDITION.notify_all()
+        _json_response(self, {"ok": True, "id": msg_id})
+
+    # ---- Chat: historial de mensajes ----
+    def _handle_chat_messages(self):
+        qs = {}
+        if "?" in self.path:
+            for part in self.path.split("?", 1)[1].split("&"):
+                if "=" in part:
+                    k, v = part.split("=", 1)
+                    qs[k] = v
+        try:
+            since_id = int(qs.get("since", "0") or "0")
+        except ValueError:
+            since_id = 0
+        msgs = storage.get_chat_messages(since_id=since_id, limit=100)
+        _json_response(self, msgs)
+
+    # ---- Chat: SSE stream ----
+    def _handle_chat_events(self):
+        global _LAST_CHAT_ID
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("X-Accel-Buffering", "no")
+            self.end_headers()
+            self.wfile.write(b"event: ready\ndata: {}\n\n")
+            self.wfile.flush()
+        except Exception:
+            return
+        last = _LAST_CHAT_ID
+        while True:
+            with _CHAT_CONDITION:
+                _CHAT_CONDITION.wait(timeout=25)
+            cur = _LAST_CHAT_ID
+            try:
+                if cur != last:
+                    last = cur
+                    self.wfile.write(f"event: new_message\ndata: {cur}\n\n".encode())
+                else:
+                    self.wfile.write(b": keepalive\n\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                break
 
 
 # ---------- Server wrapper ----------

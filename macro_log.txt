@@ -1,3 +1,0 @@
-Macro ImageJ/Fiji
-OK: fundiciones_current.png -> C:\Users\LABOR01\Desktop\ajuste_comp\csv\fundiciones_current.csv
-

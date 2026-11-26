@@ -1,0 +1,67 @@
+/* dashboard.css -- puerto de frontend/css/dashboard.css de ajuste_comp_web: grilla de fichas, cada una un
+   indicador agregado sobre datos de otros módulos. Usa las variables de nucleo.css (--tarjeta/--borde/--sutil/
+   --azul/...) en vez de las propias de la app vieja (tema oscuro) para heredar el tema del shell. */
+.dash-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
+  gap: 16px;
+}
+.dash-card-head { margin-bottom: 10px; }
+.dash-card-head h2 { margin: 0 0 2px; font-size: 1.02rem; }
+
+.dash-chart-wrap {
+  position: relative;
+  height: 280px;
+  background: var(--gris-claro);
+  border-radius: 8px;
+}
+.dash-chart-wrap canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: crosshair;
+}
+
+.dash-tooltip {
+  position: absolute;
+  pointer-events: none;
+  background: var(--tarjeta);
+  border: 1px solid var(--borde);
+  border-radius: 6px;
+  padding: 6px 9px;
+  font-size: 0.8rem;
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.08s;
+  z-index: 5;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+.dash-tooltip .tt-val { font-size: 0.95rem; font-weight: 700; color: var(--texto); }
+.dash-tooltip .tt-row { color: var(--sutil); margin-top: 1px; }
+
+.dash-card-foot { margin-top: 10px; }
+.dash-stats { display: flex; gap: 16px; flex-wrap: wrap; font-size: 0.82rem; color: var(--sutil); }
+.dash-stats b { color: var(--texto); font-weight: 650; }
+.dash-note { font-size: 0.76rem; color: var(--sutil); margin: 6px 0 0; line-height: 1.4; }
+
+/* Ficha "Clima espacial" -- sin canvas, son badges de severidad + lista */
+.space-badges { display: flex; gap: 10px; flex-wrap: wrap; }
+.space-badge {
+  flex: 1 1 140px;
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: var(--gris-claro);
+  border: 1px solid var(--borde);
+}
+.space-badge .sb-nivel { font-size: 1.3rem; font-weight: 700; }
+.space-badge .sb-label { font-size: 0.78rem; color: var(--sutil); margin-top: 2px; }
+.space-badge .sb-text { font-size: 0.78rem; margin-top: 2px; text-transform: capitalize; }
+.space-badge.sev-0 .sb-nivel { color: var(--verde); }
+.space-badge.sev-1 .sb-nivel, .space-badge.sev-2 .sb-nivel { color: var(--ambar); }
+.space-badge.sev-3 .sb-nivel, .space-badge.sev-4 .sb-nivel, .space-badge.sev-5 .sb-nivel { color: var(--rojo); }
+
+.space-alertas { list-style: none; margin: 10px 0 0; padding: 0; max-height: 170px; overflow-y: auto; }
+.space-alertas li { padding: 5px 0; border-top: 1px solid var(--borde); font-size: 0.8rem; }
+.space-alertas li:first-child { border-top: none; }
+.space-alertas .sa-ts { color: var(--sutil); font-size: 0.72rem; }
+.space-alertas .sa-escala { color: var(--azul); font-size: 0.72rem; margin-left: 6px; }

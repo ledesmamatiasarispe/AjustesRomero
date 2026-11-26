@@ -1,0 +1,36 @@
+/* catalogo.css -- puerto de frontend/css/app.css de ajuste_comp_web (la parte que esta pantalla necesita y el
+   núcleo no trae: nucleo.css ya da button/input/table/dialog/chip genéricos, así que esto es solo lo que falta).
+   Usa las variables de nucleo.css, no las de la app vieja (tema oscuro). */
+
+/* Fila flexible de campos de formulario (ancho variable por campo, con estilos inline) -- el "campos" del
+   núcleo es una grilla de columnas mínimas fijas, no sirve para esto. Es compartida por varias pantallas
+   portadas de la misma app vieja (todas tenían este mismo .row en su app.css común), así que puede aparecer
+   definida igual en más de un *.css del módulo -- misma regla, sin conflicto real. */
+.row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.row > div { display: flex; flex-direction: column; gap: 4px; }
+.row label { font-size: 0.78rem; color: var(--sutil); }
+
+/* Cada acción de fila (Editar/Duplicar/Eliminar/etc.) tiene su PROPIA columna de ancho fijo, y el botón
+   SIEMPRE se dibuja ahí (nunca se saca la celda) -- cuando no corresponde para esa fila, el botón queda
+   deshabilitado en vez de ausente, para que el lugar nunca cambie de una fila a otra. */
+th.col-action, td.col-action { width: 1%; white-space: nowrap; text-align: center; }
+td.col-action button { min-width: 78px; }
+
+/* Grilla de composición química (% en peso) del editor de materiales. */
+.cat-grid-elements {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.cat-grid-elements label { display: flex; align-items: center; gap: 6px; font-size: 0.82rem; color: var(--sutil); }
+.cat-grid-elements input { width: 100%; }
+
+/* Subpestañas chicas dentro del editor (ej. "Por defecto" + una por base en el protocolo de inoculación). */
+.inoc-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+.inoc-tab {
+  background: transparent; border: 1px solid var(--borde); border-radius: 6px;
+  padding: 5px 12px; font-size: 0.84rem; color: var(--sutil); cursor: pointer;
+}
+.inoc-tab:hover { color: var(--texto); border-color: var(--azul); }
+.inoc-tab.active { background: var(--azul); color: #fff; border-color: var(--azul); font-weight: 600; }

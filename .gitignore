@@ -1,0 +1,12 @@
+# Datos reales de planta (base, backups, token del agente del espectrómetro): nunca al repo, que es público.
+data/
+
+# Logs del servidor
+*.log
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+build/
+dist/

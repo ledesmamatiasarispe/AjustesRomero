@@ -1,0 +1,74 @@
+/* termico.css -- puerto de frontend/css/termico.css de ajuste_comp_web: lista de archivos a la izquierda
+   (fija; tocar una fila la agrega arriba del gráfico, como "abrir" un documento) + panel de detalle a la
+   derecha (curvas abiertas con su checkbox de mostrar/ocultar y una × roja para cerrarla, gráfico doble-eje,
+   tabs Información/Comparación/Expansión). Usa las variables de nucleo.css en vez de las propias de la app
+   vieja (tema oscuro) -- mismo criterio ya aplicado en el resto de los módulos. */
+.term-shell { display: flex; gap: 16px; align-items: flex-start; }
+
+.term-list-pane { flex: 0 0 360px; }
+.term-table-wrap { max-height: 70vh; overflow-y: auto; }
+.term-table-wrap table { font-size: 0.82rem; }
+#records-rows tr { cursor: pointer; }
+#records-rows tr:hover td { color: var(--texto); }
+#records-rows tr.term-needs-review td { background: var(--ambar-claro); }
+#records-rows tr.term-auto-linked td { background: var(--azul-claro); }
+#records-rows tr.term-selected td { background: var(--gris-claro); border-top: 1px solid var(--azul); border-bottom: 1px solid var(--azul); }
+#records-rows tr.term-selected td:first-child { border-left: 2px solid var(--azul); }
+#records-rows tr.term-selected td:last-child { border-right: 2px solid var(--azul); }
+
+.term-detail-pane { flex: 1 1 auto; min-width: 0; }
+
+.term-curves-box {
+  display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start;
+  margin-bottom: 10px; padding: 8px 10px; background: var(--gris-claro); border-radius: 8px;
+}
+.term-curves-list { display: flex; flex-direction: column; gap: 4px; min-width: 200px; }
+.term-curve-row { display: flex; align-items: center; gap: 6px; font-size: 0.84rem; }
+.term-curve-swatch { width: 12px; height: 12px; border-radius: 2px; flex: 0 0 auto; display: inline-block; border: 1px solid var(--borde); }
+.term-curve-name { flex: 1 1 auto; }
+.term-curve-close {
+  flex: 0 0 auto; background: transparent; border: none; color: var(--rojo);
+  font-weight: 700; font-size: 0.95rem; line-height: 1; padding: 2px 5px;
+  border-radius: 4px; cursor: pointer;
+}
+.term-curve-close:hover { background: var(--rojo); color: #fff; }
+
+.term-carbon-tse { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.term-carbon-tse label { font-size: 0.82rem; color: var(--sutil); }
+.term-carbon-tse select { max-width: 360px; }
+
+.term-chart-wrap {
+  width: 100%; height: 480px; border: 1px solid var(--borde); border-radius: 8px;
+  overflow: hidden; cursor: grab; background: #ffffff;
+}
+.term-chart-wrap:active { cursor: grabbing; }
+.term-chart-wrap canvas { display: block; width: 100%; height: 100%; }
+
+/* Tabs de detalle (Información/Comparación/Expansión) -- propias de este módulo, mismo patrón visual simple
+   que el resto de la app (sin un sistema de tabs compartido todavía). */
+.term-tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--borde); }
+.term-tab {
+  background: none; border: none; border-bottom: 2px solid transparent; padding: 6px 12px;
+  color: var(--sutil); cursor: pointer; font: inherit;
+}
+.term-tab:hover { color: var(--texto); }
+.term-tab.active { color: var(--azul); border-bottom-color: var(--azul); font-weight: 600; }
+.term-tab-panel table { font-size: 0.84rem; }
+.term-summary { white-space: pre-wrap; font-family: inherit; font-size: 0.86rem; }
+
+.term-exp-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; margin-top: 8px; }
+.term-exp-fields label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; color: var(--sutil); }
+
+.term-exp-results { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+.term-exp-result { display: flex; align-items: center; gap: 10px; font-size: 0.9rem; }
+.term-exp-badge {
+  min-width: 70px; text-align: center; padding: 4px 8px; border-radius: 6px;
+  background: var(--gris-claro); font-weight: 700; font-size: 1rem;
+}
+.term-exp-badge.term-ok { background: var(--verde); color: #fff; }
+.term-exp-badge.term-fail { background: var(--rojo); color: #fff; }
+
+@media (max-width: 1000px) {
+  .term-shell { flex-direction: column; }
+  .term-list-pane { flex: 1 1 auto; width: 100%; }
+}

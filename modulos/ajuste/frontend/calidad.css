@@ -1,0 +1,90 @@
+/* calidad.css -- puerto de frontend/css/calidad.css de ajuste_comp_web: formulario a la izquierda + árbol de
+   informes agrupados (base+lote) a la derecha. Usa las variables de nucleo.css (--borde/--sutil/--texto/
+   --azul/--rojo/--ambar/--verde/--gris-claro/--ambar-claro/--azul-claro) en vez de las propias de la app
+   vieja (tema oscuro) -- mismo criterio ya aplicado en el resto del módulo. Repite .row/.pick-list (también
+   en ajuste.css) a propósito -- no hay un común.css compartido entre pantallas, cada archivo se basta a sí
+   mismo. */
+.qc-shell { display: flex; gap: 16px; align-items: flex-start; }
+
+.qc-form-pane { flex: 1 1 55%; min-width: 0; }
+.qc-list-pane { flex: 1 1 45%; min-width: 320px; max-height: 82vh; overflow-y: auto; }
+
+.qc-banner { padding: 8px 12px; border-radius: 8px; margin-bottom: 10px; font-size: 0.85rem; }
+.qc-banner-draft { background: var(--ambar-claro); color: #5a3d00; }
+.qc-banner-mode { background: var(--azul-claro); color: #0d3a63; }
+
+/* Botones agrupados por función (Informe/Imágenes/Access/Grupo/Eliminar): con los 12 botones en una sola
+   fila plana no queda claro cuáles tocan el informe actual, cuáles el grupo entero, y cuáles son la
+   automatización de Access. */
+.qc-form-actions { display: flex; gap: 18px; flex-wrap: wrap; margin-bottom: 12px; }
+.qc-action-group {
+  display: flex; flex-direction: column; gap: 6px;
+  padding-right: 18px; border-right: 1px solid var(--borde);
+}
+.qc-action-group:last-child { padding-right: 0; border-right: none; }
+.qc-action-group-label { color: var(--sutil); font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.02em; }
+.qc-action-group-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+.qc-action-group-danger .qc-action-group-label { color: var(--rojo); }
+
+.qc-fields-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px; margin-bottom: 4px;
+}
+.qc-fields-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; color: var(--sutil); }
+.qc-fields-grid label.qc-span2 { grid-column: span 2; }
+.qc-fields-grid input, .qc-fields-grid select { width: 100%; }
+
+.qc-fieldset { border: 1px solid var(--borde); border-radius: 8px; padding: 10px 12px; margin: 12px 0; }
+.qc-fieldset legend { padding: 0 6px; color: var(--sutil); font-size: 0.82rem; }
+
+.qc-block { display: flex; flex-direction: column; gap: 4px; font-size: 0.8rem; color: var(--sutil); margin: 12px 0; }
+.qc-block textarea { width: 100%; font-family: inherit; resize: vertical; }
+
+.qc-images-wrap table { font-size: 0.82rem; }
+.qc-image-preview {
+  margin-top: 8px; min-height: 140px; display: flex; align-items: center; justify-content: center;
+  background: var(--gris-claro); border-radius: 8px; color: var(--sutil); font-size: 0.85rem; padding: 8px;
+}
+.qc-image-preview img { max-width: 100%; max-height: 260px; border-radius: 6px; }
+
+/* árbol de informes: grupo (base+lote) con hijos por material */
+.qc-tree-group { margin-bottom: 4px; }
+.qc-tree-group-head {
+  display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 6px;
+  cursor: pointer; font-size: 0.86rem;
+}
+.qc-tree-group-head:hover { background: var(--gris-claro); }
+.qc-tree-group-head.active { background: var(--gris-claro); box-shadow: inset 3px 0 0 var(--azul); }
+.qc-tree-group-title { flex: 1 1 auto; font-weight: 600; }
+.qc-tree-group-meta { color: var(--sutil); font-size: 0.78rem; }
+
+.qc-tree-report {
+  display: flex; align-items: center; gap: 8px; padding: 6px 10px 6px 26px; border-radius: 6px;
+  cursor: pointer; font-size: 0.82rem; color: var(--sutil);
+}
+.qc-tree-report:hover { background: var(--gris-claro); color: var(--texto); }
+.qc-tree-report.active { background: var(--gris-claro); color: var(--texto); box-shadow: inset 3px 0 0 var(--azul); }
+.qc-tree-report .qc-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+.qc-dot-complete { background: var(--verde); }
+.qc-dot-incomplete { background: var(--ambar); }
+.qc-dot-draft { background: var(--azul); }
+.qc-lab-complete { color: var(--verde); font-size: 0.76rem; font-weight: 600; white-space: nowrap; }
+.qc-tree-report-name { flex: 1 1 auto; }
+.qc-tree-report-informe { color: var(--sutil); font-size: 0.76rem; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Fila de campos dentro de un modal (selects/inputs lado a lado) y lista scrolleable de checkboxes --
+   mismas reglas que ajuste.css, duplicadas a propósito (ver comentario de cabecera). */
+.row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.row > div, .row > label { display: flex; flex-direction: column; gap: 4px; }
+.pick-list { max-height: 360px; overflow-y: auto; border: 1px solid var(--borde); border-radius: 6px; padding: 8px; }
+.pick-list label { display: flex; align-items: center; gap: 8px; padding: 3px 2px; font-size: 0.86rem; }
+
+@media (max-width: 1000px) {
+  .qc-shell { flex-direction: column; }
+  /* min-width:320px (arriba) es el piso del panel cuando comparte fila con el formulario -- apilado en
+     columna hay que anularlo, si no desborda el ancho de una pantalla de celular angosta. */
+  .qc-list-pane { max-height: none; width: 100%; min-width: 0; }
+  /* Angosto, cada grupo ya cae en su propia línea por el flex-wrap de .qc-form-actions -- la raya vertical
+     entre grupos queda flotando sola al final de cada línea en vez de separar nada. */
+  .qc-action-group { padding-right: 0; border-right: none; }
+}

@@ -1,0 +1,58 @@
+/* informes.css -- puerto de frontend/css/informes.css de ajuste_comp_web: sidebar de 13 paneles + área de
+   contenido que muestra un solo panel a la vez. Usa las variables de nucleo.css en vez de las propias
+   (tema oscuro) de la app vieja. */
+.inf-shell { display: flex; gap: 16px; align-items: flex-start; }
+
+.inf-sidebar {
+  flex: 0 0 240px; border-right: 1px solid var(--borde); padding-right: 14px;
+}
+.inf-section-list { display: flex; flex-direction: column; gap: 2px; }
+.inf-sec-btn {
+  background: transparent; border: 1px solid transparent; text-align: left;
+  padding: 8px 10px; border-radius: 6px; color: var(--sutil); font-size: 0.86rem;
+  width: 100%; cursor: pointer;
+}
+.inf-sec-btn:hover { color: var(--texto); border-color: var(--borde); }
+.inf-sec-btn.active { background: var(--gris-claro); color: var(--texto); font-weight: 600; border-color: var(--azul); }
+
+.inf-content { flex: 1 1 auto; min-width: 0; }
+.inf-content h2 { margin-top: 0; }
+.inf-content h3 { margin: 18px 0 8px; font-size: 0.95rem; color: var(--sutil); }
+
+.inf-section { display: flex; flex-direction: column; gap: 10px; }
+
+.inf-table-wrap { max-height: 46vh; overflow-y: auto; }
+
+.inf-cols-2 { display: grid; grid-template-columns: 1.3fr 1fr; gap: 16px; align-items: start; }
+@media (max-width: 900px) {
+  .inf-cols-2 { grid-template-columns: 1fr; }
+}
+
+.inf-chart-wrap {
+  width: 100%; height: 320px; border: 1px solid var(--borde); border-radius: 8px;
+  background: var(--gris-claro); overflow: hidden;
+}
+.inf-chart-wrap canvas { display: block; width: 100%; height: 100%; }
+.inf-chart-wrap-tall { height: 420px; }
+
+.inf-chart-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 900px) {
+  .inf-chart-cols { grid-template-columns: 1fr; }
+}
+
+.inf-day-label { font-weight: 600; min-width: 200px; text-align: center; display: inline-block; }
+
+/* Celular: la sidebar fija de 240px no deja lugar para el contenido -- se apila arriba. */
+@media (max-width: 700px) {
+  .inf-shell { flex-direction: column; }
+  .inf-sidebar {
+    flex: 0 0 auto; width: 100%; border-right: none; border-bottom: 1px solid var(--borde);
+    padding-right: 0; padding-bottom: 10px; margin-bottom: 10px;
+  }
+}
+
+.inf-summary {
+  white-space: pre-wrap; font-family: inherit; background: var(--gris-claro);
+  border-radius: 8px; padding: 10px 12px; font-size: 0.86rem; color: var(--sutil);
+  margin: 0;
+}

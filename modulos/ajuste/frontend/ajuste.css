@@ -1,0 +1,197 @@
+/* ajuste.css -- puerto de frontend/css/ajuste.css + las reglas compartidas de app.css que esta vista
+   necesita (.toolbar, .grid-elements, .pick-list, .ce-badge) de ajuste_comp_web. Usa las variables de
+   nucleo.css (--borde/--sutil/--azul/--gris-claro) en vez de las propias de la app vieja (tema oscuro) --
+   mismo criterio ya aplicado en dashboard.css/catalogo.css. Repite reglas chicas que también puedan estar en
+   otro *.css del módulo (ej. .row, .grid-elements) a propósito -- no hay un comun.css compartido entre
+   pantallas, cada archivo se basta a sí mismo. */
+
+/* ---------- Barra de herramientas con scroll horizontal (no se reparten los botones en otra fila) ---------- */
+.toolbar {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 14px;
+  flex-wrap: nowrap; overflow-x: auto; padding-bottom: 4px;
+}
+.toolbar > * { flex: 0 0 auto; }
+.toolbar-status { margin-left: auto; white-space: nowrap; padding-left: 12px; }
+
+/* ---------- Grillas de composición (Actual/Estimado/Objetivo) ---------- */
+.grid-elements {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 6px;
+}
+/* flex-direction:row explícito: nucleo.css pone todo <label> en columna (nombre ARRIBA de la casilla), lo que
+   duplicaba el alto de cada elemento de las grillas. Acá el nombre va al costado, como en ajuste_comp_web. */
+.grid-elements label { display: flex; flex-direction: row; align-items: center; gap: 6px; font-size: 0.82rem; color: var(--sutil); }
+.grid-elements input { width: 100%; }
+.comp-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); }
+.comp-grid label { justify-content: flex-start; }
+.comp-grid label span { flex: 0 0 26px; }
+.comp-grid input { width: 70px; text-align: right; }
+/* Nombre del elemento en negrita y coloreado según su efecto sobre la matriz (EFECTO_ELEMENTO en ajuste.js).
+   Con las variables del tema, así se lee igual en claro y en oscuro. */
+.el-nombre { font-weight: 700; cursor: help; }
+.el-ferrita { color: var(--verde); }
+.el-perlita { color: var(--azul); }
+.el-carburo { color: var(--rojo); }
+.el-neutro { color: var(--texto); }
+/* Bajo punto de fusión con riesgo para el crisol en carga fría (RIESGO_CRISOL en ajuste.js): subrayado amarillo */
+.el-riesgo-crisol { text-decoration: underline 3px #f2c200; text-underline-offset: 3px; text-decoration-skip-ink: none; }
+/* Tierras raras (TIERRAS_RARAS en ajuste.js): brillo rosado que late suave, sobre el color de su efecto. */
+.el-tierra-rara { text-shadow: 0 0 4px #ff6ec7, 0 0 8px #ff8fd8; animation: brillo-tierra-rara 2.4s ease-in-out infinite; }
+@keyframes brillo-tierra-rara {
+  0%, 100% { text-shadow: 0 0 3px #ff6ec7, 0 0 6px rgba(255, 143, 216, .6); }
+  50%      { text-shadow: 0 0 6px #ff6ec7, 0 0 14px #ff8fd8, 0 0 20px rgba(255, 110, 199, .5); }
+}
+/* Mg, el nodulizante principal: destello que chisporrotea, como la reacción del Mg en la cuchara. Va como halo
+   ALREDEDOR del nombre (box-shadow + fondo tenue) y no como text-shadow: un brillo pegado a las letras las
+   empastaba y "Mg" no se leía. Azul en claro, blanco-azulado en oscuro. */
+.el-nodulizante { --mg-a: rgba(61, 155, 255, .55); --mg-b: rgba(127, 192, 255, .35);
+  border-radius: 4px; background: rgba(127, 192, 255, .14); text-align: center;
+  animation: destello-mg 1.8s steps(1, end) infinite; }
+html[data-tema="oscuro"] .el-nodulizante { --mg-a: rgba(255, 255, 255, .45); --mg-b: rgba(159, 211, 255, .35);
+  background: rgba(159, 211, 255, .12); }
+@keyframes destello-mg {
+  0%   { box-shadow: 0 0 3px var(--mg-a), 0 0 6px var(--mg-b); }
+  12%  { box-shadow: 0 0 6px var(--mg-a), 0 0 12px var(--mg-b); }
+  20%  { box-shadow: 0 0 2px var(--mg-a), 0 0 4px var(--mg-b); }
+  55%  { box-shadow: 0 0 5px var(--mg-a), 0 0 10px var(--mg-b); }
+  63%  { box-shadow: 0 0 7px var(--mg-a), 0 0 14px var(--mg-b); }
+  72%  { box-shadow: 0 0 3px var(--mg-a), 0 0 6px var(--mg-b); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .el-tierra-rara { animation: none; }
+  .el-nodulizante { animation: none; box-shadow: 0 0 4px var(--mg-a), 0 0 8px var(--mg-b); }
+}
+@media print { .el-tierra-rara, .el-nodulizante { text-shadow: none; box-shadow: none; background: none; animation: none; } }
+.leyenda-elementos { margin-top: 6px; font-size: .75rem; display: flex; flex-wrap: wrap; gap: 2px 12px; }
+.leyenda-elementos > span { white-space: nowrap; }
+/* combo Gris/Nodular (sel-familia-efectos en ajuste.js): en su propio renglón, nombre al costado del select */
+.leyenda-elementos label.familia-efectos { flex: 0 0 100%; flex-direction: row; align-items: center; gap: 6px;
+  font-size: .8rem; color: var(--texto); margin-bottom: 2px; }
+.leyenda-elementos label.familia-efectos select { width: auto; padding: .1rem .3rem; font-size: .8rem; }
+
+.ce-badge {
+  font-weight: 400; font-size: 0.8rem; color: var(--sutil);
+  background: var(--gris-claro); border-radius: 5px; padding: 2px 8px; margin-left: 6px;
+}
+
+/* ---------- Badges del cuadro Espectro (conexión / midiendo) ---------- */
+#spectro-conn-badge.state-connected { color: var(--verde); font-weight: 600; }
+#spectro-conn-badge.state-connecting { color: var(--ambar); }
+#spectro-conn-badge.state-disconnected { color: var(--sutil); }
+#sp-measuring-badge.phase-measuring { color: var(--ambar); font-weight: 600; }
+#sp-measuring-badge.phase-calculating { color: var(--azul); font-weight: 600; }
+
+/* Fila de campos dentro de un modal (selects/inputs lado a lado) */
+.row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.row > div { display: flex; flex-direction: column; gap: 4px; }
+.row label { font-size: 0.78rem; color: var(--sutil); }
+
+/* Lista scrolleable de checkboxes (elegir materiales de ajuste) */
+.pick-list { max-height: 360px; overflow-y: auto; border: 1px solid var(--borde); border-radius: 6px; padding: 8px; }
+.pick-list label { display: flex; align-items: center; gap: 8px; padding: 3px 2px; font-size: 0.86rem; }
+
+#adjust-rows input[type="number"] { width: 110px; text-align: right; }
+#adjust-rows td { vertical-align: middle; }
+#adjust-rows td button[data-clear-kg] { width: 32px; padding: 4px 0; }
+
+/* ---------- Paneles reordenables por drag-and-drop ---------- */
+#panels { display: flex; flex-direction: column; gap: 14px; }
+.panel { margin-bottom: 0; }
+.panel-row { display: flex; align-items: stretch; }
+.panel-row > .panel { min-width: 0; overflow-y: auto; }
+.panel-row.row-capped { overflow: hidden; }
+
+@media (max-width: 1000px) {
+  .panel-row { flex-direction: column; }
+  .panel-row.row-capped { height: auto !important; overflow: visible; }
+  .panel-row > .panel { flex: 1 1 auto !important; height: auto !important; }
+  .resize-handle-v, .resize-handle-h { display: none; }
+}
+
+.panel-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+.panel-head h3 { margin: 0; }
+
+.drag-handle {
+  cursor: grab; user-select: none; border-radius: 5px;
+  padding: 2px 6px; margin: -2px -6px;
+  touch-action: none;
+}
+.drag-handle:hover { background: var(--gris-claro); }
+.drag-handle:active { cursor: grabbing; }
+
+.panel.dragging { opacity: 0.35; }
+.panel.drop-left { box-shadow: inset 4px 0 0 0 var(--azul); }
+.panel.drop-right { box-shadow: inset -4px 0 0 0 var(--azul); }
+.panel.drop-top { box-shadow: inset 0 4px 0 0 var(--azul); }
+.panel.drop-bottom { box-shadow: inset 0 -4px 0 0 var(--azul); }
+
+.resize-handle-v {
+  flex: 0 0 14px; cursor: col-resize; position: relative; align-self: stretch;
+}
+.resize-handle-v::after {
+  content: ""; position: absolute; left: 50%; top: 10%; bottom: 10%; width: 3px;
+  transform: translateX(-50%); background: var(--borde); border-radius: 2px;
+}
+.resize-handle-v:hover::after { background: var(--azul); }
+body.resizing-cols { cursor: col-resize !important; user-select: none; }
+body.resizing-cols .resize-handle-v::after { background: var(--azul); }
+
+.resize-handle-h {
+  flex: 0 0 12px; margin: -7px 0; cursor: row-resize; position: relative; z-index: 2;
+}
+.resize-handle-h::after {
+  content: ""; position: absolute; left: 16px; right: 16px; top: 50%; height: 3px;
+  transform: translateY(-50%); background: var(--borde); border-radius: 2px;
+}
+.resize-handle-h:hover::after { background: var(--azul); }
+body.resizing-rows { cursor: row-resize !important; user-select: none; }
+body.resizing-rows .resize-handle-h::after { background: var(--azul); }
+
+/* ---------- Gráfico C/Si ---------- */
+.graph-wrap {
+  width: 100%; height: 480px; border: 1px solid var(--borde); border-radius: 8px;
+  overflow: hidden; cursor: grab; background: #ffffff;
+  touch-action: none;
+}
+.graph-wrap:active { cursor: grabbing; }
+.graph-wrap canvas { display: block; width: 100%; height: 100%; }
+
+@media (max-width: 600px) {
+  input, select, textarea { font-size: 16px; }
+  button { padding: 9px 14px; }
+}
+
+/* ---------- Densidad compacta (solo esta pantalla) ----------
+   nucleo.css está pensado para formularios con aire: 15px, celdas de .45rem y casillas de .45rem/.55rem. En Ajuste
+   eso sumado fila por fila (las grillas de composición, Materiales, Carbomax, Espectro, Historial) agrandaba las
+   tablas sin necesidad. Se vuelve a la densidad de ajuste_comp_web (14px, tablas .86rem), un poco más ajustada en
+   celdas y casillas. Todo bajo .vista-ajuste (el contenedor que arma VISTAS.ajuste) para no tocar otras pantallas. */
+.vista-ajuste { font-size: 14px; }
+.vista-ajuste .encabezado { margin-bottom: .5rem; }
+.vista-ajuste .tarjeta { padding: .6rem .8rem; margin-bottom: .6rem; }
+.vista-ajuste #panels { gap: 10px; }
+.vista-ajuste .panel-head { margin-bottom: 4px; }
+.vista-ajuste h3 { font-size: .98rem; margin-bottom: .3rem; }
+.vista-ajuste .toolbar { gap: 6px; margin-bottom: 6px; }
+.vista-ajuste table { font-size: .86rem; }
+.vista-ajuste th, .vista-ajuste td { padding: .22rem .5rem; }
+.vista-ajuste th { font-size: .72rem; }
+.vista-ajuste input, .vista-ajuste select, .vista-ajuste textarea { padding: .2rem .4rem; font-size: .88rem; }
+.vista-ajuste button { padding: .28rem .7rem; font-size: .88rem; }
+.vista-ajuste button.chico { padding: .1rem .45rem; font-size: .8rem; }
+.vista-ajuste label { gap: .1rem; font-size: .8rem; }
+.vista-ajuste .grid-elements { gap: 3px 8px; }
+/* Columnas de ancho FIJO (nombre 22px + casilla 78px): con minmax(...,1fr) las columnas se estiraban hasta llenar
+   el panel y quedaba un hueco grande entre la casilla de un elemento y el nombre del de al lado. */
+.vista-ajuste .comp-grid { grid-template-columns: repeat(auto-fill, 102px); column-gap: 12px; justify-content: start; }
+.vista-ajuste .comp-grid label span { flex: 0 0 22px; }
+.vista-ajuste .comp-grid input { width: 78px; }
+/* tablas de datos (Carbomax, Espectro, Historial): fecha y números en un solo renglón, sin partirlos */
+.vista-ajuste td { white-space: nowrap; }
+.vista-ajuste #hist-rows td { white-space: normal; } /* "Materiales"/"Cambios" son textos largos */
+.vista-ajuste #adjust-rows input[type="number"] { width: 96px; }
+.vista-ajuste #adjust-rows td button[data-clear-kg] { width: 28px; padding: 1px 0; }
+/* "<label>Título</label><br><input>" (heredado de la app vieja): nucleo.css ya muestra el label como bloque, así que
+   el <br> agregaba un renglón vacío entre el título y su casilla. */
+.vista-ajuste label + br { display: none; }
+.vista-ajuste label:has(+ br) { margin-bottom: 2px; }

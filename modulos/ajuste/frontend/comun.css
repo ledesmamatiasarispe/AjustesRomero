@@ -1,0 +1,54 @@
+/* comun.css -- override de layout del shell, no de una pantalla puntual (por eso no es parte de ninguna de las
+   otras hojas). nucleo.css limita <main> a max-width:1280px porque la mayoría de las apps sobre appbase son
+   formularios angostos; ésta tiene tablas/grillas/gráficos (catálogo, históricos, térmico) que sí aprovechan
+   una pantalla ancha, como en ajuste_comp_web. Carga después de nucleo.css (ver index.html), así que esta regla
+   con el mismo selector gana por orden de cascada sin tocar nucleo/. */
+main { max-width: none; }
+
+/* ---------- Modo oscuro ----------
+   Se elige en Opciones > Apariencia (settings.js / Ajuste.elegirTema en comun.js), que pone <html data-tema="oscuro">. Vive acá y
+   no en nucleo/ porque las apps no tocan el núcleo: si otra app sobre appbase lo quiere, el lugar es subirlo a
+   appbase (nucleo.css + la tarjeta en Opciones) y traerlo con sincronizar.py.
+
+   Casi todo el CSS (núcleo y módulo) ya pinta con las variables --fondo/--tarjeta/--texto/...: redefinirlas
+   alcanza para la mayoría. Abajo van solo los selectores de nucleo.css que traen un blanco fijo.
+   Todo dentro de "not print": al imprimir siempre sale en claro (papel blanco, texto negro). */
+@media not print {
+  html[data-tema="oscuro"] {
+    color-scheme: dark; /* barras de scroll, selector de fecha, <select> nativos */
+    --fondo: #11161c; --tarjeta: #1a2129; --texto: #e3e8ee; --sutil: #9aa6b2; --borde: #2e3944;
+    --azul: #5c9ee0; --azul-claro: #1c3550; --verde: #66bb6a; --verde-claro: #1d3320;
+    --rojo: #ef6b5b; --rojo-claro: #3d1f1c; --ambar: #f0a73a; --ambar-claro: #3a2a10; --gris-claro: #242d37;
+  }
+  html[data-tema="oscuro"] .barra { background: #0c1520; }
+  html[data-tema="oscuro"] #menu a.activo { background: var(--azul); color: #0b1520; }
+  html[data-tema="oscuro"] button { background: var(--tarjeta); color: var(--texto); }
+  html[data-tema="oscuro"] button.primario { background: var(--azul); color: #0b1520; }
+  html[data-tema="oscuro"] button.peligro { color: var(--rojo); border-color: #7a3a33; }
+  html[data-tema="oscuro"] button.link,
+  html[data-tema="oscuro"] .barra button.ayuda-boton { background: transparent; color: inherit; }
+  html[data-tema="oscuro"] .barra .usuario button.link { color: #cfe0f1; }
+  html[data-tema="oscuro"] input,
+  html[data-tema="oscuro"] select,
+  html[data-tema="oscuro"] textarea { background: #10161d; border-color: #3a4652; }
+  html[data-tema="oscuro"] table { background: var(--tarjeta); }
+  html[data-tema="oscuro"] th { background: #1f2730; }
+  html[data-tema="oscuro"] dialog { background: var(--tarjeta); color: var(--texto); }
+  html[data-tema="oscuro"] dialog::backdrop { background: rgba(0, 0, 0, .6); }
+  /* textos oscuros fijos de esta app sobre fondos -claro */
+  html[data-tema="oscuro"] .qc-banner-draft { color: var(--ambar); }
+  html[data-tema="oscuro"] .qc-banner-mode { color: var(--azul); }
+  /* el fondo de los gráficos lo pintan el canvas y esta caja: ver Ajuste.coloresGrafico() */
+  html[data-tema="oscuro"] .graph-wrap,
+  html[data-tema="oscuro"] .term-chart-wrap { background: var(--tarjeta); }
+}
+
+/* Opciones > Apariencia: nucleo.css pone width:100% a todo <input> menos checkbox; los radio también van chicos */
+#op-tema input[type=radio] { width: auto; }
+#op-tema .botones { gap: 1.5rem; margin-bottom: .4rem; }
+
+/* Opciones > Pestañas: lista con ▲/▼ (settings.js) */
+#op-pestanas-lista { list-style: none; padding: 0; margin: 0 0 .8rem; max-width: 420px; }
+#op-pestanas-lista li { display: flex; align-items: center; gap: .4rem; padding: .3rem .5rem; border: 1px solid var(--borde);
+  border-radius: 6px; margin-bottom: .3rem; background: var(--tarjeta); }
+#op-pestanas-lista .op-pestana-nombre { flex: 1; }

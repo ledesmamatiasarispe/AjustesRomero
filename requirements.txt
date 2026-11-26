@@ -3,3 +3,9 @@ uvicorn[standard]
 python-multipart
 certifi
 requests
+# módulo ajuste
+pyserial                                  # Carbomax por RS485/Modbus (carbomax_modbus.py)
+numpy                                     # cálculo lineal (calc.py) y análisis de imagen
+opencv-python                             # cámara / análisis de micrografías (quality_analyzer.py)
+openpyxl                                  # importar planillas de análisis térmico (rutas/termico.py)
+pywin32; sys_platform == "win32"          # Fundiciones: automatiza el Access por COM (rutas/fundiciones.py)

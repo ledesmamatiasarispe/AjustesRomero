@@ -1,3 +1,11 @@
+# tab_informes.py
+# Pestaña Estadisticas: dashboard de solo lectura con tablas + graficos
+# matplotlib embebidos, uno por panel (Resumen, Materiales, Objetivos,
+# Elementos, CE, Produccion por fecha, Duracion de sesiones, Cucharas,
+# Informes de calidad, Inoculantes, Linea de tiempo diaria). Todo se
+# recalcula desde cero en cada refresh() recorriendo el historial completo
+# — no hay cache incremental, asi que con historiales muy grandes esta
+# pantalla puede tardar en refrescar.
 import tkinter as tk
 from tkinter import ttk
 from datetime import datetime
@@ -21,6 +29,11 @@ from storage import load_history, load_ladles_state, load_quality_reports, prune
 from utils import to_float, fmt
 from widgets import ScrollFrame
 
+# Equivalencias aproximadas para reportar "kg de hierro colado" a partir
+# de conteos que la app SI tiene con precision (cucharas, sesiones/coladas)
+# pero sin pesada real de cada una. Son estimaciones de planta, no medidas
+# — los paneles "mensual por material"/"mensual por hornos" aclaran esta
+# equivalencia en su resumen para que no se lea como un dato exacto.
 LADLE_KG_PER_COUNT = 50.0
 FURNACE_KG_PER_SESSION = 1000.0
 
@@ -66,7 +79,7 @@ class TabInformes(ttk.Frame):
         self.bind("<<CatalogUpdated>>", lambda e: self.refresh())
         self.refresh()
 
-    def _add_sidebar_toggle(self, key, label, default=True):
+    def _add_sidebar_toggle(self, key, label):
         self._section_items.append((key, label))
 
     def _build_sections(self):
@@ -426,6 +439,13 @@ class TabInformes(ttk.Frame):
             self.section_frames[key].pack(fill="both", expand=True)
 
     def refresh(self):
+        # Todos los _fill_* de aca en adelante siguen el mismo patron:
+        # recorren self.hist/self.ladles/self.quality_reports una vez,
+        # arman un dict de acumulados (por material/formula/fecha/etc.),
+        # y pintan una tabla + un grafico matplotlib a partir de ese dict.
+        # No hay estado compartido entre secciones — cada una recalcula
+        # desde cero en cada refresh(), asi que agregar/quitar un panel es
+        # tan simple como agregar/quitar su propio _fill_* de esta lista.
         self.hist = load_history()
         prune_ladles_history_for_sessions(self.hist)
         self.ladles = load_ladles_state()
@@ -530,6 +550,10 @@ class TabInformes(ttk.Frame):
     def _session_target_material(self, session):
         text = str(session.get("material_objetivo", "") or session.get("objetivo", "") or "").strip()
         if not text:
+            # Sesiones muy viejas (previas a guardar objetivo/material como
+            # campo propio) a veces codificaban el material dentro del
+            # texto libre de "colada" (ej. "...mat FC200..."); se intenta
+            # rescatarlo de ahi como ultimo recurso antes de darlo por perdido.
             colada = str(session.get("colada", "") or "")
             match = re.search(r"\bmat\s*([A-Za-z0-9_-]+)", colada, flags=re.IGNORECASE)
             if match:
@@ -849,6 +873,10 @@ class TabInformes(ttk.Frame):
         return f"{secs}s"
 
     def _ladle_records(self):
+        # Mismo formato dual legacy-lista/dict-actual que tab_historicos.py
+        # _ladle_entry_for_session (ver ese comentario para el detalle);
+        # aca se normalizan ambos a la misma forma de "record" para que el
+        # resto de los reportes no tengan que preocuparse por cual es cual.
         history = self.ladles.get("history_by_colada", {}) if isinstance(self.ladles, dict) else {}
         if not isinstance(history, dict):
             return []
@@ -1085,6 +1113,11 @@ class TabInformes(ttk.Frame):
         )
 
     def _report_family(self, report):
+        # Informes viejos (previos a que "Aleación final" guardara su
+        # propia family Gris/Nodular en calidad_meta, ver tab_catalogo.py)
+        # no tienen el campo "family" explicito — se infiere por indicios
+        # indirectos: si tiene datos de nodularizacion/conteo de nodulos es
+        # Nodular, si tiene morfologia/tipo de grafito laminar es Gris.
         explicit = self._text_field(report, "family")
         if explicit:
             return explicit
@@ -1343,13 +1376,31 @@ class TabInformes(ttk.Frame):
             default_entries = _normalize_entries(resolve_inoc_protocol(inoc_meta))
             if default_entries and nombre_final:
                 final_inoc_map[nombre_final] = default_entries
-            # Protocolos por base
+            # Protocolos por base: se guardan bajo la clave compuesta
+            # "NombreFinal|Base" ademas de la clave simple "NombreFinal"
+            # (protocolo por defecto). _inoc_entries_for de mas abajo es
+            # quien resuelve cual de las dos corresponde para un registro
+            # de cucharas dado, usando su material_objetivo como base.
             por_base = inoc_meta.get("por_base", {}) if isinstance(inoc_meta, dict) else {}
             if isinstance(por_base, dict):
                 for base, raw in por_base.items():
                     entries = _normalize_entries(raw if isinstance(raw, list) else [])
                     if entries:
                         final_inoc_map[f"{nombre_final}|{base}"] = entries
+
+        def _inoc_entries_for(mat, base):
+            """Protocolo aplicable a un material_final para una base dada:
+            el especifico de esa base si existe (clave "mat|base"), si no
+            el por defecto (clave "mat"). "base" es el material_objetivo
+            de la sesion/registro de cucharas — coincide con el concepto
+            de "base" de calidad_meta (ver host_api._ladle_material_options,
+            que resuelve los material_final validos de la misma forma)."""
+            base = str(base or "").strip()
+            if base:
+                specific = final_inoc_map.get(f"{mat}|{base}")
+                if specific is not None:
+                    return specific
+            return final_inoc_map.get(mat, [])
 
         # Sub-caja 1: configuración
         self._clear_tree(self.tree_inoc_config)
@@ -1378,10 +1429,11 @@ class TabInformes(ttk.Frame):
         if records:
             recent = max(records, key=lambda r: r.get("updated_at", "") or "")
             self.lbl_inoc_recent_colada.config(text=f"Colada: {recent['colada']}")
+            recent_base = recent.get("material_objetivo", "")
             acc = {}
             for mat, qty in recent.get("counts", {}).items():
                 qty = max(0, int(qty or 0))
-                for e in final_inoc_map.get(mat, []):
+                for e in _inoc_entries_for(mat, recent_base):
                     inoc = e["nombre"]
                     dosis = qty * e["cantidad_dosis"]
                     g = inoc_info.get(inoc, {}).get("gramos", 0)
@@ -1404,9 +1456,10 @@ class TabInformes(ttk.Frame):
         self._clear_tree(self.tree_inoc_hist)
         hist_acc = {}
         for record in records:
+            record_base = record.get("material_objetivo", "")
             for mat, qty in record.get("counts", {}).items():
                 qty = max(0, int(qty or 0))
-                for e in final_inoc_map.get(mat, []):
+                for e in _inoc_entries_for(mat, record_base):
                     inoc = e["nombre"]
                     dosis = qty * e["cantidad_dosis"]
                     g = inoc_info.get(inoc, {}).get("gramos", 0)
@@ -1434,9 +1487,10 @@ class TabInformes(ttk.Frame):
             month = updated[:7]
             if len(month) < 7:
                 continue
+            record_base = record.get("material_objetivo", "")
             for mat, qty in record.get("counts", {}).items():
                 qty = max(0, int(qty or 0))
-                for e in final_inoc_map.get(mat, []):
+                for e in _inoc_entries_for(mat, record_base):
                     inoc = e["nombre"]
                     dosis = qty * e["cantidad_dosis"]
                     g = inoc_info.get(inoc, {}).get("gramos", 0)
@@ -1519,6 +1573,10 @@ class TabInformes(ttk.Frame):
 
     # ── Línea de tiempo diaria ────────────────────────────────────────────────
 
+    # Ventana horaria fija del grafico de linea de tiempo: 05:00 a 18:00,
+    # el turno tipico de planta. Los timestamps se clipean a esta ventana
+    # (ver _draw_timeline_chart) — una sesion que arranca antes de las 5 o
+    # sigue despues de las 18 se corta visualmente en el borde.
     _TL_WIN_START = 5 * 60    # 300 min desde medianoche
     _TL_WIN_END   = 18 * 60   # 1080 min
 
@@ -1605,6 +1663,16 @@ class TabInformes(ttk.Frame):
             return
 
         # ── Precalcular start/end corregidos ──────────────────────────────────
+        # "corrected" existe porque started_at/ended_at de la sesion no
+        # siempre reflejan la operacion real (el operario puede arrancar la
+        # sesion en la app bastante antes o despues de colar de verdad). En
+        # modo corregido se ignoran esos timestamps y se reconstruye la
+        # linea de tiempo de forma puramente secuencial: cada colada
+        # "empieza" justo cuando termino la anterior (prev_end, arrancando
+        # de FIRST_START), y "termina" en el momento de su ultima cuchara
+        # cargada en Pie de Horno (la señal mas confiable de que esa colada
+        # realmente se completo) — o si no hay cucharas, en su ultimo
+        # ajuste, o si tampoco hay eso, 90 min despues de su inicio.
         FIRST_START = 5 * 60 + 30   # 5:30 am en minutos desde medianoche
         corrected_starts = {}   # row_idx → minuto inicio corregido
         corrected_ends   = {}   # row_idx → minuto fin corregido

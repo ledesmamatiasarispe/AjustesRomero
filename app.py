@@ -1,13 +1,19 @@
 # app.py
+# Punto de entrada de la app de escritorio: crea la ventana Tk raiz,
+# instancia todas las pestañas y las cablea entre si (referencias cruzadas
+# tipo set_thermal_source/set_adjust_target, y eventos virtuales como
+# <<CatalogUpdated>>/<<HistoryUpdated>> para que cada pestaña se entere de
+# cambios en otra sin acoplarse directamente), arranca los servidores HTTP
+# embebidos (host_api para Pie de Horno, quality_api para la camara de
+# calidad), y guarda/restaura el estado de la UI (geometria de ventana,
+# colores, pestaña seleccionada, estado de Ajuste) en un JSON en el home
+# del usuario.
 import os
 import sys
 import json
 import subprocess
 import threading
 import tkinter as tk
-import urllib.error
-import urllib.request
-from datetime import datetime
 from tkinter import ttk, messagebox, colorchooser
 
 from tab_catalogo import TabCatalogo
@@ -256,6 +262,12 @@ class App(tk.Frame):
         self.pack(fill="both", expand=True)
         self._closing = False
         self._dev_reload_job = None
+        # Hot-reload para desarrollo: si se corre bajo dev_launcher.py, esa
+        # variable de entorno apunta a un archivo "centinela" cuyo mtime
+        # dev_launcher va tocando; cuando cambia, esta misma app se cierra
+        # sola (_check_dev_reload -> _on_close) y dev_launcher la vuelve a
+        # levantar con el codigo nuevo. Sin la variable seteada (uso normal,
+        # produccion) este mecanismo queda inerte.
         self._dev_reload_file = os.environ.get("AJUSTE_COMP_DEV_RELOAD_FILE", "").strip()
         self._dev_reload_stamp = self._dev_reload_file_mtime()
         self._bg_color_name = DEFAULT_BG_COLOR
@@ -302,6 +314,11 @@ class App(tk.Frame):
         try:
             from host_api import set_carbomax_action_callback
             set_carbomax_action_callback(self.tab_ajuste._on_web_carbomax_action)
+        except Exception:
+            pass
+        try:
+            from host_api import set_spectro_action_callback
+            set_spectro_action_callback(self.tab_ajuste._on_web_spectro_action)
         except Exception:
             pass
         self.tab_pie_horno = TabPieHorno(nb)
@@ -940,6 +957,11 @@ class App(tk.Frame):
             print(f"[QUALITY API] No se pudo iniciar: {ex}")
 
     def _apply_host_api_port(self, port, save=True):
+        # Solo reinicia host_api (el servidor de Pie de Horno). quality_api
+        # (camara de calidad) corre en su propio puerto fijo (50501,
+        # QualityAPIServer sin parametro de puerto) y no tiene control en
+        # esta pantalla de Opciones — asimetria intencional, no un olvido:
+        # solo host_api expone un puerto configurable en la UI.
         try:
             value = int(port)
         except (ValueError, TypeError):
@@ -1004,7 +1026,7 @@ class App(tk.Frame):
         threading.Thread(target=self._run_update_check, daemon=True, name="update-check").start()
 
     def _run_update_check(self):
-        import shutil, subprocess
+        import shutil
         from pathlib import Path
         if not shutil.which("git"):
             return
@@ -1023,6 +1045,12 @@ class App(tk.Frame):
             remote = r.stdout.split()[0]
             if not (local and remote) or local == remote:
                 return
+            # No alcanza con "local != remote" para decidir que hay una
+            # actualizacion: si el commit remoto ya esta en el historial
+            # local (por ejemplo, esta maquina esta ADELANTADA con commits
+            # propios sin pushear), no hay nada que actualizar. Se busca el
+            # hash remoto dentro del log local completo para distinguir
+            # "estamos atrasados" de "estamos adelantados/en otra rama".
             local_log = subprocess.run(
                 ["git", "-C", str(app_dir), "log", "--format=%H"],
                 capture_output=True, text=True, timeout=10
@@ -1048,7 +1076,6 @@ class App(tk.Frame):
             messagebox.showerror("Error", f"No se encontró el updater en:\n{updater}")
             return
         try:
-            import subprocess
             subprocess.Popen(
                 [sys.executable, str(updater), "--relaunch-app"],
                 start_new_session=True,

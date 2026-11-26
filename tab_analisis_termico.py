@@ -1,3 +1,19 @@
+# tab_analisis_termico.py
+#
+# Pestaña Análisis Térmico: visualiza curvas de enfriamiento (Carbono y
+# Microestructura) leidas de dos fuentes distintas — archivos Excel/CSV
+# exportados manualmente a THERMAL_ANALYSIS_DIR, o descargados en vivo del
+# equipo Carbomax por HTTP (device_sync.py tiene los parsers HTTP/CSV de
+# bajo nivel reutilizados aca; ver _fetch_device_records). Cada analisis
+# puede "vincularse" (auto o manual) a una sesion de Historicos por
+# cercania de horario (ver _auto_set_thermal_mode / THERMAL_MATCH_MAX_DELTA).
+#
+# Esta pestaña tambien comparte el toggle "Auto Ajuste" con TabAjuste: el
+# botón de aca simplemente llama a TabAjuste.set_carbomax_auto() (la
+# pestaña Ajuste es la dueña real del estado/ciclo), y run_download_and_
+# link_cycle_async es el metodo que ese ciclo automatico invoca para
+# descargar+vincular en segundo plano sin robarle el foco/seleccion al
+# operario (a diferencia del boton manual "Descargar dispositivo").
 import csv
 import hashlib
 import http.client
@@ -21,7 +37,6 @@ from storage import (attach_thermal_analysis, set_thermal_analysis_field, load_h
                      load_thermal_device_records, save_thermal_device_records,
                      load_thermal_ips, save_thermal_ips, load_inoc_momentos)
 from widgets import ScrollFrame
-from device_sync import DeviceSyncService, WatchService
 
 THERMAL_ANALYSIS_DIR = Path(r"C:\Users\LABOR01\Desktop\microestructura anialisis carbo2\exels")
 THERMAL_EXTENSIONS = {".xlsx", ".xls", ".csv"}
@@ -32,6 +47,14 @@ THERMAL_DEVICE_RETRIES = 3
 THERMAL_AUTO_POLL_TIMEOUT = 8
 THERMAL_AUTO_POLL_RETRIES = 1
 THERMAL_MATCH_MAX_DELTA = timedelta(hours=6)
+# OJO: las variantes con "Ã", "Ã§Ã£", "Ãƒâ€š", etc. en los alias de abajo NO
+# son errores de tipeo — son las formas mojibake reales que aparecen en
+# archivos exportados por el equipo Carbomax (su software esta en
+# portugues: "Observação", "Término") cuando Excel/Windows los abre o
+# reexporta con una codificacion distinta a la original (UTF-8 leido como
+# Latin-1, a veces dos veces seguidas). Se listan varias variantes
+# corruptas a proposito para poder reconocer la columna igual venga el
+# archivo como venga. No "arreglar" estos strings a la forma correcta.
 THERMAL_INFO_ROWS = (
     ("ID", ("ID",)),
     ("IP", ("IP",)),
@@ -147,7 +170,7 @@ class TabAnalisisTermico(ttk.Frame):
         self._micro_tse_value = None
         self._left_pane_visible = True
         self._ajuste_target = None
-        self._device_poll_running = False
+        self._device_download_running = False
         self._selection_after_job = None
 
         self.folder_var = tk.StringVar(value=str(self.folder))
@@ -158,28 +181,9 @@ class TabAnalisisTermico(ttk.Frame):
         self.toggle_list_var = tk.StringVar(value="Ocultar lista")
         self.var_carbon_tse = tk.StringVar()
 
-        # Servicio de sincronización automática en background
-        self._sync_service = DeviceSyncService(
-            ip=DEFAULT_THERMAL_DEVICE_IP,
-            on_done=self._on_sync_done,
-            on_log=self._log_backend,
-        )
-
-        # Servicio de vigilancia para auto ajuste
-        self._watch_service = WatchService(
-            ip=DEFAULT_THERMAL_DEVICE_IP,
-            on_carbon=self._on_watch_carbon,
-            on_status=self._log_backend,
-            interval=20,
-        )
-        self._auto_ajuste_var = tk.BooleanVar(value=False)
-
         self._build_ui()
         self.bind("<<HistoryUpdated>>", lambda e: self.refresh())
         self.refresh()
-
-        # Arranca sync al abrir la pestaña (no bloquea la UI)
-        self._sync_service.start_once()
 
     def _log_backend(self, message):
         top = self.winfo_toplevel() if hasattr(self, "winfo_toplevel") else None
@@ -188,62 +192,23 @@ class TabAnalisisTermico(ttk.Frame):
         stamp = datetime.now().strftime("%H:%M:%S")
         print(f"[{stamp}][AnalisisTermico] {message}", flush=True)
 
-    def _on_sync_done(self, result):
-        """Callback del DeviceSyncService — corre en el thread de sync, usa after() para la UI."""
-        if not result.get("ok"):
-            self._log_backend(f"[sync] Error: {result.get('error','?')}")
+    # ---------- auto ajuste (boton compartido con TabAjuste.carbomax_auto) ----------
+
+    def _toggle_carbomax_auto_button(self):
+        if self._ajuste_target is None:
+            messagebox.showwarning(
+                "Auto Ajuste",
+                "La pestaña Ajuste no está disponible.\nAbrí la pestaña Ajuste primero.",
+                parent=self,
+            )
             return
-        new = result.get("new", 0)
-        total = result.get("total", 0)
-        self._log_backend(f"[sync] Completado — nuevos={new} total={total}")
-        if new > 0:
-            # Recargar registros desde DB y refrescar la lista en el hilo principal
-            def _apply():
-                try:
-                    self._device_records = self._normalize_device_records(load_thermal_device_records())
-                    self.refresh()
-                    self.status_var.set(
-                        f"{len(self._records)} archivo(s) detectado(s). "
-                        f"Sync automático: {new} nuevo(s) descargado(s)."
-                    )
-                except Exception:
-                    pass
-            try:
-                self.after(0, _apply)
-            except Exception:
-                pass
+        self._ajuste_target.set_carbomax_auto(not self._ajuste_target.carbomax_auto.get())
 
-    # ---------- auto ajuste ----------
-
-    def _toggle_auto_ajuste(self):
-        if self._watch_service.is_running:
-            self._watch_service.stop()
-            self._auto_ajuste_var.set(False)
-            self.status_var.set("Auto Ajuste desactivado.")
-        else:
-            if self._ajuste_target is None:
-                import tkinter.messagebox as _mb
-                _mb.showwarning(
-                    "Auto Ajuste",
-                    "La pestaña Ajuste no está disponible.\nAbrí la pestaña Ajuste primero.",
-                    parent=self,
-                )
-                return
-            # Actualizar IP desde el campo antes de arrancar
-            ip = str(self.device_ip_var.get() or "").strip() or DEFAULT_THERMAL_DEVICE_IP
-            self._watch_service.ip = ip
-            self._save_ip_to_history(ip)
-            # Sembrar IDs actuales para no disparar en registros viejos
-            self._watch_service.reset_seed()
-            self._watch_service.start()
-            self._auto_ajuste_var.set(True)
-            self.status_var.set(f"● Auto Ajuste activo — vigilando {ip}")
-        self._update_auto_ajuste_btn()
-
-    def _update_auto_ajuste_btn(self):
+    def _repaint_carbomax_auto_btn(self):
         if not hasattr(self, "_auto_ajuste_btn"):
             return
-        if self._watch_service.is_running:
+        active = bool(self._ajuste_target is not None and self._ajuste_target.carbomax_auto.get())
+        if active:
             self._auto_ajuste_btn.config(
                 text="● Auto Ajuste ON",
                 background="#2ecc71",
@@ -260,42 +225,41 @@ class TabAnalisisTermico(ttk.Frame):
                 activeforeground="#1a1a1a",
             )
 
-    def _on_watch_carbon(self, info):
-        """
-        Callback del WatchService — corre en el thread de vigilancia.
-        Usa after(0, ...) para interactuar con la UI.
-        """
-        carbon  = info.get("C %")
-        silicon = info.get("Si %")
-        label   = info.get("_label", "Carbomax auto")
+    def run_download_and_link_cycle_async(self, callback, timeout=None):
+        """Descarga del dispositivo + persiste + vincula (Carbono y Microestructura), en background.
+        Reusa exactamente el mismo camino que el boton 'Descargar dispositivo', silenciado."""
+        if self._device_download_running:
+            self.status_var.set("Ya hay una descarga en curso, esperando a que termine...")
+            return False
+        ip = str(self.device_ip_var.get() or "").strip() or DEFAULT_THERMAL_DEVICE_IP
+        self._device_download_running = True
+        worker = threading.Thread(
+            target=self._run_download_and_link_cycle_worker,
+            args=(ip, callback),
+            daemon=True,
+        )
+        worker.start()
+        return True
 
-        if carbon is None or silicon is None:
+    def _run_download_and_link_cycle_worker(self, ip, callback):
+        try:
+            records = self._fetch_device_records(ip)
+        except Exception as ex:
+            self.after(0, lambda err=ex: self._finish_download_and_link_cycle(callback, None, err))
             return
+        self.after(0, lambda: self._finish_download_and_link_cycle(callback, records, None))
 
-        def _apply():
-            if self._ajuste_target is None:
-                return
+    def _finish_download_and_link_cycle(self, callback, records, error):
+        self._device_download_running = False
+        if error is not None:
             try:
-                self._ajuste_target.load_carbon_silicon(
-                    carbon, silicon, source_label=label, force_estimate=True
-                )
-            except Exception as ex:
-                self._log_backend(f"[watch] Error cargando C/Si en Ajuste: {ex}")
-                return
-
-            # Cambiar a la pestaña Ajuste automáticamente
-            try:
-                top = self.winfo_toplevel()
-                top.nb.select(top.tab_ajuste)
+                callback(False, 0, error)
             except Exception:
                 pass
-
-            self.status_var.set(
-                f"● Auto Ajuste — C={carbon:.2f}%  Si={silicon:.2f}%  [{label}]"
-            )
-
+            return
+        auto_linked_total = self._apply_downloaded_records(records, select_first_row=False)
         try:
-            self.after(0, _apply)
+            callback(True, auto_linked_total, None)
         except Exception:
             pass
 
@@ -312,16 +276,16 @@ class TabAnalisisTermico(ttk.Frame):
         ttk.Button(top, text="Setear Microestructura", command=lambda: self._auto_set_thermal_mode("Microestructura")).pack(side="right", padx=(0, 6))
         ttk.Button(top, text="Setear Carbono", command=lambda: self._auto_set_thermal_mode("Carbono")).pack(side="right", padx=(0, 6))
         ttk.Button(top, text="Eliminar", command=self._delete_selected).pack(side="right", padx=(0, 6))
-        # Botón Auto Ajuste (toggle): verde cuando está activo
+        # Botón Auto Ajuste (toggle): verde cuando está activo, compartido con Ajuste
         self._auto_ajuste_btn = tk.Button(
             top,
             text="Auto Ajuste",
-            command=self._toggle_auto_ajuste,
+            command=self._toggle_carbomax_auto_button,
             relief="raised",
             bd=1,
         )
         self._auto_ajuste_btn.pack(side="right", padx=(0, 6))
-        self._update_auto_ajuste_btn()
+        self._repaint_carbomax_auto_btn()
         ttk.Combobox(
             top,
             textvariable=self.mode_var,
@@ -374,6 +338,7 @@ class TabAnalisisTermico(ttk.Frame):
         self.files_tree.column("etapa", width=100, anchor="w")
         self.files_tree.configure(displaycolumns=("fecha", "colada", "etapa"))
         self.files_tree.tag_configure("needs_review", background="#fffde7", foreground="#000000")
+        self.files_tree.tag_configure("auto_linked", background="#1a237e", foreground="#ffffff")
         self.files_tree.pack(side="left", fill="both", expand=True)
         self.files_tree.bind("<<TreeviewSelect>>", lambda e: self._on_select_files())
 
@@ -542,13 +507,15 @@ class TabAnalisisTermico(ttk.Frame):
                 else:
                     etapa = str(entry.get("etapa_muestra", "") or "").strip()
                     etapa_display = etapa if etapa else "(pendiente)"
-                info = links.setdefault(source_file, {"coladas": [], "etapas": []})
+                info = links.setdefault(source_file, {"coladas": [], "etapas": [], "auto_linked": False})
                 if colada not in info["coladas"]:
                     info["coladas"].append(colada)
                 if etapa_display not in info["etapas"]:
                     info["etapas"].append(etapa_display)
+                if entry.get("auto_linked"):
+                    info["auto_linked"] = True
         return {
-            path: (", ".join(info["coladas"]), ", ".join(info["etapas"]))
+            path: (", ".join(info["coladas"]), ", ".join(info["etapas"]), info["auto_linked"])
             for path, info in links.items()
         }
 
@@ -609,8 +576,13 @@ class TabAnalisisTermico(ttk.Frame):
             if iid in seen_iids:
                 continue
             seen_iids.add(iid)
-            colada_display, etapa_display = self._history_link_by_path.get(iid, ("", ""))
-            tags = ("needs_review",) if self._thermal_needs_review(iid, item, history) else ()
+            colada_display, etapa_display, auto_linked = self._history_link_by_path.get(iid, ("", "", False))
+            if self._thermal_needs_review(iid, item, history):
+                tags = ("needs_review",)
+            elif auto_linked:
+                tags = ("auto_linked",)
+            else:
+                tags = ()
             self.files_tree.insert(
                 "", "end", iid=iid,
                 values=(item["name"], self._record_ip(item), item["modified"], colada_display, etapa_display),
@@ -702,51 +674,6 @@ class TabAnalisisTermico(ttk.Frame):
         worker = threading.Thread(target=self._download_from_device_worker, args=(ip,), daemon=True)
         worker.start()
 
-    def poll_latest_carbon_async(self, session_started_at, consumed_paths, callback, timeout=None, after_ts=""):
-        if self._device_poll_running:
-            return False
-        ip = str(self.device_ip_var.get() or "").strip()
-        if not ip:
-            return False
-        self._device_poll_running = True
-        worker = threading.Thread(
-            target=self._poll_latest_carbon_worker,
-            args=(ip, session_started_at, consumed_paths, callback, timeout, after_ts),
-            daemon=True,
-        )
-        worker.start()
-        return True
-
-    def _poll_latest_carbon_worker(self, ip, session_started_at, consumed_paths, callback, timeout=None, after_ts=""):
-        try:
-            try:
-                records = self._fetch_latest_carbon_records(ip, session_started_at, consumed_paths, timeout=timeout, after_ts=after_ts)
-                source = "device"
-            except Exception as ex:
-                self._log_backend(f"Poll Carbono: consulta directa fallo; usando cache de Analisis termico: {ex}")
-                cached = self._normalize_device_records(load_thermal_device_records())
-                if not cached:
-                    cached = list(self._device_records)
-                records = cached
-                source = "cache"
-            latest = self._pick_latest_carbon_record(records, session_started_at, consumed_paths)
-            def finish_ok():
-                self._device_records = self._normalize_device_records(records)
-                if source == "device":
-                    save_thermal_device_records(self._device_records)
-                try:
-                    callback(latest, None)
-                except Exception:
-                    pass
-            self.after(0, finish_ok)
-        except Exception as ex:
-            self.after(0, lambda err=ex: callback(None, err))
-        finally:
-            self.after(0, self._clear_device_poll_flag)
-
-    def _clear_device_poll_flag(self):
-        self._device_poll_running = False
-
     def _download_from_device_worker(self, ip):
         try:
             self._log_backend(f"Worker dispositivo activo para {ip}")
@@ -763,12 +690,20 @@ class TabAnalisisTermico(ttk.Frame):
         self.selection_var.set("Fallo la consulta al dispositivo.")
         messagebox.showerror("Analisis termico", f"No se pudo consultar el dispositivo {ip}.\n\n{ex}", parent=self)
 
-    def _finish_download_device_ok(self, ip, records):
-        self._log_backend(f"Persistiendo {len(records)} analisis descargados desde {ip}")
+    def _apply_downloaded_records(self, records, select_first_row=True):
+        """Persiste + refresca + vincula (Carbono y Microestructura) los registros descargados.
+        Compartido por el boton manual 'Descargar dispositivo' y el ciclo automatico de
+        TabAjuste.carbomax_auto. Devuelve la cantidad de curvas auto-vinculadas."""
         self._device_records = self._normalize_device_records(records)
         save_thermal_device_records(self._device_records)
         self.refresh()
+
+        auto_linked_total = 0
         if records:
+            auto_linked_total += self._auto_set_thermal_mode("Carbono", silent=True)
+            auto_linked_total += self._auto_set_thermal_mode("Microestructura", silent=True)
+
+        if select_first_row and records:
             visible_records = self._filtered_device_records()
             if visible_records:
                 first_path = visible_records[0]["path"]
@@ -777,135 +712,40 @@ class TabAnalisisTermico(ttk.Frame):
                 self.files_tree.see(first_path)
             self._selected_paths = []
             self._clear_detail()
+
+        return auto_linked_total
+
+    def _finish_download_device_ok(self, ip, records):
+        self._log_backend(f"Persistiendo {len(records)} analisis descargados desde {ip}")
+        auto_linked_total = self._apply_downloaded_records(records, select_first_row=True)
+
+        if records:
             self.selection_var.set("Analisis descargados del equipo. Elige uno o mas desde la lista.")
+            auto_text = (
+                f" {auto_linked_total} vinculado(s) automaticamente a su colada (marcados en azul oscuro)."
+                if auto_linked_total else ""
+            )
             self.status_var.set(
                 f"{len(self._records)} archivo(s)/curva(s) detectado(s). "
                 f"{len(records)} analisis termico(s) descargado(s) y guardados en esta PC desde {ip}."
+                f"{auto_text}"
             )
         else:
             self.selection_var.set("No se encontraron analisis termicos en el dispositivo.")
             self.status_var.set(f"El equipo {ip} respondio, pero no devolvio analisis termicos utilizables.")
 
-    def _fetch_latest_carbon_records(self, ip, session_started_at=None, consumed_paths=None, timeout=None, after_ts=""):
-        cached = self._normalize_device_records(load_thermal_device_records() or self._device_records)
-        started_dt = self._parse_session_datetime(session_started_at)
-        consumed = set()
-        if isinstance(consumed_paths, (list, tuple, set)):
-            consumed = {str(path).strip() for path in consumed_paths if str(path).strip()}
-        elif consumed_paths:
-            consumed = {str(consumed_paths).strip()}
-
-        _timeout = timeout if timeout is not None else THERMAL_AUTO_POLL_TIMEOUT
-        index_json = self._fetch_index_json(ip, _timeout)
-        all_rows = self._extract_json_rows(index_json)
-
-        # Filtrar por timestamp: solo registros posteriores al último procesado.
-        # Esto es correcto con buffers circulares (el ID puede reiniciarse, el tiempo no).
-        after_dt = self._parse_device_info_datetime(after_ts) if after_ts else None
-        if after_dt:
-            filtered = []
-            for row in all_rows:
-                row_dt = self._parse_device_info_datetime(
-                    self._format_device_index_datetime(row.get("date"))
-                )
-                if row_dt and row_dt > after_dt:
-                    filtered.append(row)
-            all_rows = filtered
-
-        index_rows = sorted(all_rows, key=self._index_row_sort_datetime, reverse=True)
-        carbon_rows = [
-            row for row in index_rows
-            if "CARB" in str(row.get("mode", "") or "").upper()
-        ]
-        carbon_rows.sort(key=self._index_row_sort_datetime, reverse=True)
-
-        existing_by_path = {}
-        existing_by_index_hint = {}
-        existing_by_device_id = {}
-        existing_by_identity = {}
-        for item in cached:
-            payload = item.get("payload", {}) if isinstance(item.get("payload"), dict) else {}
-            info = payload.get("info", {}) if isinstance(payload, dict) else {}
-            for candidate in (
-                str(item.get("path", "") or payload.get("path", "") or "").strip(),
-                str(item.get("legacy_path", "") or payload.get("legacy_path", "") or "").strip(),
-            ):
-                if candidate:
-                    existing_by_path[candidate] = item
-            hint = self._device_record_index_hint(item)
-            if hint:
-                existing_by_index_hint[hint] = item
-            identity = self._device_record_identity(item)
-            if identity:
-                existing_by_identity[identity] = item
-            device_id = (str(info.get("IP", "") or "").strip(), str(info.get("ID", "") or "").strip())
-            if device_id[0] and device_id[1]:
-                existing_by_device_id.setdefault(device_id, []).append(item)
-
-        records_by_identity = {
-            self._device_record_identity(item): item
-            for item in cached
-            if self._device_record_identity(item)
-        }
-        records_without_identity = [item for item in cached if not self._device_record_identity(item)]
-
-        checked = 0
-        for row in carbon_rows:
-            row_dt = self._parse_device_info_datetime(self._format_device_index_datetime(row.get("date")))
-            if started_dt and row_dt and row_dt < started_dt:
-                break
-            row_id = str(row.get("id", "") if row.get("id", "") is not None else "").strip()
-            if not row_id:
-                continue
-            checked += 1
-            existing = self._find_cached_device_record(ip, row_id, row, existing_by_path, existing_by_index_hint, existing_by_device_id)
-            if existing and not self._device_record_needs_refresh(existing, row):
-                if checked >= 8:
-                    break
-                continue
-
-            detail_json = self._fetch_detail_json(ip, row_id, row, _timeout)
-            detail_rows = self._extract_json_rows(detail_json)
-            if not detail_rows:
-                continue
-            payload = self._build_device_payload(ip, row, detail_rows[0])
-            if not payload.get("series"):
-                continue
-            identity = self._device_payload_identity(payload)
-            local_id = self._device_local_id(identity)
-            if local_id:
-                payload["path"] = self._make_device_payload_path(ip, local_id)
-                payload["local_id"] = local_id
-                payload["identity"] = identity
-            record = {
-                "name": payload.get("name", f"{row_id}.json"),
-                "path": payload.get("path", f"device://{ip}/{row_id}"),
-                "legacy_path": payload.get("legacy_path", f"device://{ip}/{row_id}"),
-                "identity": identity,
-                "local_id": local_id,
-                "modified": str(
-                    self._format_device_index_datetime(row.get("date"))
-                    or payload.get("info", {}).get("Dt Inicio", "")
-                    or tk_time_string(datetime.now().timestamp())
-                ),
-                "source": "device",
-                "mode_group": self._device_mode_group(payload.get("info", {}).get("Modo", "")),
-                "payload": payload,
-            }
-            if identity:
-                records_by_identity[identity] = record
-            else:
-                records_without_identity.append(record)
-            records = list(records_by_identity.values()) + records_without_identity
-            latest = self._pick_latest_carbon_record(records, session_started_at, consumed)
-            if latest:
-                return self._normalize_device_records(records)
-            if checked >= 8:
-                break
-
-        return self._normalize_device_records(list(records_by_identity.values()) + records_without_identity)
-
     def _fetch_device_records(self, ip):
+        # Reimplementacion independiente de la misma idea que
+        # device_sync.sync_once (indice -> por cada fila, reusar si ya
+        # esta en cache o si no bajar el detalle) pero con mejor cache:
+        # ademas de matchear por path/legacy_path, tambien matchea por
+        # "identity" (contenido) y por un "index hint" — asi, si el equipo
+        # renumera sus filas internas entre descargas (el row_id cambia
+        # pero es la misma medicion), esta version igual puede reconocerla
+        # como ya descargada y evitar pedir el detalle de nuevo. Ver
+        # _device_record_needs_refresh para cuando un cache hit igual se
+        # descarta (ej. cache de un modo que no trae los campos que hacen
+        # falta para el modo real de esta fila).
         self._log_backend(f"Solicitando indice a {ip}")
         index_json = self._fetch_index_json(ip, THERMAL_DEVICE_TIMEOUT)
         index_rows = sorted(self._extract_json_rows(index_json), key=self._index_row_sort_datetime, reverse=True)
@@ -1162,49 +1002,6 @@ class TabAnalisisTermico(ttk.Frame):
                 and str(info.get("REC", "") or "").strip()
             )
         return False
-
-    def _pick_latest_carbon_record(self, records, session_started_at, consumed_paths):
-        started_dt = self._parse_session_datetime(session_started_at)
-        consumed = set()
-        if isinstance(consumed_paths, (list, tuple, set)):
-            consumed = {str(path).strip() for path in consumed_paths if str(path).strip()}
-        elif consumed_paths:
-            consumed = {str(consumed_paths).strip()}
-        candidates = []
-        for record in records or []:
-            if str(record.get("mode_group", "") or "") != "Carbono":
-                continue
-            payload = record.get("payload", {}) if isinstance(record.get("payload"), dict) else {}
-            info = payload.get("info", {}) if isinstance(payload, dict) else {}
-            dt = self._parse_device_info_datetime(info.get("Dt Termino")) or self._parse_device_info_datetime(info.get("Dt Inicio"))
-            if started_dt and not dt:
-                continue
-            if started_dt and dt and dt < started_dt:
-                continue
-            if not (
-                str(info.get("C %", "") or info.get("Carbono %", "") or "").strip()
-                and str(info.get("Si %", "") or info.get("Silicio %", "") or "").strip()
-            ):
-                continue
-            path = str(record.get("path", "") or "").strip()
-            legacy_path = str(record.get("legacy_path", "") or payload.get("legacy_path", "") or "").strip()
-            identity = self._device_record_identity(record)
-            local_id = str(record.get("local_id", "") or payload.get("local_id", "") or "").strip()
-            local_key = f"local_id:{local_id}" if local_id else ""
-            if (
-                (path and path in consumed)
-                or (legacy_path and legacy_path in consumed)
-                or (identity and identity in consumed)
-                or (local_id and local_id in consumed)
-                or (local_key and local_key in consumed)
-            ):
-                continue
-            candidates.append((dt or datetime.min, record))
-        candidates.sort(key=lambda item: item[0], reverse=True)
-        if not candidates:
-            return None
-        _, record = candidates[0]
-        return record
 
     def _fetch_index_json(self, ip, timeout):
         """Obtiene el índice de análisis usando HistIndex.dat (página web) con fallback a getallidx.cgi."""
@@ -2111,7 +1908,7 @@ class TabAnalisisTermico(ttk.Frame):
             self._info_alias_value(payloads[0].get("info", {}) or {}, "TSE")
         )
         path = str(payloads[0].get("path", "") or "").strip()
-        colada_display, _etapa_display = self._history_link_by_path.get(path, ("", ""))
+        colada_display, _etapa_display, _auto_linked = self._history_link_by_path.get(path, ("", "", False))
         coladas = [c.strip() for c in colada_display.split(",") if c.strip()]
         if not coladas:
             self.carbon_tse_box.pack_forget()
@@ -2613,11 +2410,22 @@ class TabAnalisisTermico(ttk.Frame):
             out.append(item)
         return out
 
-    def _auto_set_thermal_mode(self, mode_group):
+    def _auto_set_thermal_mode(self, mode_group, silent=False):
+        # Vincula curvas sueltas (archivo o dispositivo) a una sesion de
+        # Historicos por CERCANIA DE HORARIO unicamente — no hay ningun
+        # otro dato en comun entre una curva y una colada. Si la curva mas
+        # cercana en el tiempo queda a mas de THERMAL_MATCH_MAX_DELTA (6h)
+        # de cualquier sesion, se la deja sin vincular ("unmatched") en vez
+        # de forzar un match dudoso; esas quedan resaltadas en amarillo en
+        # la lista para que el operario las revise/vincule a mano (ver
+        # _thermal_needs_review). silent=True es el modo que usa el ciclo
+        # automatico de Carbomax (no interrumpe con dialogos, solo deja el
+        # resultado en status_var).
         history = load_history()
         if not history:
-            messagebox.showinfo("Analisis termico", "No hay coladas guardadas en Historicos para vincular.", parent=self)
-            return
+            if not silent:
+                messagebox.showinfo("Analisis termico", "No hay coladas guardadas en Historicos para vincular.", parent=self)
+            return 0
 
         candidates = []
         for item in self._all_records_unfiltered():
@@ -2632,8 +2440,9 @@ class TabAnalisisTermico(ttk.Frame):
             candidates.append((path, payload))
 
         if not candidates:
-            messagebox.showinfo("Analisis termico", f"No hay curvas de {mode_group} sin vincular.", parent=self)
-            return
+            if not silent:
+                messagebox.showinfo("Analisis termico", f"No hay curvas de {mode_group} sin vincular.", parent=self)
+            return 0
 
         matched_by_colada = {}
         unmatched = 0
@@ -2669,10 +2478,15 @@ class TabAnalisisTermico(ttk.Frame):
             f"{attached} curva(s) de {mode_group} vinculada(s). "
             f"{unmatched} sin coincidencia de horario (marcadas en amarillo para revisar)."
         )
+        if silent:
+            if attached or errors:
+                self.status_var.set(msg)
+            return attached
         if errors:
             messagebox.showwarning("Analisis termico", msg + "\n\nErrores:\n" + "\n".join(errors), parent=self)
         else:
             messagebox.showinfo("Analisis termico", msg, parent=self)
+        return attached
 
     def _attach_carbon_group(self, colada, items, history):
         session = next(
@@ -2696,6 +2510,12 @@ class TabAnalisisTermico(ttk.Frame):
                 )
                 existing.append({"source_file": source_file, "dt": entry_dt or datetime.min, "orden": entry.get("orden")})
 
+        # Una colada puede tener VARIAS lecturas de Carbono (a diferencia
+        # de Microestructura, que normalmente es una). "orden" numera esas
+        # lecturas por horario real (1a, 2a...), asi que hay que juntar lo
+        # que ya estaba vinculado con lo nuevo, reordenar todo junto por
+        # fecha, y renumerar — si solo se numeraran las nuevas, quedarian
+        # mezcladas con las viejas fuera de orden cronologico.
         combined = existing + [
             {"path": path, "payload": payload, "dt": curve_dt or datetime.min}
             for path, payload, curve_dt in items
@@ -2708,7 +2528,7 @@ class TabAnalisisTermico(ttk.Frame):
                 payload = entry["payload"]
                 material_base = str((payload.get("info", {}) or {}).get("Material", "") or "").strip()
                 analysis = self._build_history_analysis(
-                    payload, colada, material_base, observacion="", etapa="", orden=order_idx,
+                    payload, colada, material_base, observacion="", etapa="", orden=order_idx, auto_linked=True,
                 )
                 attach_thermal_analysis(colada, analysis)
                 path = entry["path"]
@@ -2723,7 +2543,9 @@ class TabAnalisisTermico(ttk.Frame):
         attached = 0
         for path, payload, _curve_dt in items:
             material_base = str((payload.get("info", {}) or {}).get("Material", "") or "").strip()
-            analysis = self._build_history_analysis(payload, colada, material_base, observacion="", etapa="")
+            analysis = self._build_history_analysis(
+                payload, colada, material_base, observacion="", etapa="", auto_linked=True,
+            )
             attach_thermal_analysis(colada, analysis)
             if path:
                 self._linked_history_by_path[path] = {"colada": colada, "material_base": material_base}
@@ -3067,7 +2889,7 @@ class TabAnalisisTermico(ttk.Frame):
             return None
         return picked
 
-    def _build_history_analysis(self, payload, colada, material_base, observacion="", etapa="", orden=None):
+    def _build_history_analysis(self, payload, colada, material_base, observacion="", etapa="", orden=None, auto_linked=False):
         info = dict(payload.get("info", {}) or {})
         series = list(payload.get("series", []) or [])
         entry = {
@@ -3083,6 +2905,7 @@ class TabAnalisisTermico(ttk.Frame):
             "point_count": len(series),
             "result_metrics": self._result_metrics(info),
             "result_text": self._build_results_text(info, series),
+            "auto_linked": bool(auto_linked),
         }
         if orden is not None:
             entry["orden"] = orden
@@ -3251,6 +3074,15 @@ class TabAnalisisTermico(ttk.Frame):
             rec = tre - tse
         solid_interval = (tl - tse) if tl is not None and tse is not None else None
         solid_interval_time = (tag2 - tag1) if tag1 is not None and tag2 is not None else None
+        # "Expansion" aca es la fraccion del tiempo total de solidificacion
+        # (tag1=TL hasta tag4=TF) que transcurre DESPUES del punto TSE
+        # (fundicion gris) o TRE (nodular) — cuanto mayor esa fraccion, mas
+        # tiempo paso el metal expandiendose/solidificando luego de ese
+        # punto clave. Son dos formulas paralelas (gris usa tag2/TSE,
+        # nodular usa tag3/TRE) porque cada familia tiene su propio punto
+        # de referencia relevante en la curva; los umbrales 0.60/0.70 que
+        # se comparan en _build_comparison_text son rangos esperados
+        # tipicos de planta, no una norma.
         gray_expansion = None
         nodular_expansion = None
         if tag1 is not None and tag2 is not None and tag4 is not None and tag4 != tag1:
@@ -3330,37 +3162,6 @@ class TabAnalisisTermico(ttk.Frame):
                 subprocess.Popen(["explorer", str(self.folder)])
             except Exception as ex:
                 messagebox.showerror("Analisis termico", f"No se pudo abrir la carpeta.\n\n{ex}", parent=self)
-
-    def _send_carbon_to_ajuste(self):
-        if self._ajuste_target is None:
-            messagebox.showwarning("Analisis termico", "No se encontró la pestaña Ajuste para recibir datos.", parent=self)
-            return
-        if len(self._current_payloads) != 1:
-            messagebox.showwarning("Analisis termico", "Selecciona un solo análisis de Carbono para cargar C/Si en Ajuste.", parent=self)
-            return
-        payload = self._current_payloads[0]
-        info = payload.get("info", {}) if isinstance(payload.get("info"), dict) else {}
-        mode = str(info.get("Modo", "") or "").upper()
-        if "CARB" not in mode:
-            messagebox.showwarning("Analisis termico", "La carga automática a Ajuste sólo aplica a análisis del modo Carbono.", parent=self)
-            return
-        carbon = self._parse_decimal(self._info_alias_value(info, "C %"))
-        silicon = self._parse_decimal(self._info_alias_value(info, "Si %"))
-        if carbon is None or silicon is None:
-            messagebox.showwarning("Analisis termico", "Este análisis no trae Carbono y Silicio listos para cargar.", parent=self)
-            return
-        source_name = str(payload.get("name", "") or info.get("ID", "") or "análisis Carbono").strip()
-        try:
-            self._ajuste_target.load_carbon_silicon(carbon, silicon, source_label=source_name)
-        except Exception as ex:
-            messagebox.showerror("Analisis termico", f"No se pudo cargar C/Si en Ajuste.\n\n{ex}", parent=self)
-            return
-        top = self.winfo_toplevel()
-        try:
-            top.nb.select(top.tab_ajuste)
-        except Exception:
-            pass
-        self.status_var.set(f"Datos de Carbono cargados en Ajuste: C={carbon:.2f} / Si={silicon:.2f}")
 
     def _send_carbon_to_ajuste_v2(self):
         if self._ajuste_target is None:

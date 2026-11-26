@@ -6,6 +6,10 @@ import json
 import re
 from pathlib import Path
 
+# Clases de tamaño de nódulo/grafito segun ISO 945 (las mismas bandas que
+# usa ImageJ con el plugin de metalografia, de ahi el prefijo IMAGEJ_).
+# IMAGEJ_RESOLUCION_PX_MM es la escala por defecto cuando no hay una
+# calibracion de camara/microscopio cargada (ver get_px_per_mm).
 IMAGEJ_RESOLUCION_PX_MM = 1655
 IMAGEJ_AREA_UMBRAL = 100
 IMAGEJ_LIMITS = (
@@ -36,6 +40,10 @@ def load_calibrations() -> list:
 
 
 def get_px_per_mm(cal_id: str | None) -> float | None:
+    """Si no se pasa cal_id, usa la calibracion marcada is_default. Las
+    calibraciones se guardan en la unidad que el usuario eligio al crearlas
+    (µm/cm/mm por pixel), por eso hay que normalizar todo a px/mm aca antes
+    de devolverlo — el resto del modulo asume siempre esa unidad."""
     cals = load_calibrations()
     effective_id = cal_id
     if not effective_id:
@@ -58,6 +66,14 @@ def classify_particle_material(mean_val, solidity, mean_bgr, circularity,
                                 mns_thresh=95, rechupe_solidity=0.52,
                                 mns_blue_ratio=1.12, mns_min_circ=0.45,
                                 rechupe_sat_thresh=70, rechupe_val_thresh=95) -> str:
+    """Distingue, por color/forma de un contorno ya detectado, si es
+    grafito ("C"), una inclusion de sulfuro de manganeso ("MnS", tipico
+    gris claro/violaceo y bastante redondo) o un rechupe/poro de
+    contraccion (mancha oscura y saturada, forma irregular = baja
+    solidity). Los umbrales por defecto son empiricos (ajustados a ojo
+    contra fotos de metalografia reales), no vienen de una norma — por eso
+    son parametros con default en vez de constantes de modulo, para poder
+    recalibrarlos por imagen si hace falta."""
     import cv2 as _cv2
     import numpy as np
 
@@ -92,6 +108,13 @@ def classify_particle_material(mean_val, solidity, mean_bgr, circularity,
 
 
 def get_nodule_contours(image_bgr, threshold=0, min_area=None, use_open=True) -> list:
+    """Segmenta la imagen (Otsu si no se da threshold manual) y devuelve un
+    contorno por nodulo/particula detectada con sus metricas geometricas.
+    "circ" (circularidad, 4*pi*area/perimetro^2) es 1.0 para un circulo
+    perfecto — se usa despues para separar nodulos de grafito redondos de
+    otras formas. "use_open" (apertura morfologica) saca ruido/puntos
+    sueltos chiquitos antes de buscar contornos; el cierre (MORPH_CLOSE)
+    siempre se aplica, para tapar agujeritos internos del nodulo."""
     import numpy as np
     import cv2 as _cv2
 
@@ -161,14 +184,20 @@ def count_nodules(image_bgr, px_per_mm=None, threshold=0, min_area=None, use_ope
     for p in particles:
         mat_counts[p["mat"]] = mat_counts.get(p["mat"], 0) + 1
 
+    # Bandas semiabiertas [min_d, max_d) para que las clases contiguas de
+    # IMAGEJ_LIMITS no se solapen en el limite compartido (ej. Clase 3
+    # termina en 0.50, Clase 4 empieza en 0.12 y termina en 0.25 — antes
+    # una particula de diametro EXACTAMENTE 0.25 contaba para las dos
+    # clases a la vez). Mismo criterio que count_laminar, que ya usaba
+    # <= / < por esta misma razon.
     counts: dict = {}
     for category, min_d, max_d in IMAGEJ_LIMITS:
-        c = sum(1 for p in particles if min_d <= p["diam_mm"] <= max_d)
+        c = sum(1 for p in particles if min_d <= p["diam_mm"] < max_d)
         if c:
             counts[category] = c
     fuera = sum(
         1 for p in particles
-        if not any(min_d <= p["diam_mm"] <= max_d for _, min_d, max_d in IMAGEJ_LIMITS)
+        if not any(min_d <= p["diam_mm"] < max_d for _, min_d, max_d in IMAGEJ_LIMITS)
     )
     if fuera:
         counts["Fuera de clase"] = fuera
@@ -245,6 +274,13 @@ def get_laminar_contours(image_bgr, threshold=0, min_area=100, blur_size=5, use_
 
 
 def classify_laminar_morphology(flakes) -> str:
+    """Clasifica la morfologia del grafito laminar segun las formas A-E de
+    ISO 945 (A=aleatoria uniforme, B=rosetas, C=Kish/laminas grandes,
+    D=interdendritica aleatoria, E=interdendritica orientada). Umbrales
+    empiricos sobre longitud media/dispersion (cv_len = coef. de variacion)
+    y dispersion angular (std_angle bajo = laminas todas orientadas igual
+    = tipico de E); mismo disclaimer que classify_particle_material, son
+    valores calibrados a ojo, no de una tabla de norma."""
     import numpy as np
 
     if not flakes:
@@ -279,6 +315,12 @@ def count_laminar(image_bgr, px_per_mm=None, threshold=0, min_area=None, use_ope
 
     flakes = get_laminar_contours(image_bgr, threshold=threshold,
                                   min_area=area_min, use_open=use_open)
+    # get_laminar_contours ya hace una primera clasificacion mns/graphite
+    # por forma (circularidad+aspect ratio), pero eso puede confundir un
+    # nodulo de grafito chico y redondo con una inclusion de MnS real. Aca
+    # se corrige con el diametro equivalente: una inclusion de MnS de
+    # verdad casi nunca supera ~30µm, así que si "parece" MnS pero es mas
+    # grande que eso, en realidad es grafito.
     MNS_MAX_DIAM_UM = 30.0
     for f in flakes:
         f["length_um"] = (f["length_px"] / scale) * 1000.0
@@ -340,6 +382,12 @@ def imagej_class_code(label: str) -> str:
 
 
 def imagej_majority_size_text(counts: dict) -> str:
+    """Reduce el histograma de clases de tamaño a la etiqueta corta que se
+    muestra en el informe (ej. "5" o "5-6" si hay dos clases dominantes).
+    Se toma la clase con mas particulas, y se agrega una segunda clase
+    adyacente solo si es realmente relevante (>=20% del total, o al menos
+    la mitad del conteo de la clase dominante) — evita reportar "5-6"
+    cuando la clase 6 tiene una sola particula perdida."""
     class_counts = [
         (idx, label, int(round(float(counts.get(label, 0) or 0))))
         for idx, (label, _, _) in enumerate(IMAGEJ_LIMITS)
@@ -362,6 +410,11 @@ def imagej_majority_size_text(counts: dict) -> str:
 
 
 def draw_nodule_overlay(image_bgr, contours_data):
+    # Colores en BGR (orden de OpenCV, no RGB): verde=grafito/nodulo,
+    # celeste=MnS, rojo=rechupe — se dibuja el contorno tal cual se
+    # detecto, para que el usuario pueda revisar visualmente si la
+    # clasificacion automatica tiene sentido antes de confiar en los
+    # conteos numericos.
     import cv2 as _cv2
     out = image_bgr.copy()
     COLOR_NOD = (0, 220, 80)

@@ -1,3 +1,12 @@
+# tab_pie_horno.py
+# Pestaña de administracion del kiosko "Pie de Horno": por un lado
+# aprueba/revoca los dispositivos (celulares) que se conectan a
+# host_api.py (ver ese modulo para el modelo pending/approved/revoked y
+# viewer/editor), y por otro controla remotamente por SSH la Raspberry Pi
+# que corre el navegador en modo kiosko en el piso de planta (dormir/
+# despertar/reiniciar/apagar, y leer su estado). Requiere SSH con clave
+# publica ya configurada hacia la Raspberry (BatchMode=yes = nunca pide
+# contraseña, si no hay clave el comando simplemente falla).
 import json
 import socket
 import subprocess
@@ -178,6 +187,12 @@ class TabPieHorno(ttk.Frame):
         )
 
     def _raspberry_status_command(self):
+        # Un solo comando SSH que imprime todo el estado de una vez (mas
+        # rapido que varias conexiones SSH separadas). __IDLE_BEGIN__/
+        # __IDLE_END__ delimitan el bloque JSON que devuelve pie-idle-manager
+        # (puede tener saltos de linea/formato propio), y el resto son pares
+        # KEY=valor de una sola linea que _apply_raspberry_status separa
+        # por "=" — por eso los dos formatos conviven en la misma salida.
         return r"""
 printf '__IDLE_BEGIN__\n'
 /home/raspberry/.local/bin/pie-idle-manager --status 2>/dev/null || true
@@ -218,6 +233,9 @@ printf 'SLEEPING=%s\n' "$(test -f /tmp/pie-horno-sleep.txt && echo yes || echo n
         return True
 
     def _apply_raspberry_status(self, returncode, output, error):
+        # Parsea la salida de _raspberry_status_command: separa el bloque
+        # JSON delimitado por los marcadores __IDLE_BEGIN__/__IDLE_END__
+        # (estado del idle manager) del resto de lineas KEY=valor sueltas.
         self._raspberry_busy = False
         self.raspberry_action_var.set("")
         if returncode != 0 and not output:
@@ -253,6 +271,12 @@ printf 'SLEEPING=%s\n' "$(test -f /tmp/pie-horno-sleep.txt && echo yes || echo n
                 key, value = line.split("=", 1)
                 details[key.strip()] = value.strip()
 
+        # Prioridad del estado mostrado: reposo falso primero (aunque
+        # chromium siga corriendo, el kiosko lo pausa en vez de cerrarlo),
+        # despues si chromium esta vivo, y si no ninguno de los dos. El
+        # idle manager caido se agrega como sufijo de advertencia sobre
+        # cualquiera de esos tres estados (en rojo), porque sin el la
+        # Raspberry no va a entrar en reposo/apagado automatico solo.
         sleeping = details.get("SLEEPING") == "yes" or bool(idle.get("sleeping"))
         chromium_count = int(details.get("CHROMIUM") or 0)
         idle_manager_count = int(details.get("IDLE_MANAGER") or 0)

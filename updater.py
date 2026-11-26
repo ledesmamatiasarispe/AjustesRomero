@@ -1,6 +1,21 @@
 """
 Actualizador automático de AjustesRomero.
 Se ejecuta al iniciar el OS o cuando la app detecta una nueva versión.
+
+Dos modos de actualizar, elegidos por USE_RELEASES (hoy hardcodeado en
+False, asi que la rama de GitHub Releases queda sin usar en la practica):
+  - USE_RELEASES=False (modo actual): compara el hash de commit local vs.
+    el remoto (git ls-remote) y hace "git pull --ff-only" si hay
+    diferencia real (mismo chequeo "remote in nuestro log" que app.py usa
+    para no confundir "atrasados" con "adelantados").
+  - USE_RELEASES=True: compararia version.txt local contra el tag del
+    ultimo release de GitHub y correria install.py para bajar ese
+    release — camino alternativo, no la logica activa.
+
+Se llama de dos formas: "autostart" (sin argumentos, para revisar
+actualizaciones al boot) o "--relaunch-app" (app.py la invoca cuando el
+usuario acepta actualizar desde el dialogo, y esta se encarga de volver a
+levantar app.py despues de actualizar).
 """
 
 import os
@@ -167,17 +182,6 @@ def relaunch_app():
         log.info("App relanzada.")
     except Exception as e:
         log.error(f"No se pudo relanzar la app: {e}")
-
-
-def app_is_running():
-    try:
-        r = subprocess.run(
-            ["pgrep", "-f", "app.py"] if platform.system() != "Windows"
-            else ["tasklist", "/fi", "imagename eq python.exe"],
-            capture_output=True, text=True)
-        return bool(r.stdout.strip()) if platform.system() != "Windows" \
-               else "python.exe" in r.stdout
-    except Exception: return False
 
 
 def _has_tkinter():

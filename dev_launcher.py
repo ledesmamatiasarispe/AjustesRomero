@@ -1,3 +1,12 @@
+# dev_launcher.py
+# Wrapper de desarrollo: corre app.py como subproceso y vigila el
+# repositorio por cambios en archivos .py/.html/.css/.js (polling por
+# mtime+size cada SCAN_INTERVAL_SECONDS, no un watcher nativo del SO). Al
+# detectar un cambio, toca RELOAD_FLAG y app.py mismo se cierra al notar
+# que ese archivo cambio (ver app.py: AJUSTE_COMP_DEV_RELOAD_FILE /
+# _check_dev_reload) — este launcher es quien la vuelve a levantar
+# despues. No se usa en produccion (el acceso directo / install.py corren
+# app.py directo, sin este launcher).
 import os
 import subprocess
 import sys

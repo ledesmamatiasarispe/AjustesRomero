@@ -1,4 +1,16 @@
 # tab_ajuste.py
+#
+# Pestaña central de la app: calcula y aplica el ajuste de composicion
+# (que materiales agregar y cuanto) para llevar el baño actual a un
+# material objetivo del catalogo. Dueña del concepto de "sesion" (colada +
+# objetivo + hora de inicio) que el resto de las pestañas referencian, y
+# dueña del estado del sistema "Carbomax automático" (ver el bloque grande
+# de comentarios antes de _on_auto_est_toggle mas abajo) aunque la
+# descarga real del dispositivo la haga TabAnalisisTermico.
+#
+# El loop de fondo _auto_run (disparado por _schedule_auto, ~250ms) es lo
+# que hace "vivo" a Auto-estimar y a Carbomax automático sin que el
+# operario tenga que tocar nada.
 import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime
@@ -12,8 +24,13 @@ import math
 from config import ELEMENTS, COLOR_OK, COLOR_FAIL, COLOR_WARN, TOL_NO_LIMITS, BG_ENTRY, FG, ACCENT
 from utils import to_float, fmt, _norm, simulate_with_plan
 from ce import ce_from_percent
-from storage import DuplicateColadaError, append_history, load_history, save_alloys, load_furnace_state, save_furnace_state, clear_furnace_state
+from storage import (
+    DuplicateColadaError, append_history, load_history, save_alloys,
+    load_furnace_state, save_furnace_state, clear_furnace_state,
+    load_spectro_ips, save_spectro_ips, load_spectro_settings, save_spectro_settings,
+)
 from widgets import ScrollFrame
+import spectro_client
 
 
 class TabAjuste(ttk.Frame):
@@ -59,6 +76,29 @@ class TabAjuste(ttk.Frame):
         self._carbomax_max_mass_factor = self.CARBOMAX_AUTO_MAX_MASS_FACTOR
         self._carbomax_auto_apply = True
         self._carbomax_timeout = 4.0
+
+        # ---------- Espectrometro LMX06 automatico ----------
+        # A diferencia de Carbomax (se sondea un indice historico por HTTP),
+        # el espectrometro empuja eventos por un socket persistente (ver
+        # spectro_client.SpectroEventsListener) -- no hay indice ni
+        # deduplicacion por historial, cada evento MeasurementCompleted/
+        # AnalysisFinished es el disparador de "hay un resultado nuevo".
+        # Complementario a Carbomax, no alternativo: el espectrometro no es
+        # confiable para C/Si (limitacion conocida de OES en hierro
+        # fundido), asi que nunca escribe esos dos elementos -- ver el
+        # filtro en _run_spectro_auto. Por eso los dos toggles pueden estar
+        # activos a la vez (ver _on_carbomax_auto_toggle/_on_spectro_auto_toggle).
+        _spectro_settings = load_spectro_settings()
+        self._spectro_commands_port = int(_spectro_settings.get("commands_port", 11000))
+        self._spectro_events_port = int(_spectro_settings.get("events_port", 11001))
+        _spectro_ips = load_spectro_ips()
+        self._spectro_host = _spectro_ips[0] if _spectro_ips else ""
+        self._spectro_listener = None
+        self._spectro_auto_apply = True
+        self._spectro_pending_record = None
+        self._spectro_web_pending_data = {}
+        self._spectro_objetivo_dlg = None
+
         self._view_mode = False
         self._view_restore_state = None
         self._view_hidden_buttons = []
@@ -328,9 +368,28 @@ class TabAjuste(ttk.Frame):
         ttk.Checkbutton(row2, text="Auto-estimar", variable=self.auto_est,
                         command=self._on_auto_est_toggle).pack(side="left")
         self.carbomax_auto = tk.BooleanVar(value=False)
-        ttk.Checkbutton(row2, text="Modo Carbomax automático", variable=self.carbomax_auto,
-                        command=self._on_carbomax_auto_toggle).pack(side="left", padx=(10, 0))
+        self._carbomax_auto_btn = tk.Button(
+            row2,
+            text="Auto Ajuste",
+            command=self._toggle_carbomax_auto_button,
+            relief="raised",
+            bd=1,
+        )
+        self._carbomax_auto_btn.pack(side="left", padx=(10, 0))
+        self._repaint_carbomax_auto_btn()
         ttk.Button(row2, text="Configurar...", command=self._configure_carbomax_names,
+                   width=10).pack(side="left", padx=(2, 0))
+        self.spectro_auto = tk.BooleanVar(value=False)
+        self._spectro_auto_btn = tk.Button(
+            row2,
+            text="Auto Espectro",
+            command=self._toggle_spectro_auto_button,
+            relief="raised",
+            bd=1,
+        )
+        self._spectro_auto_btn.pack(side="left", padx=(10, 0))
+        self._repaint_spectro_auto_btn()
+        ttk.Button(row2, text="Configurar...", command=self._configure_spectro_connection,
                    width=10).pack(side="left", padx=(2, 0))
         self._carbomax_pb = ttk.Progressbar(row2, mode="indeterminate", length=70)
         self._carbomax_pb_visible = False
@@ -519,6 +578,10 @@ class TabAjuste(ttk.Frame):
             "carbomax_consumed_paths": sorted(self._carbomax_consumed_paths),
             "carbomax_pending_record": self._carbomax_pending_record,
             "carbomax_auto_armed_at": self._carbomax_auto_armed_at,
+            "spectro_auto": bool(self.spectro_auto.get()),
+            "spectro_host": self._spectro_host,
+            "spectro_auto_apply": self._spectro_auto_apply,
+            "spectro_pending_record": self._spectro_pending_record,
             "pan_cols_sash_positions": self._current_pan_cols_positions() or getattr(self, "_pan_cols_sash_positions", []),
         }
 
@@ -550,11 +613,20 @@ class TabAjuste(ttk.Frame):
 
             auto_est_val    = bool(st.get("auto", False))
             carbomax_auto_val = bool(st.get("carbomax_auto", False))
-            # Exclusión mutua al restaurar: Carbomax tiene prioridad
-            if carbomax_auto_val:
+            spectro_auto_val = bool(st.get("spectro_auto", False))
+            # Exclusión mutua al restaurar: cualquier fuente de instrumento
+            # (Carbomax y/o Espectro, que pueden convivir entre si — ver
+            # _on_carbomax_auto_toggle/_on_spectro_auto_toggle) tiene
+            # prioridad sobre Auto-estimar.
+            if carbomax_auto_val or spectro_auto_val:
                 auto_est_val = False
             self.auto_est.set(auto_est_val)
             self.carbomax_auto.set(carbomax_auto_val)
+            self._spectro_host = str(st.get("spectro_host", "") or self._spectro_host)
+            self._spectro_auto_apply = bool(st.get("spectro_auto_apply", True))
+            spectro_pending = st.get("spectro_pending_record")
+            self._spectro_pending_record = spectro_pending if isinstance(spectro_pending, dict) else None
+            self.spectro_auto.set(spectro_auto_val)
             method = st.get("method", "Greedy")
             if method in ("Greedy", "Lineal"):
                 self.method.set(method)
@@ -612,6 +684,14 @@ class TabAjuste(ttk.Frame):
             self._update_objective_selector_state()
         finally:
             self._restoring = False
+            self._repaint_carbomax_auto_btn()
+            self._repaint_spectro_auto_btn()
+            # A diferencia de Carbomax (el loop _auto_run ya sondea el
+            # toggle en cada tick), el pipeline de Espectro es por eventos
+            # push -- si quedo activo al restaurar hay que arrancar el
+            # listener a mano, no hay polling que lo recoja solo.
+            if self.spectro_auto.get():
+                self._start_spectro_listener()
             self._schedule_auto()
             self._schedule_graph_update()
             self.after(150, self._restore_pan_cols_positions)
@@ -654,6 +734,8 @@ class TabAjuste(ttk.Frame):
             "carbomax_consumed_paths": [],
             "carbomax_pending_record": None,
             "carbomax_auto_armed_at": None,
+            "spectro_auto": False,
+            "spectro_pending_record": None,
             "pan_cols_sash_positions": self._current_pan_cols_positions() or getattr(self, "_pan_cols_sash_positions", []),
         }
 
@@ -1660,6 +1742,7 @@ class TabAjuste(ttk.Frame):
         self._carbomax_last_consumed = ""
         self._carbomax_consumed_paths.clear()
         self._carbomax_pending_record = None
+        self._spectro_pending_record = None
         self._clear_objective_selection()
         self._clear_furnace_snapshot()
         self._refresh_session_timer_labels()
@@ -1702,6 +1785,14 @@ class TabAjuste(ttk.Frame):
         self._fire_save()
 
     def _auto_run(self):
+        # Tick del loop de fondo (se reprograma a si mismo al final, en el
+        # finally, incluso si algo de arriba tira excepcion). En cada tick:
+        # recalcula el plan si "Auto-estimar" esta activo, dispara el ciclo
+        # de Carbomax automatico si toca, recalcula la prediccion solo si
+        # algo relevante cambio desde la ultima vez (_calc_signature evita
+        # laburo redundante en cada tick), autoguarda la sesion si
+        # corresponde, y refresca los timers de sesion cada ~30s (no en
+        # cada tick, para no repintar la UI de mas).
         self._auto_job = None
         try:
             if self._busy:
@@ -1723,7 +1814,8 @@ class TabAjuste(ttk.Frame):
                 finally:
                     self._busy = False
             self._maybe_consume_pending_carbomax()
-            self._maybe_schedule_carbomax_auto()
+            self._maybe_schedule_carbomax_download_cycle()
+            self._maybe_consume_pending_spectro()
             sig = self._calc_signature()
             if sig != self._last_calc_sig:
                 self._last_calc_sig = sig
@@ -1795,7 +1887,7 @@ class TabAjuste(ttk.Frame):
         # ── Consulta ──────────────────────────────────────────────
         _section("Consulta al dispositivo")
         poll_var = tk.StringVar(value=str(int(self._carbomax_poll_seconds)))
-        _row("Intervalo entre consultas (seg)", lambda f: ttk.Spinbox(
+        _row("Intervalo de descarga y vinculación (seg)", lambda f: ttk.Spinbox(
             f, from_=5, to=300, textvariable=poll_var, width=6))
         busy_var = tk.StringVar(value=str(int(self._carbomax_busy_poll_seconds)))
         _row("Intervalo cuando está analizando (seg)", lambda f: ttk.Spinbox(
@@ -1963,14 +2055,91 @@ class TabAjuste(ttk.Frame):
             self._carbomax_pb.pack_forget()
             self._carbomax_pb_visible = False
 
+    # ══════════════════════ Carbomax automático ══════════════════════════════
+    # Sistema unico que reemplazo dos mecanismos viejos ("Auto Ajuste" en
+    # Analisis Termico + "Modo Carbomax automático" aca) por un solo toggle
+    # compartido entre ambas pestañas (self.carbomax_auto, ver
+    # set_carbomax_auto/_repaint_carbomax_auto_btn — el boton de Analisis
+    # Termico solo llama a estos metodos, esta pestaña sigue siendo la
+    # dueña real del estado). Mutuamente excluyente con "Auto-estimar"
+    # (auto_est) — activar uno apaga el otro, ver _on_auto_est_toggle /
+    # _on_carbomax_auto_toggle.
+    #
+    # Ciclo (disparado por el loop de _auto_run cada ~250ms via
+    # _maybe_schedule_carbomax_download_cycle, con cooldown propio):
+    #   1. Descarga + vincula TODO del dispositivo (mismo camino que el
+    #      boton manual "Descargar dispositivo" de Analisis Termico, ver
+    #      TabAnalisisTermico.run_download_and_link_cycle_async).
+    #   2. _pick_latest_unconsumed_carbomax_record: de la cache recien
+    #      actualizada, agarra la lectura de Carbono mas nueva que no fue
+    #      consumida/rechazada todavia (si hay varias nuevas, se queda con
+    #      la ULTIMA — no es normal tener 2+ analisis Carbono en paralelo).
+    #   3a. Si no hay objetivo/sesion activa todavia: publica el pendiente
+    #       en host_api (para el kiosko Pie de Horno) y muestra el popup
+    #       _show_carbomax_objetivo_dialog para elegir objetivo — el
+    #       operario puede confirmar desde CUALQUIERA de los dos lados
+    #       (_on_web_carbomax_action atiende la confirmacion via web).
+    #   3b. Si ya hay objetivo: _run_carbomax_auto calcula el plan
+    #       (_estimate_core en thread aparte) y lo aplica o solo lo
+    #       calcula segun _carbomax_auto_apply.
+    #   4. _maybe_consume_pending_carbomax es el camino pasivo de respaldo:
+    #      si quedo un registro pendiente (ej. el operario recien esta por
+    #      configurar el objetivo por la UI normal, no por el popup), lo
+    #      retoma en el siguiente tick via _consume_carbomax_record.
+    #
+    # El chequeo de tope de masa + escritura de kg_vars + aplicar/calcular
+    # esta consolidado en un solo lugar, _apply_carbomax_plan (usado tanto
+    # por _run_carbomax_auto como por _consume_carbomax_record), para que
+    # el limite de seguridad se aplique siempre igual sin depender de
+    # mantener sincronizadas dos copias.
     def _on_auto_est_toggle(self):
         if self.auto_est.get() and self.carbomax_auto.get():
             # Desactiva Carbomax automático limpiamente
             self.carbomax_auto.set(False)
             self._carbomax_auto_armed_at = None
             self._carbomax_pending_record = None
+            self._repaint_carbomax_auto_btn()
+        if self.auto_est.get() and self.spectro_auto.get():
+            # Desactiva Espectro automático limpiamente
+            self.spectro_auto.set(False)
+            self._spectro_pending_record = None
+            self._stop_spectro_listener()
+            self._repaint_spectro_auto_btn()
         self._schedule_auto()
         self._fire_save()
+
+    def set_carbomax_auto(self, value):
+        if bool(self.carbomax_auto.get()) == bool(value):
+            return
+        self.carbomax_auto.set(bool(value))
+        self._on_carbomax_auto_toggle()
+
+    def _toggle_carbomax_auto_button(self):
+        self.set_carbomax_auto(not self.carbomax_auto.get())
+
+    def _repaint_carbomax_auto_btn(self):
+        if hasattr(self, "_carbomax_auto_btn"):
+            if self.carbomax_auto.get():
+                self._carbomax_auto_btn.config(
+                    text="● Auto Ajuste ON",
+                    background="#2ecc71",
+                    foreground="#ffffff",
+                    activebackground="#27ae60",
+                    activeforeground="#ffffff",
+                )
+            else:
+                self._carbomax_auto_btn.config(
+                    text="Auto Ajuste",
+                    background="#d9d9d9",
+                    foreground="#1a1a1a",
+                    activebackground="#c8c8c8",
+                    activeforeground="#1a1a1a",
+                )
+        if self._thermal_source is not None:
+            try:
+                self._thermal_source._repaint_carbomax_auto_btn()
+            except Exception:
+                pass
 
     def _on_carbomax_auto_toggle(self):
         if self.carbomax_auto.get():
@@ -1998,10 +2167,122 @@ class TabAjuste(ttk.Frame):
             self._carbomax_auto_armed_at = None
             self._carbomax_pending_record = None
             self._status("Carbomax automatico desactivado.")
+        self._repaint_carbomax_auto_btn()
         self._schedule_auto()
         self._fire_save()
 
-    def _maybe_schedule_carbomax_auto(self):
+    def set_spectro_auto(self, value):
+        if bool(self.spectro_auto.get()) == bool(value):
+            return
+        self.spectro_auto.set(bool(value))
+        self._on_spectro_auto_toggle()
+
+    def _toggle_spectro_auto_button(self):
+        self.set_spectro_auto(not self.spectro_auto.get())
+
+    def _repaint_spectro_auto_btn(self):
+        if hasattr(self, "_spectro_auto_btn"):
+            if self.spectro_auto.get():
+                self._spectro_auto_btn.config(
+                    text="● Auto Espectro ON",
+                    background="#2ecc71",
+                    foreground="#ffffff",
+                    activebackground="#27ae60",
+                    activeforeground="#ffffff",
+                )
+            else:
+                self._spectro_auto_btn.config(
+                    text="Auto Espectro",
+                    background="#d9d9d9",
+                    foreground="#1a1a1a",
+                    activebackground="#c8c8c8",
+                    activeforeground="#1a1a1a",
+                )
+
+    def _on_spectro_auto_toggle(self):
+        # A diferencia de Carbomax, NO se apaga a si mismo con Carbomax --
+        # son complementarios (Carbomax da C/Si, Espectro da el resto), asi
+        # que los dos pueden estar activos juntos. Solo compite con
+        # Auto-estimar (ver _on_auto_est_toggle).
+        if self.spectro_auto.get():
+            if self.auto_est.get():
+                self.auto_est.set(False)
+            if not self._spectro_host.strip():
+                self._status("Espectro automático: falta configurar el host — hacé click en 'Configurar...'")
+                self.spectro_auto.set(False)
+                self._configure_spectro_connection()
+                self._repaint_spectro_auto_btn()
+                self._fire_save()
+                return
+            self._start_spectro_listener()
+            self._status(f"Espectro automático armado | {self._spectro_host}:{self._spectro_commands_port}")
+        else:
+            self._spectro_pending_record = None
+            self._stop_spectro_listener()
+            self._status("Espectro automático desactivado.")
+        self._repaint_spectro_auto_btn()
+        self._schedule_auto()
+        self._fire_save()
+
+    def _start_spectro_listener(self):
+        if self._spectro_listener is not None and self._spectro_listener.is_alive():
+            return
+        if not self._spectro_host.strip():
+            return
+        self._spectro_listener = spectro_client.SpectroEventsListener(
+            self._spectro_host,
+            port=self._spectro_events_port,
+            on_event=self._on_spectro_event,
+            on_status=lambda msg: self.after(0, lambda: self._status(msg)),
+        )
+        self._spectro_listener.start()
+
+    def _stop_spectro_listener(self):
+        if self._spectro_listener is not None:
+            self._spectro_listener.stop()
+            self._spectro_listener = None
+
+    def _on_spectro_event(self, name, xml_element):
+        """Callback de SpectroEventsListener -- corre en el thread del
+        listener, NO en el de Tk. Trae el resultado (llamada de red
+        bloqueante, por eso se hace aca y no en el thread de Tk) y recien
+        despues marshalla a Tk via after(0, ...) para tocar la UI/estado."""
+        if not self.spectro_auto.get():
+            return
+        try:
+            elements = spectro_client.get_analysis_results(
+                self._spectro_host, port=self._spectro_commands_port,
+            )
+        except spectro_client.SpectroError as ex:
+            self.after(0, lambda: self._status(f"Espectrómetro: error trayendo resultado ({ex})"))
+            return
+        # El espectro no es confiable para C/Si (limitacion conocida de OES
+        # en hierro fundido) -- esos dos elementos son terreno exclusivo de
+        # Carbomax. Filtro vive aca, no en spectro_client.get_analysis_results,
+        # que se mantiene generico y reutilizable para otros usos futuros.
+        elements = {el: pct for el, pct in elements.items() if el not in ("C", "Si")}
+        if not elements:
+            self.after(0, lambda: self._status("Espectrómetro: análisis sin elementos utilizables (¿solo C/Si?)."))
+            return
+        self.after(0, lambda: self._run_spectro_auto(elements, source_label=name))
+
+    def _maybe_consume_pending_spectro(self):
+        """Backstop pasivo (mismo criterio que _maybe_consume_pending_carbomax):
+        si quedo un resultado pendiente porque todavia no habia objetivo/
+        sesion, y el operario recien ahora lo configuro por la UI normal,
+        lo retoma en el siguiente tick de _auto_run."""
+        pending = self._spectro_pending_record
+        if not pending or not self.spectro_auto.get():
+            return
+        if not self.cb_obj.get().strip():
+            return
+        elements = pending.get("elements", {})
+        source_label = pending.get("source", "")
+        self._spectro_pending_record = None
+        if elements:
+            self._run_spectro_auto(elements, source_label=source_label)
+
+    def _maybe_schedule_carbomax_download_cycle(self):
         if not self.carbomax_auto.get():
             return
         if self._thermal_source is None or self._carbomax_poll_running:
@@ -2013,27 +2294,99 @@ class TabAjuste(ttk.Frame):
         if now - self._carbomax_last_poll_monotonic < cooldown:
             return
         self._carbomax_last_poll_monotonic = now
-        self._carbomax_device_busy = False   # resetear antes del poll
         self._carbomax_pb_start()
-        self._status("Carbomax automático: consultando...")
+        self._status("Carbomax automático: descargando y vinculando...")
         self._carbomax_poll_running = True
         try:
-            consumed_paths = set(self._carbomax_consumed_paths)
-            if self._carbomax_last_consumed:
-                consumed_paths.add(self._carbomax_last_consumed)
-            started = self._thermal_source.poll_latest_carbon_async(
-                self.session_started_at or self._carbomax_auto_armed_at,
-                sorted(consumed_paths),
-                self._on_carbomax_poll_result,
+            started = self._thermal_source.run_download_and_link_cycle_async(
+                self._on_carbomax_download_cycle_result,
                 timeout=self._carbomax_timeout,
-                after_ts=self._carbomax_last_ts,
             )
-            if not started:
+            if started is False:
                 self._carbomax_poll_running = False
+                self._carbomax_pb_stop()
                 self._carbomax_last_poll_monotonic = 0.0
         except Exception as ex:
             self._carbomax_poll_running = False
+            self._carbomax_pb_stop()
             self._status(f"Carbomax automático: {ex}")
+
+    def _on_carbomax_download_cycle_result(self, ok, auto_linked_total, error):
+        self._carbomax_poll_running = False
+        self._carbomax_pb_stop()
+        if not ok:
+            self._carbomax_device_busy = True
+            err_text = str(error or "").strip()
+            self._status(
+                f"Carbomax automático: no se pudo descargar del dispositivo ({err_text})"
+                if err_text else "Carbomax automático: no se pudo descargar del dispositivo."
+            )
+            return
+        self._carbomax_device_busy = False
+        if auto_linked_total:
+            self._status(f"Carbomax automático: {auto_linked_total} curva(s) vinculada(s) a Historicos.")
+        try:
+            record = self._pick_latest_unconsumed_carbomax_record()
+        except Exception as ex:
+            self._status(f"Carbomax automático: {ex}")
+            return
+        if record is None:
+            return
+        payload = record.get("payload", {}) if isinstance(record.get("payload"), dict) else {}
+        info = payload.get("info", {}) if isinstance(payload.get("info"), dict) else {}
+        carbon = to_float(info.get("C %") or info.get("Carbono %") or 0)
+        silicon = to_float(info.get("Si %") or info.get("Silicio %") or 0)
+        if carbon <= 0 and silicon <= 0:
+            return
+        src = str(payload.get("name", "") or info.get("ID", "") or "Carbomax").strip()
+        analysis_ts = self._parse_carbomax_datetime(info.get("Dt Termino") or info.get("Dt Inicio"))
+        keys = self._carbomax_record_keys(record)
+        if analysis_ts:
+            ts_str = analysis_ts.strftime("%Y-%m-%d %H:%M:%S")
+            if not self._carbomax_last_ts or ts_str > self._carbomax_last_ts:
+                self._carbomax_last_ts = ts_str
+        self._mark_carbomax_consumed(keys)
+        self._run_carbomax_auto(carbon, silicon, src, analysis_ts=analysis_ts, record_keys=keys)
+
+    def _pick_latest_unconsumed_carbomax_record(self):
+        """Busca en la cache de dispositivo (ya actualizada por el ciclo de descarga) el
+        analisis Carbono mas reciente que todavia no fue consumido ni rechazado."""
+        if self._thermal_source is None:
+            return None
+        device_records = list(getattr(self._thermal_source, "_device_records", []) or [])
+        consumed_paths = set(self._carbomax_consumed_paths)
+        if self._carbomax_last_consumed:
+            consumed_paths.add(self._carbomax_last_consumed)
+        best = None
+        best_dt = None
+        for rec in device_records:
+            if not isinstance(rec, dict):
+                continue
+            if str(rec.get("mode_group", "") or "").strip() != "Carbono":
+                continue
+            payload = rec.get("payload", {}) if isinstance(rec.get("payload"), dict) else {}
+            info = payload.get("info", {}) if isinstance(payload.get("info"), dict) else {}
+            carbon = to_float(info.get("C %") or info.get("Carbono %") or 0)
+            silicon = to_float(info.get("Si %") or info.get("Silicio %") or 0)
+            if carbon <= 0 and silicon <= 0:
+                continue
+            keys = self._carbomax_record_keys(rec)
+            if keys & self._carbomax_rejected_keys:
+                continue
+            if keys & consumed_paths:
+                continue
+            analysis_ts = self._parse_carbomax_datetime(info.get("Dt Termino") or info.get("Dt Inicio"))
+            if analysis_ts:
+                ts_str = analysis_ts.strftime("%Y-%m-%d %H:%M:%S")
+                if self._carbomax_last_ts and ts_str <= self._carbomax_last_ts:
+                    continue
+            dt_for_compare = analysis_ts or self._parse_carbomax_datetime(rec.get("modified", ""))
+            if dt_for_compare is None:
+                continue
+            if best_dt is None or dt_for_compare > best_dt:
+                best_dt = dt_for_compare
+                best = rec
+        return best
 
     def _maybe_consume_pending_carbomax(self):
         pending = self._carbomax_pending_record
@@ -2044,114 +2397,6 @@ class TabAjuste(ttk.Frame):
         record = pending
         self._carbomax_pending_record = None
         self._consume_carbomax_record(record, bypass_session_check=True)
-
-    def _show_carbomax_context_and_consume(self, record, carbon, silicon, source_label=""):
-        """Popup de contexto para Carbomax Auto: al confirmar llama _consume_carbomax_record."""
-        dlg = tk.Toplevel(self)
-        dlg.title("Carbomax automático — Iniciar sesión")
-        dlg.resizable(False, False)
-        dlg.grab_set()
-        dlg.focus_set()
-        dlg.configure(bg=BG_ENTRY)
-
-        src_txt = f"  ({source_label})" if source_label else ""
-        tk.Label(dlg, text=f"Carbomax detectó una nueva lectura{src_txt}",
-                 bg=BG_ENTRY, fg=FG, font=("Arial", 10, "bold")).pack(anchor="w", padx=14, pady=(14, 2))
-        tk.Label(dlg, text=f"C = {carbon:.2f} %      Si = {silicon:.2f} %",
-                 bg=BG_ENTRY, fg=ACCENT, font=("Arial", 13, "bold")).pack(anchor="w", padx=14, pady=(0, 10))
-        tk.Frame(dlg, bg="#444", height=1).pack(fill="x", padx=10)
-
-        tk.Label(dlg, text="Material objetivo:", bg=BG_ENTRY, fg=FG).pack(anchor="w", padx=14, pady=(8, 0))
-        obj_values = list(self.cb_obj["values"])
-        obj_var = tk.StringVar(value=self.cb_obj.get().strip())
-        obj_combo = ttk.Combobox(dlg, textvariable=obj_var, values=obj_values, state="readonly", width=30)
-        obj_combo.pack(anchor="w", padx=14, pady=(2, 6))
-        if not obj_var.get() and obj_values:
-            obj_combo.current(0)
-
-        tk.Label(dlg, text="N° colada (NNNN /AA):", bg=BG_ENTRY, fg=FG).pack(anchor="w", padx=14, pady=(0, 0))
-        colada_var = tk.StringVar(value=self.colada.get())
-        ttk.Entry(dlg, textvariable=colada_var, width=18).pack(anchor="w", padx=14, pady=(2, 6))
-
-        msg_var = tk.StringVar()
-        tk.Label(dlg, textvariable=msg_var, bg=BG_ENTRY, fg="#e05252", font=("Arial", 9)).pack(anchor="w", padx=14)
-
-        def _confirm():
-            objetivo = obj_var.get().strip()
-            if not objetivo:
-                msg_var.set("Seleccioná un material objetivo.")
-                return
-            dlg.destroy()
-            self.cb_obj.set(objetivo)
-            self._on_objective_selected()
-            colada_txt = colada_var.get().strip()
-            if colada_txt:
-                self.colada.set(colada_txt)
-            self._ensure_session_started_from_objective()
-            self._carbomax_pending_record = None
-            try:
-                self._consume_carbomax_record(record, bypass_session_check=True)
-            except Exception as ex:
-                self._status(f"Carbomax automático: {ex}")
-
-        btn_f = tk.Frame(dlg, bg=BG_ENTRY)
-        btn_f.pack(fill="x", padx=14, pady=(8, 14))
-        tk.Button(btn_f, text="Calcular y aplicar", command=_confirm,
-                  bg=ACCENT, fg="#fff", relief="flat",
-                  activebackground=ACCENT, font=("Arial", 10, "bold"),
-                  padx=12, pady=4).pack(side="left")
-        tk.Button(btn_f, text="Cancelar", command=dlg.destroy,
-                  bg="#555", fg="#ddd", relief="flat", padx=10, pady=4).pack(side="left", padx=(8, 0))
-
-        dlg.update_idletasks()
-        try:
-            root = self.winfo_toplevel()
-            rx = root.winfo_x() + (root.winfo_width()  - dlg.winfo_width())  // 2
-            ry = root.winfo_y() + (root.winfo_height() - dlg.winfo_height()) // 2
-            dlg.geometry(f"+{rx}+{ry}")
-        except Exception:
-            pass
-
-    def _on_carbomax_poll_result(self, record, error=None):
-        self._carbomax_poll_running = False
-        self._carbomax_pb_stop()
-        if error:
-            if "device_busy" in str(error).lower():
-                self._carbomax_device_busy = True
-                self._status(
-                    f"Carbomax: dispositivo analizando — reintentando en {int(self._carbomax_busy_poll_seconds)}s"
-                )
-            else:
-                self._status(f"Carbomax automático — error: {error}")
-            return
-        if not record:
-            return
-        try:
-            payload = record.get("payload", {}) if isinstance(record, dict) else {}
-            info = payload.get("info", {}) if isinstance(payload, dict) else {}
-            carbon  = to_float(info.get("C %") or info.get("Carbono %") or 0)
-            silicon = to_float(info.get("Si %") or info.get("Silicio %") or 0)
-            if carbon <= 0 and silicon <= 0:
-                return
-            src = str(payload.get("name", "") or info.get("ID", "") or "Carbomax").strip()
-            # Timestamp del análisis (para usarlo como inicio de sesión)
-            analysis_ts = self._parse_carbomax_datetime(
-                info.get("Dt Termino") or info.get("Dt Inicio")
-            )
-            keys = self._carbomax_record_keys(record) or self._carbomax_record_key(record)
-            check = keys if isinstance(keys, set) else ({keys} if keys else set())
-            if check & self._carbomax_rejected_keys:
-                self._status("Carbomax auto: análisis descartado por el usuario, se omite.")
-                return
-            # Actualizar timestamp del último análisis procesado
-            if analysis_ts:
-                ts_str = analysis_ts.strftime("%Y-%m-%d %H:%M:%S")
-                if not self._carbomax_last_ts or ts_str > self._carbomax_last_ts:
-                    self._carbomax_last_ts = ts_str
-            self._mark_carbomax_consumed(keys)
-            self._run_carbomax_auto(carbon, silicon, src, analysis_ts=analysis_ts, record_keys=keys)
-        except Exception as ex:
-            self._status(f"Carbomax automático: {ex}")
 
     def _show_carbomax_objetivo_dialog(self, carbon, silicon, source_label="", analysis_ts=None, record_keys=None):
         dlg = tk.Toplevel(self)
@@ -2335,20 +2580,29 @@ class TabAjuste(ttk.Frame):
             return
         if self._busy:
             return
+        base_names = self._resolve_carbomax_base_names()
+        if len(base_names) < 3:
+            self._status("Carbomax automático: materiales C/Si/Fe no configurados — hacé click en 'Configurar...'")
+            self.after(0, self._configure_carbomax_names)
+            return
         self._busy = True
         self._carbomax_pb_start()
 
         # Paso 2 (thread secundario): cálculo puro sin tocar widgets
         def _calc():
             try:
-                plan = self._estimate_core(reset_kgs=False, log_it=False, silent=True, return_plan=True)
+                plan = self._estimate_core(
+                    reset_kgs=False, log_it=False, silent=True, return_plan=True,
+                    adjust_names_override=base_names,
+                )
             except Exception as ex:
                 plan = None
                 self.after(0, lambda: (self._carbomax_pb_stop(), self._status(f"Carbomax auto: error: {ex}")))
                 return
             self.after(0, lambda p=plan: _apply(p))
 
-        # Paso 3 (main thread): escribir widgets y aplicar
+        # Paso 3 (main thread): escribir widgets, chequear tope de masa y aplicar
+        # (ver _apply_carbomax_plan, compartido con _consume_carbomax_record)
         def _apply(plan):
             self._carbomax_pb_stop()
             try:
@@ -2357,21 +2611,14 @@ class TabAjuste(ttk.Frame):
                     return
                 pct = max(1, min(100, int(self.partial_pct.get())))
                 p = pct / 100.0
-                for v in self.kg_vars.values():
-                    v.set("0")
-                for name in plan.keys():
-                    self._ensure_adjuster_present(name)
-                for name, kg in plan.items():
-                    self.kg_vars[name].set(fmt(kg * p, 3))
-                self.calc_prediction()
-                if self._carbomax_auto_apply:
-                    self.apply_adjustment()
+                plan_scaled = {name: kg * p for name, kg in plan.items()}
+                if not self._apply_carbomax_plan(plan_scaled):
+                    return
                 action = "aplicado" if self._carbomax_auto_apply else "calculado"
                 self._status(f"Carbomax auto {action}: C={carbon:.2f}% Si={silicon:.2f}%  [{source_label}]")
             finally:
                 self._busy = False
 
-        import threading
         threading.Thread(target=_calc, daemon=True, name="CarboxAutoCalc").start()
 
     def _ensure_carbomax_session_context(self, record, interactive):
@@ -2395,6 +2642,364 @@ class TabAjuste(ttk.Frame):
             return False
         self._fire_save()
         return True
+
+    # ══════════════════════ Espectrómetro LMX06 automático ═══════════════════
+    # A diferencia de Carbomax (poll de un indice historico), este pipeline
+    # arranca desde un EVENTO push (_on_spectro_event, ver mas arriba, en el
+    # thread del SpectroEventsListener) que ya trajo el dict de elementos
+    # antes de llegar aca -- no hay "descargar y vincular" ni deduplicacion
+    # por historial, cada llamada a _run_spectro_auto es un resultado fresco.
+    #
+    # Misma forma que _run_carbomax_auto: si no hay objetivo/sesion todavia,
+    # publica el pendiente en host_api (kiosko Pie de Horno) y muestra el
+    # popup de escritorio; cuando se confirma el objetivo (desde cualquiera
+    # de los dos lados) se vuelve a llamar a _run_spectro_auto, que esta vez
+    # si calcula y aplica via _apply_auto_plan (el mismo punto unico que usa
+    # Carbomax, con el mismo tope de masa de seguridad).
+    def _run_spectro_auto(self, elements, source_label=""):
+        # Paso 1 (main thread): actualizar composición actual — rápido.
+        # Igual que _run_carbomax_auto, esto se hace SIEMPRE, incluso si
+        # todavia no hay objetivo, para que el panel "Actual" refleje la
+        # ultima lectura mientras el operario elige el material.
+        self.load_elements(elements, source_label=source_label)
+        if not self.cb_obj.get().strip():
+            pending_data = {
+                "elements": dict(elements),
+                "source": source_label,
+                "objectives": list(self.cb_obj["values"]),
+            }
+            self._spectro_pending_record = pending_data
+            self._spectro_web_pending_data = pending_data
+            try:
+                from host_api import set_spectro_pending
+                set_spectro_pending(pending_data)
+            except Exception:
+                pass
+            self._show_spectro_objetivo_dialog(elements, source_label)
+            return
+        if self._busy:
+            return
+        self._busy = True
+        self._carbomax_pb_start()  # indicador generico de "trabajando", compartido con Carbomax
+
+        # Paso 2 (thread secundario): cálculo puro sin tocar widgets. A
+        # diferencia de Carbomax, NO se restringe adjust_names_override —
+        # el espectro trae muchos elementos, se usa la lista de ajuste
+        # completa tal cual la usaria un "Calcular" manual.
+        def _calc():
+            try:
+                plan = self._estimate_core(
+                    reset_kgs=False, log_it=False, silent=True, return_plan=True,
+                )
+            except Exception as ex:
+                self.after(0, lambda: (self._carbomax_pb_stop(), self._status(f"Espectrómetro auto: error: {ex}")))
+                return
+            self.after(0, lambda p=plan: _apply(p))
+
+        # Paso 3 (main thread): escribir widgets, chequear tope de masa y
+        # aplicar (_apply_auto_plan, compartido con Carbomax).
+        def _apply(plan):
+            self._carbomax_pb_stop()
+            try:
+                if not plan:
+                    self._status("Espectrómetro auto: sin plan de ajuste.")
+                    return
+                pct = max(1, min(100, int(self.partial_pct.get())))
+                p = pct / 100.0
+                plan_scaled = {name: kg * p for name, kg in plan.items()}
+                if not self._apply_auto_plan(plan_scaled, "Espectrómetro", self._spectro_auto_apply):
+                    return
+                action = "aplicado" if self._spectro_auto_apply else "calculado"
+                self._status(f"Espectrómetro auto {action}  [{source_label}]")
+            finally:
+                self._busy = False
+
+        threading.Thread(target=_calc, daemon=True, name="SpectroAutoCalc").start()
+
+    def _show_spectro_objetivo_dialog(self, elements, source_label=""):
+        dlg = tk.Toplevel(self)
+        dlg.title("Espectrómetro — Análisis capturado")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        dlg.focus_set()
+        dlg.configure(bg=BG_ENTRY)
+        self._spectro_objetivo_dlg = dlg
+
+        src_txt = f"  ({source_label})" if source_label else ""
+        tk.Label(dlg, text=f"Se capturó un análisis del espectrómetro{src_txt}",
+                 bg=BG_ENTRY, fg=FG, font=("Arial", 10, "bold")).pack(anchor="w", padx=16, pady=(14, 4))
+
+        # Grilla compacta de elementos (pueden ser 10+, a diferencia de los
+        # 2 fijos de Carbomax) — varias columnas para no alargar el popup.
+        val_frame = tk.Frame(dlg, bg="#0d1b34", bd=1, relief="solid")
+        val_frame.pack(fill="x", padx=16, pady=(0, 10))
+        items = sorted(elements.items())
+        cols = 4
+        for i, (el, pct) in enumerate(items):
+            r, c = divmod(i, cols)
+            tk.Label(val_frame, text=f"{el} = {pct:.3f}%",
+                     bg="#0d1b34", fg="#4ea1ff", font=("Arial", 10, "bold"),
+                     anchor="w", padx=10, pady=4).grid(row=r, column=c, sticky="w")
+
+        tk.Frame(dlg, bg="#444", height=1).pack(fill="x", padx=12, pady=(0, 6))
+
+        tk.Label(dlg, text="Seleccioná el material objetivo para calcular el ajuste:",
+                 bg=BG_ENTRY, fg=FG).pack(anchor="w", padx=16, pady=(2, 2))
+
+        obj_values = list(self.cb_obj["values"])
+        obj_var = tk.StringVar(value=self.cb_obj.get().strip())
+        obj_combo = ttk.Combobox(dlg, textvariable=obj_var, values=obj_values,
+                                 state="readonly", width=34)
+        obj_combo.pack(anchor="w", padx=16, pady=(0, 8))
+        if not obj_var.get() and obj_values:
+            obj_combo.current(0)
+
+        msg_var = tk.StringVar()
+        tk.Label(dlg, textvariable=msg_var, bg=BG_ENTRY, fg="#e05252",
+                 font=("Arial", 9)).pack(anchor="w", padx=16)
+
+        def _clear_web_pending():
+            try:
+                from host_api import clear_spectro_pending
+                clear_spectro_pending()
+            except Exception:
+                pass
+
+        def _close_dlg():
+            self._spectro_objetivo_dlg = None
+            try:
+                dlg.destroy()
+            except Exception:
+                pass
+
+        def _confirm():
+            objetivo = obj_var.get().strip()
+            if not objetivo:
+                msg_var.set("Seleccioná un material objetivo.")
+                return
+            _close_dlg()
+            _clear_web_pending()
+            self.cb_obj.set(objetivo)
+            self._on_objective_selected()
+            if not self.session_started_at:
+                self._ensure_session_started_from_objective()
+            self._run_spectro_auto(elements, source_label=source_label)
+
+        def _cancel():
+            _close_dlg()
+            _clear_web_pending()
+            self._spectro_pending_record = None
+            self._status("Espectrómetro auto: análisis descartado.")
+
+        dlg.protocol("WM_DELETE_WINDOW", _cancel)
+
+        btn_f = tk.Frame(dlg, bg=BG_ENTRY)
+        btn_f.pack(fill="x", padx=16, pady=(6, 14))
+        tk.Button(btn_f, text="Calcular ajuste", command=_confirm,
+                  bg=ACCENT, fg="#fff", relief="flat",
+                  activebackground=ACCENT, font=("Arial", 10, "bold"),
+                  padx=14, pady=5).pack(side="left")
+        tk.Button(btn_f, text="Cancelar", command=_cancel,
+                  bg="#555", fg="#ddd", relief="flat",
+                  padx=10, pady=5).pack(side="left", padx=(8, 0))
+
+        dlg.update_idletasks()
+        try:
+            root = self.winfo_toplevel()
+            rx = root.winfo_x() + (root.winfo_width()  - dlg.winfo_width())  // 2
+            ry = root.winfo_y() + (root.winfo_height() - dlg.winfo_height()) // 2
+            dlg.geometry(f"+{rx}+{ry}")
+        except Exception:
+            pass
+
+    def _on_web_spectro_action(self, action, objetivo, colada):
+        """Callback desde el web (Pie de Horno) cuando el operador confirma o rechaza el análisis del espectrómetro."""
+        pending = getattr(self, "_spectro_web_pending_data", {})
+        elements = dict(pending.get("elements", {}) or {})
+        source = str(pending.get("source", "") or "web")
+
+        def _run():
+            dlg = self._spectro_objetivo_dlg
+            if dlg is not None:
+                self._spectro_objetivo_dlg = None
+                try:
+                    dlg.destroy()
+                except Exception:
+                    pass
+
+            if action == "reject":
+                self._spectro_pending_record = None
+                self._status("Espectrómetro auto: análisis descartado desde Pie de Horno.")
+                return
+            if objetivo:
+                self.cb_obj.set(objetivo)
+                self._on_objective_selected()
+            if colada:
+                self.colada.set(colada)
+            if not self.session_started_at:
+                self._ensure_session_started_from_objective()
+            self._run_spectro_auto(elements, source_label=source)
+
+        # El callback llega desde el thread del servidor HTTP — usar after() para volver al main thread
+        self.after(0, _run)
+
+    def _configure_spectro_connection(self):
+        dlg = tk.Toplevel(self)
+        dlg.title("Configurar espectrómetro")
+        dlg.resizable(False, False)
+        dlg.grab_set()
+        dlg.focus_set()
+        dlg.configure(bg=BG_ENTRY)
+
+        def _section(text):
+            f = tk.Frame(dlg, bg=BG_ENTRY)
+            f.pack(fill="x", padx=14, pady=(12, 4))
+            tk.Label(f, text=text, bg=BG_ENTRY, fg=ACCENT,
+                     font=("Arial", 9, "bold")).pack(side="left")
+            tk.Frame(f, bg="#444", height=1).pack(side="left", fill="x", expand=True, padx=(8, 0))
+
+        def _row(label, widget_factory):
+            f = tk.Frame(dlg, bg=BG_ENTRY)
+            f.pack(fill="x", padx=20, pady=2)
+            tk.Label(f, text=label, bg=BG_ENTRY, fg=FG, width=32, anchor="w").pack(side="left")
+            w = widget_factory(f)
+            w.pack(side="left", padx=(4, 0))
+            return w
+
+        _section("Conexión (Automation Interface LMX06)")
+        host_var = tk.StringVar(value=self._spectro_host)
+        host_history = load_spectro_ips() or ([self._spectro_host] if self._spectro_host else [])
+        host_combo = _row("Host / IP", lambda f: ttk.Combobox(
+            f, textvariable=host_var, values=host_history, width=24))
+        cmd_port_var = tk.StringVar(value=str(self._spectro_commands_port))
+        _row("Puerto Commands Server", lambda f: ttk.Spinbox(
+            f, from_=1, to=65535, textvariable=cmd_port_var, width=8))
+        evt_port_var = tk.StringVar(value=str(self._spectro_events_port))
+        _row("Puerto Events Server", lambda f: ttk.Spinbox(
+            f, from_=1, to=65535, textvariable=evt_port_var, width=8))
+
+        _section("Comportamiento al detectar")
+        apply_var = tk.BooleanVar(value=self._spectro_auto_apply)
+        _row("Aplicar ajuste automáticamente",
+             lambda f: ttk.Checkbutton(f, variable=apply_var))
+
+        msg_var = tk.StringVar()
+        tk.Label(dlg, textvariable=msg_var, bg=BG_ENTRY, fg="#e05252",
+                 font=("Arial", 9), wraplength=340, justify="left").pack(anchor="w", padx=20)
+
+        def _probar():
+            host = host_var.get().strip()
+            if not host:
+                msg_var.set("Ingresá un host/IP.")
+                return
+            try:
+                port = int(cmd_port_var.get())
+            except Exception:
+                msg_var.set("Puerto de comandos inválido.")
+                return
+            msg_var.set("Probando...")
+            dlg.update_idletasks()
+            try:
+                version = spectro_client.get_software_version(host, port=port, timeout=5)
+                msg_var.set(f"OK — versión del instrumento: {version or '(desconocida)'}")
+            except spectro_client.SpectroError as ex:
+                msg_var.set(f"Error: {ex}")
+            except Exception as ex:
+                msg_var.set(f"Error de conexión: {ex}")
+
+        ttk.Button(dlg, text="Probar conexión", command=_probar).pack(anchor="w", padx=20, pady=(4, 0))
+
+        def _confirm():
+            host = host_var.get().strip()
+            if not host:
+                msg_var.set("Ingresá un host/IP.")
+                return
+            try:
+                cmd_port = int(cmd_port_var.get())
+                evt_port = int(evt_port_var.get())
+            except Exception:
+                msg_var.set("Puertos inválidos.")
+                return
+            was_active = self.spectro_auto.get()
+            if was_active:
+                self._stop_spectro_listener()
+            self._spectro_host = host
+            self._spectro_commands_port = cmd_port
+            self._spectro_events_port = evt_port
+            self._spectro_auto_apply = apply_var.get()
+            save_spectro_settings({"commands_port": cmd_port, "events_port": evt_port})
+            history = [host] + [h for h in load_spectro_ips() if h != host]
+            save_spectro_ips(history[:10])
+            if was_active:
+                self._start_spectro_listener()
+            dlg.destroy()
+            apply_txt = "aplica" if self._spectro_auto_apply else "calcula (sin aplicar)"
+            self._status(f"Espectrómetro configurado | {host}:{cmd_port}/{evt_port} | {apply_txt}")
+            self._fire_save()
+
+        btn_f = tk.Frame(dlg, bg=BG_ENTRY)
+        btn_f.pack(fill="x", padx=14, pady=(8, 14))
+        tk.Button(btn_f, text="Guardar", command=_confirm,
+                  bg=ACCENT, fg="#fff", relief="flat",
+                  activebackground=ACCENT, font=("Arial", 10, "bold"),
+                  padx=12, pady=4).pack(side="left")
+        tk.Button(btn_f, text="Cancelar", command=dlg.destroy,
+                  bg="#555", fg="#ddd", relief="flat",
+                  padx=10, pady=4).pack(side="left", padx=(8, 0))
+
+        dlg.update_idletasks()
+        try:
+            root = self.winfo_toplevel()
+            rx = root.winfo_x() + (root.winfo_width()  - dlg.winfo_width())  // 2
+            ry = root.winfo_y() + (root.winfo_height() - dlg.winfo_height()) // 2
+            dlg.geometry(f"+{rx}+{ry}")
+        except Exception:
+            pass
+
+    def _apply_auto_plan(self, plan, source_label, auto_apply):
+        """Punto unico compartido por TODAS las fuentes automaticas
+        (Carbomax, Espectrometro) para escribir un plan {material: kg} en
+        kg_vars y aplicarlo/calcularlo, respetando SIEMPRE el tope de
+        seguridad de masa (self._carbomax_max_mass_factor, compartido entre
+        las dos fuentes -- un solo lugar donde ajustarlo, no hay un factor
+        separado por instrumento). Antes este chequeo estaba duplicado en
+        varios lugares por separado; ahora cualquier cambio al tope o a la
+        logica de aplicacion solo se hace una vez, aca.
+
+        source_label es solo para el mensaje de status ("Carbomax" /
+        "Espectrómetro"). auto_apply es el flag de "aplicar automaticamente
+        vs. solo calcular" de la fuente que llama (self._carbomax_auto_apply
+        o self._spectro_auto_apply).
+
+        Devuelve True si el plan se escribio/aplico, False si se bloqueo
+        por exceder el tope de masa (en ese caso ya deja la UI limpia y
+        el status actualizado; el llamador solo necesita decidir que
+        bookkeeping propio hacer, ej. marcar el registro como consumido)."""
+        base_mass = self._bath_mass()
+        predicted_mass = self._predicted_mass_for_plan(base_mass, plan)
+        max_auto_mass = base_mass * self._carbomax_max_mass_factor
+        if base_mass > 0 and predicted_mass > max_auto_mass:
+            self.clear_adjust_kgs()
+            self.calc_prediction()
+            self._status(
+                f"{source_label} automático bloqueado: el plan llevaria la masa "
+                f"de {fmt(base_mass, 1)} kg a {fmt(predicted_mass, 1)} kg. "
+                "Revisar composición o ajustar manualmente."
+            )
+            return False
+        for v in self.kg_vars.values():
+            v.set("0")
+        for name in plan.keys():
+            self._ensure_adjuster_present(name)
+        for name, kg in plan.items():
+            self.kg_vars[name].set(fmt(kg, 3))
+        self.calc_prediction()
+        if auto_apply:
+            self.apply_adjustment()
+        return True
+
+    def _apply_carbomax_plan(self, plan):
+        return self._apply_auto_plan(plan, "Carbomax", self._carbomax_auto_apply)
 
     def _consume_carbomax_record(self, record, bypass_session_check=False):
         record_key = self._carbomax_record_key(record)
@@ -2433,34 +3038,16 @@ class TabAjuste(ttk.Frame):
         )
         if not plan:
             raise ValueError("no se pudo calcular el ajuste automático de C/Si")
-        base_mass = self._bath_mass()
-        predicted_mass = self._predicted_mass_for_plan(base_mass, plan)
-        max_auto_mass = base_mass * self._carbomax_max_mass_factor
-        if base_mass > 0 and predicted_mass > max_auto_mass:
-            self._mark_carbomax_consumed(record_keys or record_key)
-            self._carbomax_pending_record = None
-            self.clear_adjust_kgs()
-            self.calc_prediction()
-            self._status(
-                "Carbomax automatico bloqueado: el plan llevaria la masa "
-                f"de {fmt(base_mass, 1)} kg a {fmt(predicted_mass, 1)} kg. "
-                "Revisar C/Si o ajustar manualmente."
-            )
-            self._fire_save()
-            return
         try:
             self._busy = True
-            for v in self.kg_vars.values():
-                v.set("0")
-            for name in plan.keys():
-                self._ensure_adjuster_present(name)
-            for name, kg in plan.items():
-                self.kg_vars[name].set(fmt(kg, 3))
-            self.calc_prediction()
-            if self._carbomax_auto_apply:
-                self.apply_adjustment()
+            applied_ok = self._apply_carbomax_plan(plan)
         finally:
             self._busy = False
+        if not applied_ok:
+            self._mark_carbomax_consumed(record_keys or record_key)
+            self._carbomax_pending_record = None
+            self._fire_save()
+            return
         self._mark_carbomax_consumed(record_keys or record_key)
         self._log_carbon_record(record, carbon, silicon, source_name, record_key)
         self._carbomax_pending_record = None
@@ -2640,6 +3227,7 @@ class TabAjuste(ttk.Frame):
         self._carbomax_consumed_paths.clear()
         self._carbomax_pending_record = None
         self._carbomax_auto_armed_at = None
+        self._spectro_pending_record = None
         self._clear_objective_selection()
         if clear_furnace_snapshot:
             self._clear_furnace_snapshot()
@@ -2965,6 +3553,12 @@ class TabAjuste(ttk.Frame):
             ent.config(state="readonly")
 
         def calculate():
+            # Despeja la composicion del componente DESCONOCIDO de un
+            # balance de masa simple: %mezcla * (mA+mB) = %A*mA + %B*mB.
+            # Util cuando se midio la composicion de la mezcla A+B ya
+            # colada (ej. un retorno de composicion desconocida mezclado
+            # con un material de composicion conocida) y se quiere inferir
+            # la composicion de la parte que no se puede medir directo.
             try:
                 known = to_float(known_mass.get())
                 mt = to_float(mass_total.get())
@@ -3511,103 +4105,7 @@ class TabAjuste(ttk.Frame):
             self._publish_furnace_context()
         self._fire_save()
 
-    def _show_carbomax_context_dialog(self, carbon, silicon, source_label=""):
-        dlg = tk.Toplevel(self)
-        dlg.title("Auto Ajuste — Iniciar sesión")
-        dlg.resizable(False, False)
-        dlg.grab_set()
-        dlg.focus_set()
-        dlg.configure(bg=BG_ENTRY)
-
-        pad = {"padx": 14, "pady": 6}
-
-        # Encabezado
-        src_txt = f"  ({source_label})" if source_label else ""
-        tk.Label(dlg, text=f"Carbomax detectó una nueva lectura{src_txt}",
-                 bg=BG_ENTRY, fg=FG, font=("Arial", 10, "bold")).pack(anchor="w", padx=14, pady=(14, 2))
-        tk.Label(dlg, text=f"C = {carbon:.2f} %      Si = {silicon:.2f} %",
-                 bg=BG_ENTRY, fg=ACCENT, font=("Arial", 13, "bold")).pack(anchor="w", padx=14, pady=(0, 10))
-
-        tk.Frame(dlg, bg="#444", height=1).pack(fill="x", padx=10)
-
-        # Material objetivo
-        tk.Label(dlg, text="Material objetivo:", bg=BG_ENTRY, fg=FG).pack(anchor="w", **pad)
-        obj_values = list(self.cb_obj["values"])
-        obj_var = tk.StringVar(value=self.cb_obj.get().strip())
-        obj_combo = ttk.Combobox(dlg, textvariable=obj_var, values=obj_values,
-                                 state="readonly", width=30)
-        obj_combo.pack(anchor="w", padx=14, pady=(0, 6))
-        if not obj_var.get() and obj_values:
-            obj_combo.current(0)
-
-        # Colada
-        tk.Label(dlg, text="N° colada (NNNN /AA):", bg=BG_ENTRY, fg=FG).pack(anchor="w", **pad)
-        colada_var = tk.StringVar(value=self.colada.get())
-        colada_entry = ttk.Entry(dlg, textvariable=colada_var, width=18)
-        colada_entry.pack(anchor="w", padx=14, pady=(0, 6))
-
-        msg_var = tk.StringVar()
-        tk.Label(dlg, textvariable=msg_var, bg=BG_ENTRY, fg="#e05252",
-                 font=("Arial", 9)).pack(anchor="w", padx=14)
-
-        def _confirm():
-            objetivo = obj_var.get().strip()
-            if not objetivo:
-                msg_var.set("Seleccioná un material objetivo.")
-                return
-            colada_txt = colada_var.get().strip()
-            dlg.destroy()
-            # Aplicar objetivo
-            self.cb_obj.set(objetivo)
-            self._on_objective_selected()
-            # Aplicar colada si fue ingresada
-            if colada_txt:
-                self.colada.set(colada_txt)
-            # Asegurar sesión iniciada
-            self._ensure_session_started_from_objective()
-            # Forzar cálculo ahora que hay contexto
-            if self.cb_obj.get().strip() and self.session_started_at and not self._busy:
-                try:
-                    self._busy = True
-                    plan = self._estimate_core(reset_kgs=True, log_it=False, silent=True, return_plan=True)
-                    if plan:
-                        pct = max(1, min(100, int(self.partial_pct.get())))
-                        p = pct / 100.0
-                        plan_scaled = {k: v * p for k, v in plan.items()}
-                        for name in plan_scaled.keys():
-                            self._ensure_adjuster_present(name)
-                        for v in self.kg_vars.values():
-                            v.set("0")
-                        for name, kg in plan_scaled.items():
-                            self.kg_vars[name].set(fmt(kg, 3))
-                        self._status(f"Auto Ajuste: plan calculado desde Carbomax ({carbon:.2f}% C / {silicon:.2f}% Si)")
-                finally:
-                    self._busy = False
-
-        def _cancel():
-            dlg.destroy()
-
-        btn_frame = tk.Frame(dlg, bg=BG_ENTRY)
-        btn_frame.pack(fill="x", padx=14, pady=(8, 14))
-        tk.Button(btn_frame, text="Calcular ajuste", command=_confirm,
-                  bg=ACCENT, fg="#fff", relief="flat",
-                  activebackground=ACCENT, font=("Arial", 10, "bold"),
-                  padx=12, pady=4).pack(side="left")
-        tk.Button(btn_frame, text="Cancelar", command=_cancel,
-                  bg="#555", fg="#ddd", relief="flat",
-                  padx=10, pady=4).pack(side="left", padx=(8, 0))
-
-        # Centrar respecto a la ventana principal
-        dlg.update_idletasks()
-        try:
-            root = self.winfo_toplevel()
-            rx = root.winfo_x() + (root.winfo_width()  - dlg.winfo_width())  // 2
-            ry = root.winfo_y() + (root.winfo_height() - dlg.winfo_height()) // 2
-            dlg.geometry(f"+{rx}+{ry}")
-        except Exception:
-            pass
-
-    def load_carbon_silicon(self, carbon_pct, silicon_pct, source_label="", force_estimate=False):
+    def load_carbon_silicon(self, carbon_pct, silicon_pct, source_label=""):
         values = {"C": to_float(carbon_pct), "Si": to_float(silicon_pct)}
         for el, e in self.actual_rows:
             if el not in values:
@@ -3623,29 +4121,35 @@ class TabAjuste(ttk.Frame):
         self._fire_save()
         src = f" desde {source_label}" if source_label else ""
         self._status(f"Composición actual actualizada{src}: C={fmt(values['C'])} / Si={fmt(values['Si'])}")
-        if force_estimate:
-            has_obj     = bool(self.cb_obj.get().strip())
-            has_session = bool(self.session_started_at)
-            if has_obj and has_session:
-                if not self.auto_est.get() and not self._busy:
-                    try:
-                        self._busy = True
-                        plan = self._estimate_core(reset_kgs=True, log_it=False, silent=True, return_plan=True)
-                        if plan:
-                            pct = max(1, min(100, int(self.partial_pct.get())))
-                            p = pct / 100.0
-                            plan_scaled = {k: v * p for k, v in plan.items()}
-                            for name in plan_scaled.keys():
-                                self._ensure_adjuster_present(name)
-                            for v in self.kg_vars.values():
-                                v.set("0")
-                            for name, kg in plan_scaled.items():
-                                self.kg_vars[name].set(fmt(kg, 3))
-                    finally:
-                        self._busy = False
-            else:
-                c_val, si_val = values["C"], values["Si"]
-                self.after(120, lambda: self._show_carbomax_context_dialog(c_val, si_val, source_label))
+
+    def load_elements(self, elements, source_label=""):
+        """Generaliza load_carbon_silicon a un dict {ElementName: pct}
+        cualquiera (usado por el Espectrometro, que devuelve muchos
+        elementos, no solo C/Si). Escritura PARCIAL igual que
+        load_carbon_silicon: los elementos que no vengan en `elements`
+        quedan sin tocar. Esta funcion es agnostica de que excluir -- el
+        filtro de "el espectro no mide bien C/Si" vive en
+        _run_spectro_auto/_on_spectro_event, no aca, para que quede
+        reutilizable tal cual si algun dia hace falta cargar el analisis
+        completo para otra cosa."""
+        values = {el: to_float(v) for el, v in (elements or {}).items()}
+        if not values:
+            return
+        for el, e in self.actual_rows:
+            if el not in values:
+                continue
+            e.config(state="normal")
+            e.delete(0, tk.END)
+            e.insert(0, fmt(values[el]))
+        self._recalc_fe_actual()
+        self._schedule_auto()
+        self._schedule_graph_update()
+        if self.cb_obj.get().strip() and self.session_started_at:
+            self._publish_furnace_context()
+        self._fire_save()
+        src = f" desde {source_label}" if source_label else ""
+        resumen = ", ".join(f"{el}={fmt(v)}" for el, v in sorted(values.items()))
+        self._status(f"Composición actual actualizada{src}: {resumen}")
 
     # ------------------------------ objetivo --------------------------------
     def load_objective(self):
@@ -3822,6 +4326,27 @@ class TabAjuste(ttk.Frame):
             messagebox.showerror("Estimar", "No se pudo calcular el plan. Revisá objetivo y materiales.")
 
     def _estimate_core(self, reset_kgs=True, log_it=False, log_calc=False, silent=False, return_plan=False, adjust_names_override=None):
+        # Corazon del calculo de ajuste. Estrategia en dos etapas porque C,
+        # Si y Fe se resuelven distinto del resto:
+        #  1) Para cada elemento que NO sea C/Si/Fe con objetivo > 0, se
+        #     sube usando el material de la lista de ajuste que mas aporte
+        #     ese elemento por kg ("Greedy"), o si el metodo elegido es
+        #     "Lineal", se arma y resuelve un sistema de ecuaciones para
+        #     varios elementos/materiales a la vez (ver _solve_linear, misma
+        #     idea que calc.solve_linear) — y lo que ese sistema no logre
+        #     cubrir completo cae de nuevo al greedy elemento-por-elemento
+        #     como fallback.
+        #  2) Recien despues, con las masas ya actualizadas por la etapa 1,
+        #     se resuelve C/Si/Fe: los materiales base a_graph/a_sil/a_steel
+        #     (grafito/ferrosilicio/acero-retorno tipicamente) se despejan
+        #     analiticamente contra el objetivo de C y Si (ver
+        #     _solve_kg_for_target, misma matematica que
+        #     calc.solve_kg_for_target), y Fe termina de cerrar el balance
+        #     de masa.
+        # adjust_names_override existe para el ciclo de Carbomax automatico
+        # (ver _run_carbomax_auto/_consume_carbomax_record), que fuerza la
+        # lista de materiales a solo C/Si/Fe en vez de la lista completa
+        # configurada por el usuario en la pestaña.
         try:
             name = self.cb_obj.get().strip()
             if not name:

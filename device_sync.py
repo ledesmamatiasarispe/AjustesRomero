@@ -1,19 +1,17 @@
 # device_sync.py
 """
-Sincronización de fondo con el dispositivo Carbomax.
+Utilidades de bajo nivel para hablar con el dispositivo Carbomax (parseo de
+HistIndex.dat/getallidx.cgi/dadoshist.cgi/getdata.cgi) mas la funcion
+sync_once() para sincronizar todo el indice contra SQLite de una vez.
 
-Flujo:
-  1. Consulta /getallidx.cgi  → índice JSON completo
-  2. Para cada ID nuevo (no en la DB local), consulta /getdata.cgi?btrqh=<id>
-  3. Guarda en SQLite mediante save_thermal_device_records()
-  4. Notifica a quien haya registrado un callback
+tab_analisis_termico.py usa directamente estas funciones de parseo
+(_parse_hist_index_dat, _parse_dadoshist_csv, _is_busy_html) para su propia
+descarga incremental (_fetch_device_records). El ciclo de descarga+vinculacion
+automatico y periodico vive en TabAjuste.carbomax_auto (ver tab_ajuste.py),
+que llama a TabAnalisisTermico.run_download_and_link_cycle_async(...).
 
-Uso desde la app:
-    from device_sync import DeviceSyncService
-    svc = DeviceSyncService(ip="192.168.0.180", on_done=mi_callback)
-    svc.start_once()        # dispara una sincronización ahora
-    svc.start_auto(120)     # sincroniza cada 120 segundos
-    svc.stop()
+Uso como script independiente (sincroniza una vez y sale):
+    python device_sync.py 192.168.0.180
 """
 
 import hashlib
@@ -120,6 +118,10 @@ def _raw_socket_get(ip, endpoint, timeout=SYNC_TIMEOUT):
 def _parse_json(raw, url=""):
     """Decodifica bytes → dict/list, maneja cabeceras HTTP opcionales."""
     text = raw.decode("utf-8", errors="replace")
+    # El firmware del equipo a veces manda "00011900" (dia 00, invalido)
+    # como fecha por defecto de un campo vacio; se lo corrige a "01011900"
+    # (dia 01) para que despues parsee como fecha valida en vez de tirar
+    # excepcion.
     text = text.replace("00011900", "01011900").replace("\\", "/").strip()
     if text.startswith("HTTP/"):
         for sep in ("\r\n\r\n", "\n\n"):
@@ -460,6 +462,11 @@ def sync_once(ip, log=None):
     except Exception as ex:
         return {"ok": False, "error": f"No se pudo leer DB: {ex}", "new": 0, "reused": 0, "total": 0}
 
+    # NOTA: existing_by_identity se arma pero no se usa para buscar mas abajo
+    # (la identidad solo se puede calcular DESPUES de bajar el detalle, ver
+    # _identity_from_info, que necesita campos como "Dt Inicio" que vienen
+    # del detalle, no del indice) — el match real de "ya lo tengo" se hace
+    # por legacy_path/row_id (existing_by_legacy) unicamente.
     existing_by_identity  = {}
     existing_by_legacy    = {}
     for rec in existing:
@@ -500,10 +507,9 @@ def sync_once(ip, log=None):
     for row in index_rows:
         row_id     = str(row.get("id", "")).strip()
         legacy_key = f"device://{ip}/{row_id}"
-        mode_raw   = str(row.get("mode", "") or "")
 
-        # ¿ya tenemos este registro?
-        cached = existing_by_identity.get("") or None   # placeholder
+        # ¿ya tenemos este registro? (unico match posible: por row_id, ver
+        # nota sobre existing_by_identity mas arriba)
         cached = existing_by_legacy.get(legacy_key)
 
         if cached:
@@ -589,280 +595,12 @@ def sync_once(ip, log=None):
     }
 
 
-# ---------- servicio de fondo ----------
-
-class DeviceSyncService:
-    """
-    Servicio de sincronización en background.
-
-    Ejemplo:
-        def on_done(result):
-            if result["ok"] and result["new"] > 0:
-                root.after(0, refresh_tab)
-
-        svc = DeviceSyncService("192.168.0.180", on_done=on_done)
-        svc.start_once()          # una sola vez
-        svc.start_auto(interval=180)  # cada 3 minutos
-    """
-
-    def __init__(self, ip, on_done=None, on_log=None):
-        """
-        ip       : str        IP del dispositivo
-        on_done  : callable   fn(result_dict) llamada en el hilo de fondo al terminar
-        on_log   : callable   fn(str) para mensajes de progreso
-        """
-        self.ip      = ip
-        self.on_done = on_done
-        self.on_log  = on_log
-        self._stop   = threading.Event()
-        self._thread = None
-        self._lock   = threading.Lock()
-
-    def _log(self, msg):
-        if callable(self.on_log):
-            try:
-                self.on_log(msg)
-            except Exception:
-                pass
-
-    def _run_once(self):
-        result = sync_once(self.ip, log=self._log)
-        if callable(self.on_done):
-            try:
-                self.on_done(result)
-            except Exception:
-                pass
-
-    def _run_auto(self, interval):
-        while not self._stop.wait(0):
-            self._run_once()
-            # esperar interval segundos, pero chequeando _stop cada segundo
-            for _ in range(int(interval)):
-                if self._stop.is_set():
-                    return
-                time.sleep(1)
-
-    def start_once(self):
-        """Lanza una sincronización única en background."""
-        with self._lock:
-            if self._thread and self._thread.is_alive():
-                return  # ya corriendo
-            self._stop.clear()
-            self._thread = threading.Thread(
-                target=self._run_once, daemon=True, name="CarboSync-once"
-            )
-            self._thread.start()
-
-    def start_auto(self, interval=180):
-        """Lanza sincronización periódica cada `interval` segundos."""
-        with self._lock:
-            if self._thread and self._thread.is_alive():
-                return
-            self._stop.clear()
-            self._thread = threading.Thread(
-                target=self._run_auto, args=(interval,),
-                daemon=True, name="CarboSync-auto"
-            )
-            self._thread.start()
-
-    def stop(self):
-        """Detiene la sincronización automática."""
-        self._stop.set()
-
-    @property
-    def is_running(self):
-        return bool(self._thread and self._thread.is_alive())
-
-
-# ---------- servicio de vigilancia (auto ajuste) ----------
-
-class WatchService:
-    """
-    Vigila el dispositivo en background y notifica cuando aparece un registro
-    CARBONO nuevo con C% y Si% disponibles.
-
-    Uso:
-        def on_carbon(info):
-            carbon  = info["C %"]     # float, ej. 3.21
-            silicon = info["Si %"]    # float, ej. 1.95
-            label   = info["_label"]  # nombre legible para mostrar en UI
-            root.after(0, lambda: ajuste_tab.load_carbon_silicon(carbon, silicon, label))
-
-        ws = WatchService("192.168.0.180", on_carbon=on_carbon, interval=20)
-        ws.start()
-        ws.stop()
-    """
-
-    # Intervalo de sondeo por defecto (segundos)
-    DEFAULT_INTERVAL = 20
-
-    def __init__(self, ip, on_carbon=None, on_status=None, interval=None):
-        """
-        ip          IP del dispositivo
-        on_carbon   fn(info_dict) — callback al detectar nuevo carbono
-        on_status   fn(str) — callback con mensajes de estado (opcional)
-        interval    segundos entre consultas al índice
-        """
-        self.ip          = ip
-        self.on_carbon   = on_carbon
-        self.on_status   = on_status
-        self.interval    = int(interval or self.DEFAULT_INTERVAL)
-        self._stop       = threading.Event()
-        self._thread     = None
-        self._lock       = threading.Lock()
-        self._known_ids  = set()   # IDs ya vistos en el dispositivo
-        self._seeded     = False   # ¿ya se sembró el conjunto inicial?
-
-    def _emit_status(self, msg):
-        if callable(self.on_status):
-            try:
-                self.on_status(msg)
-            except Exception:
-                pass
-
-    def _fetch_index(self, retries=SYNC_RETRIES):
-        """Obtiene el índice via HistIndex.dat (página web) con fallback a getallidx.cgi."""
-        try:
-            raw = _http_get(self.ip, "/HistIndex.dat", timeout=SYNC_TIMEOUT, retries=retries)
-            data = _parse_hist_index_dat(raw)
-        except Exception:
-            raw = _http_get(self.ip, "/getallidx.cgi", timeout=SYNC_TIMEOUT, retries=retries)
-            data = _parse_json(raw)
-        return data.get("TableIndex", [])
-
-    def _seed_known_ids(self):
-        """Marca todos los IDs actualmente en el dispositivo como 'ya conocidos'
-        para no re-disparar en el primer poll."""
-        try:
-            rows = self._fetch_index()
-            self._known_ids = {str(r.get("id", "")).strip() for r in rows if r.get("id") is not None}
-            self._seeded = True
-            self._emit_status(f"[watch] Semilla: {len(self._known_ids)} IDs conocidos en {self.ip}")
-        except Exception as ex:
-            self._emit_status(f"[watch] No se pudo obtener semilla inicial: {ex}")
-            self._seeded = True
-
-    def _poll_once(self):
-        """Un ciclo de sondeo: pide el índice y procesa IDs nuevos."""
-        try:
-            rows = self._fetch_index(retries=1)
-        except Exception as ex:
-            self._emit_status(f"[watch] Error al consultar índice: {ex}")
-            return
-
-        new_rows = []
-        for row in rows:
-            rid = str(row.get("id", "")).strip()
-            if rid not in self._known_ids:
-                new_rows.append(row)
-                self._known_ids.add(rid)
-
-        if not new_rows:
-            return
-
-        self._emit_status(f"[watch] {len(new_rows)} registro(s) nuevo(s) detectado(s)")
-
-        for row in new_rows:
-            mode = str(row.get("mode", "") or "").upper()
-            rid  = str(row.get("id", "")).strip()
-
-            if "CARB" not in mode:
-                self._emit_status(f"[watch] id={rid} modo={mode}: ignorado (no es CARBONO)")
-                continue
-
-            # Descargar detalle (web-page primero, JSON como fallback)
-            try:
-                raw_d    = _http_get(self.ip, f"/dadoshist.cgi?btrqh={urllib.parse.quote(rid)}",
-                                     timeout=SYNC_TIMEOUT, retries=2)
-                det_data = _parse_dadoshist_csv(raw_d, index_row=row)
-                rows_d   = det_data.get("TableData", [])
-                if not rows_d:
-                    self._emit_status(f"[watch] id={rid}: detalle vacío")
-                    continue
-                detail = rows_d[0]
-            except Exception as ex1:
-                try:
-                    raw_d    = _http_get(self.ip, f"/getdata.cgi?btrqh={urllib.parse.quote(rid)}",
-                                         timeout=SYNC_TIMEOUT, retries=2)
-                    det_data = _parse_json(raw_d)
-                    rows_d   = det_data.get("TableData", [])
-                    if not rows_d:
-                        self._emit_status(f"[watch] id={rid}: detalle vacío")
-                        continue
-                    detail = rows_d[0]
-                except Exception as ex2:
-                    self._emit_status(f"[watch] id={rid}: error descargando detalle: {ex2}")
-                    continue
-
-            info = _build_info_from_detail(self.ip, rid, detail)
-            carbon  = info.get("C %")
-            silicon = info.get("Si %")
-
-            if carbon is None or silicon is None:
-                self._emit_status(
-                    f"[watch] id={rid}: sin C% o Si% (C={carbon}, Si={silicon}), ignorado"
-                )
-                continue
-
-            label = f"Carbomax {self.ip} id={rid}  {info.get('Dt Inicio','')}"
-            info["_label"] = label
-            info["_ip"]    = self.ip
-            info["_id"]    = rid
-
-            self._emit_status(f"[watch] id={rid}: CARBONO nuevo → C={carbon}% Si={silicon}%")
-
-            if callable(self.on_carbon):
-                try:
-                    self.on_carbon(info)
-                except Exception as ex:
-                    self._emit_status(f"[watch] on_carbon callback error: {ex}")
-
-    def _run_loop(self):
-        # Sembrar primero
-        if not self._seeded:
-            self._seed_known_ids()
-
-        self._emit_status(f"[watch] Vigilancia activa — sondeo cada {self.interval}s")
-
-        while not self._stop.is_set():
-            self._poll_once()
-            # esperar interval segundos, interruptible segundo a segundo
-            for _ in range(self.interval):
-                if self._stop.is_set():
-                    return
-                time.sleep(1)
-
-        self._emit_status("[watch] Vigilancia detenida")
-
-    def start(self):
-        """Inicia la vigilancia en background. No-op si ya está corriendo."""
-        with self._lock:
-            if self._thread and self._thread.is_alive():
-                return
-            self._stop.clear()
-            self._thread = threading.Thread(
-                target=self._run_loop, daemon=True, name="CarboWatch"
-            )
-            self._thread.start()
-
-    def stop(self):
-        """Detiene la vigilancia."""
-        self._stop.set()
-
-    def reset_seed(self):
-        """Fuerza re-sembrado: el próximo poll tratará todos los IDs como nuevos
-        hasta la semilla actual. Útil si se reinicia una sesión de ajuste."""
-        self._seeded = False
-        self._known_ids.clear()
-
-    @property
-    def is_running(self):
-        return bool(self._thread and self._thread.is_alive() and not self._stop.is_set())
-
-
 # ---------- ejecución directa (script independiente) ----------
 
 if __name__ == "__main__":
+    # Permite correr "python device_sync.py [ip]" para probar la sync a mano
+    # sin levantar toda la app; la IP por defecto es solo una conveniencia
+    # para pruebas en el taller, no un valor "real" de produccion.
     import sys
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 

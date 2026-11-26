@@ -52,6 +52,8 @@
       <button class="tab is-active" data-tab-target="ajuste-panel" type="button">Pestana ajuste</button>
       <button class="tab" data-tab-target="cucharas-panel" type="button">Pestana cucharas</button>
       <button class="tab" data-tab-target="inoc-panel" type="button">Inoculaciones</button>
+      <button class="tab" data-tab-target="espectro-panel" type="button">Espectro</button>
+      <button class="tab" data-tab-target="modbus-panel" type="button">Delta Modbus</button>
     </nav>
 
     <!-- Modal: nuevo análisis Carbono del Carbomax -->
@@ -83,6 +85,28 @@
         <div class="carbomax-modal-actions">
           <button class="action-button" id="carbomax-confirm-btn" type="button">Calcular ajuste</button>
           <button class="secondary-button" id="carbomax-reject-btn" type="button">Descartar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Modal: nuevo análisis del Espectrómetro LMX06 -->
+    <div class="carbomax-modal-overlay" id="spectro-modal-overlay" hidden>
+      <div class="carbomax-modal" id="spectro-modal" role="dialog" aria-modal="true">
+        <p class="carbomax-modal-kicker">Espectrómetro automático</p>
+        <h2 class="carbomax-modal-title">Nuevo análisis</h2>
+        <p class="carbomax-modal-source" id="spectro-modal-source"></p>
+        <div class="spectro-modal-values" id="spectro-modal-values"></div>
+        <div class="carbomax-modal-field" id="spectro-objetivo-row">
+          <label class="carbomax-modal-label" for="spectro-objetivo-select">Material objetivo</label>
+          <select class="carbomax-modal-select" id="spectro-objetivo-select"></select>
+        </div>
+        <div class="carbomax-modal-field">
+          <label class="carbomax-modal-label" for="spectro-colada-input">N° colada (opcional)</label>
+          <input class="carbomax-modal-input" id="spectro-colada-input" type="text" placeholder="0050/26" maxlength="30">
+        </div>
+        <div class="carbomax-modal-actions">
+          <button class="action-button" id="spectro-confirm-btn" type="button">Calcular ajuste</button>
+          <button class="secondary-button" id="spectro-reject-btn" type="button">Descartar</button>
         </div>
       </div>
     </div>
@@ -345,6 +369,52 @@
             </div>
           </section>
         </div>
+      </section>
+
+      <section class="panel" id="espectro-panel">
+        <div class="data-card espectro-status-card">
+          <div class="card-header">
+            <div>
+              <p class="card-kicker">Control remoto</p>
+              <h2>Botonera espectrometro LMX06</h2>
+            </div>
+          </div>
+          <p class="espectro-hint">
+            Manda la tecla al espectrometro como si se apretara en su propio teclado.
+            Requiere que <strong>LMX06MeasurementGUI</strong> este abierto en esa PC.
+          </p>
+          <div class="toolbar-status" id="espectro-status"></div>
+        </div>
+        <div class="espectro-groups" id="espectro-groups"></div>
+      </section>
+
+      <section class="panel" id="modbus-panel">
+        <div class="data-card">
+          <div class="card-header">
+            <div>
+              <p class="card-kicker">RS485 / Modbus RTU Slave</p>
+              <h2>Carbomax Delta — lectura cruda</h2>
+            </div>
+          </div>
+          <p class="espectro-hint">
+            Lee las 4 funciones de lectura Modbus (Coils, Discrete Inputs, Holding Registers,
+            Input Registers) directo del equipo por COM3, sin interpretar nada — sirve para
+            encontrar el mapa de registros a mano.
+          </p>
+          <div class="modbus-controls">
+            <label class="modbus-field">
+              <span>Direccion inicial</span>
+              <input class="modbus-input" id="modbus-start-input" type="number" min="0" step="1" value="0">
+            </label>
+            <label class="modbus-field">
+              <span>Cantidad</span>
+              <input class="modbus-input" id="modbus-count-input" type="number" min="1" max="125" step="1" value="20">
+            </label>
+            <button class="action-button big" id="modbus-read-btn" type="button">Leer</button>
+          </div>
+          <div class="toolbar-status" id="modbus-status"></div>
+        </div>
+        <div class="modbus-grid" id="modbus-grid"></div>
       </section>
     </main>
   </div>

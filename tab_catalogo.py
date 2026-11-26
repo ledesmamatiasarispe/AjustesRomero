@@ -1,4 +1,18 @@
 # C:\Users\LABOR01\ajuste_comp\tab_catalogo.py
+#
+# Pestaña Catálogo: ABM de materiales (ferroaleaciones, aditivos, retornos,
+# inoculantes, y dos tipos especiales — ver el editor _edit_dialog):
+#   - "Aleación propia": una aleacion real con composicion y limites +-
+#     propios, usada como material objetivo de ajuste.
+#   - "Aleación final": NO es un material con composicion propia, es una
+#     ficha de calidad/norma (traccion, dureza, protocolo de inoculacion)
+#     que se aplica sobre una o mas "bases" (aleaciones propias) — la usan
+#     tab_calidad.py y el kiosko de Pie de Horno para saber que controles
+#     corresponden a cada producto final.
+# El resto de las pestañas leen self.model (la lista de dicts del
+# catalogo) por referencia — modificarlo aca y llamar _save_and_refresh()
+# es lo que persiste a SQLite y notifica a las demas pestañas via el
+# evento virtual <<CatalogUpdated>>.
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import json, csv
@@ -694,6 +708,14 @@ class TabCatalogo(ttk.Frame):
         ttk.Entry(rowf4, textvariable=final_cementita, width=12).pack(side="left", padx=6)
 
         # ── Panel de inoculación (dentro de final_frame) ──────────────────────
+        # Cada "Aleación final" puede tener un protocolo de inoculación por
+        # defecto, y opcionalmente uno DISTINTO por cada "base" (calidad_meta
+        # bases) a la que aplique — por eso el Notebook con una pestaña "Por
+        # defecto" + una por base (mas abajo). El checkbox "Usar protocolo
+        # por defecto" en cada pestaña de base decide si esa base hereda el
+        # protocolo comun o usa su propia grilla independiente (ver
+        # use_default_vars / host_api.resolve_inoc_protocol, que hace la
+        # misma resolucion del lado del servidor web).
         inoc_panel = ttk.LabelFrame(final_frame, text="Protocolo de inoculación", padding=6)
         inoc_panel.pack(fill="both", expand=True, pady=(10, 0))
 
@@ -1047,7 +1069,7 @@ class TabCatalogo(ttk.Frame):
             frm = ttk.Frame(win, padding=10)
             frm.pack(fill="both", expand=True)
 
-            ttk.Label(frm, text="Rango ± absoluto").grid(row=0, column=0, sticky="w")
+            ttk.Label(frm, text="Rango ± absoluto (aplica a min y max)").grid(row=0, column=0, sticky="w")
             v_abs = tk.StringVar(value="0.10")
             e_abs = ttk.Entry(frm, textvariable=v_abs, width=8)
             e_abs.grid(row=0, column=1, padx=6)
@@ -1072,6 +1094,10 @@ class TabCatalogo(ttk.Frame):
             btns2.grid(row=4, column=0, columnspan=2, pady=(10,0), sticky="e")
 
             def apply():
+                # Aplica el mismo delta a min y max (relleno rapido
+                # simetrico); despues de aplicar, cada campo se puede
+                # seguir editando por separado si hace falta un limite
+                # asimetrico para algun elemento puntual.
                 try:
                     abs_rng = to_float_or_none(v_abs.get())
                     if abs_rng is None or abs_rng < 0:
@@ -1080,13 +1106,14 @@ class TabCatalogo(ttk.Frame):
                     for i, el in enumerate(ELEMENTS):
                         if sel_idx and i not in sel_idx:
                             continue
+                        v_min, _, v_max, _ = limit_vars[el]
                         ideal = to_float_or_none(comp_vars[el].get())
                         if ideal is None or ideal <= 0:
-                            v_rng, *_ = limit_vars[el]
-                            v_rng.set("")
+                            v_min.set("")
+                            v_max.set("")
                             continue
-                        v_rng, *_ = limit_vars[el]
-                        v_rng.set(fmt_opt(abs_rng))
+                        v_min.set(fmt_opt(abs_rng))
+                        v_max.set(fmt_opt(abs_rng))
                     win.destroy()
                 except Exception as ex:
                     messagebox.showerror("Auto-límites", str(ex), parent=win)
@@ -1105,9 +1132,15 @@ class TabCatalogo(ttk.Frame):
 
         sf_lim = ScrollFrame(limits_frame); sf_lim.pack(fill="both", expand=True)
         head = ttk.Frame(sf_lim.inner); head.grid(row=0, column=0, sticky="ew", padx=2, pady=2)
-        for j, c in enumerate(("Elemento","± absoluto")):
+        for j, c in enumerate(("Elemento", "− (min)", "+ (max)")):
             ttk.Label(head, text=c, font=("Segoe UI",10,"bold")).grid(row=0, column=j, padx=6, pady=2)
 
+        # Cada elemento tiene DOS deltas independientes desde el ideal
+        # (min y max), no un solo "±" simetrico — el modelo de datos
+        # (soft_min/soft_max) siempre soporto limites asimetricos, ahora
+        # el editor tambien. Dejar un campo vacio significa "sin limite
+        # de ese lado"; si los dos quedan vacios, el elemento no tiene
+        # limites en absoluto (igual que antes).
         limit_vars = {}
         existing_limits = _normalize_limites((item or {}).get("limites", {}))
         for i, el in enumerate(ELEMENTS, start=1):
@@ -1116,22 +1149,27 @@ class TabCatalogo(ttk.Frame):
             ideal = to_float_or_none(comp_vars[el].get())
             sm = existing_limits[el]["soft_min"]
             sM = existing_limits[el]["soft_max"]
-            delta = ""
-            if ideal is not None and sm is not None and sM is not None:
-                d1 = ideal - sm
-                d2 = sM - ideal
-                if d1 >= 0 and d2 >= 0:
-                    delta = fmt_opt(min(d1, d2))
-            v_rng = tk.StringVar(value=delta)
-            e_rng = ttk.Entry(r, textvariable=v_rng, width=10)
-            e_rng.grid(row=0, column=1, padx=4)
-            limit_vars[el] = (v_rng, e_rng)
+            delta_min = ""
+            delta_max = ""
+            if ideal is not None:
+                if sm is not None and (ideal - sm) >= 0:
+                    delta_min = fmt_opt(ideal - sm)
+                if sM is not None and (sM - ideal) >= 0:
+                    delta_max = fmt_opt(sM - ideal)
+            v_min = tk.StringVar(value=delta_min)
+            e_min = ttk.Entry(r, textvariable=v_min, width=10)
+            e_min.grid(row=0, column=1, padx=4)
+            v_max = tk.StringVar(value=delta_max)
+            e_max = ttk.Entry(r, textvariable=v_max, width=10)
+            e_max.grid(row=0, column=2, padx=4)
+            limit_vars[el] = (v_min, e_min, v_max, e_max)
 
         def _toggle_limits_state(*_):
             state = "normal" if tipo.get() in ("Aleación propia", "Aleación final") else "disabled"
             for el in ELEMENTS:
-                _, e_rng = limit_vars[el]
-                e_rng.config(state=state)
+                _, e_min, _, e_max = limit_vars[el]
+                e_min.config(state=state)
+                e_max.config(state=state)
         cb_tipo.bind("<<ComboboxSelected>>", lambda e: _toggle_limits_state())
         _toggle_limits_state()
 
@@ -1184,6 +1222,12 @@ class TabCatalogo(ttk.Frame):
             final_family.set("Gris")
 
         def _toggle_final_family_fields(*_):
+            # "Morfología" (clasificacion ISO 945 A-E de laminas de
+            # grafito, ver quality_analyzer.classify_laminar_morphology)
+            # solo tiene sentido para fundicion gris (grafito laminar); la
+            # nodular no tiene esa clasificacion, por eso el campo se
+            # oculta y se vacia en vez de dejarlo con un valor que no
+            # aplica.
             if final_family.get().strip() == "Nodular":
                 final_morf.set("")
                 final_morf_label.pack_forget()
@@ -1318,6 +1362,15 @@ class TabCatalogo(ttk.Frame):
             _commit(a)
 
         def _save_final(a):
+            # "Aleación final" es un registro de ficha de calidad/norma
+            # (traccion, dureza, tamaño de grafito, protocolo de
+            # inoculacion, etc.) asociado a una o mas "bases" — NO es una
+            # aleacion con composicion propia para calculo de ajuste (por
+            # eso la UI de composicion/limites/CE queda oculta para este
+            # tipo, ver _toggle_dialog_mode). composicion/limites/especiales
+            # simplemente se conservan tal cual estaban (vacios en un
+            # registro nuevo) para no romper esos campos si el tipo se
+            # cambia de ida y vuelta en el editor.
             src = item or {}
             bases = [b for b, var in base_vars.items() if var.get()]
             if not bases:
@@ -1367,17 +1420,26 @@ class TabCatalogo(ttk.Frame):
             _commit(a)
 
         def _save_generic(a):
+            # Cada elemento tiene dos deltas independientes desde el ideal
+            # (min y max, ver limit_vars mas arriba) — soft_min = ideal -
+            # delta_min, soft_max = ideal + delta_max. Un campo vacio deja
+            # ese lado sin limite (None); si los dos quedan vacios, el
+            # elemento no tiene limites en absoluto.
             for el in ELEMENTS:
-                v_rng, *_ = limit_vars[el]
-                rng = to_float_or_none(v_rng.get())
+                v_min, _, v_max, _ = limit_vars[el]
+                rng_min = to_float_or_none(v_min.get())
+                rng_max = to_float_or_none(v_max.get())
                 ideal = to_float_or_none(comp_vars[el].get())
-                if rng is None or ideal is None or ideal <= 0:
+                if ideal is None or ideal <= 0 or (rng_min is None and rng_max is None):
                     sm = sM = None
                 else:
-                    if rng < 0:
-                        raise ValueError(f"[{el}] Rango inválido.")
-                    sm, sM = ideal - rng, ideal + rng
-                    if sm > sM:
+                    if rng_min is not None and rng_min < 0:
+                        raise ValueError(f"[{el}] Rango mínimo inválido.")
+                    if rng_max is not None and rng_max < 0:
+                        raise ValueError(f"[{el}] Rango máximo inválido.")
+                    sm = ideal - rng_min if rng_min is not None else None
+                    sM = ideal + rng_max if rng_max is not None else None
+                    if sm is not None and sM is not None and sm > sM:
                         raise ValueError(f"[{el}] Rango inválido.")
                 a["limites"][el] = {"soft_min": sm, "soft_max": sM, "hard_min": None, "hard_max": None}
             ce_min = to_float_or_none(v_ce_min.get())
@@ -1589,6 +1651,11 @@ class TabCatalogo(ttk.Frame):
     def _save_and_refresh(self):
         save_alloys(self.model)
         self.apply_filter()
+        # Evento virtual de Tkinter: avisa a las demas pestañas (Ajuste,
+        # Historicos, Informes, Calidad) que el catalogo cambio, sin que
+        # este modulo necesite conocerlas directamente (bind hecho en
+        # app.py). Asi cada una decide que refrescar (objetivos, combos,
+        # etc.) sin acoplar tab_catalogo.py a las demas pestañas.
         try:
             self.event_generate("<<CatalogUpdated>>", when="tail")
         except Exception:

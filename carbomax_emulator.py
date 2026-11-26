@@ -12,6 +12,13 @@ Uso:
   python carbomax_emulator.py [puerto]   (default: 8766)
 
 Luego en la app, cambiar IP del equipo a  127.0.0.1:8766
+
+Es el UNICO emulador de Carbomax del repo (existia otro mas simple,
+mock_carbomax.py — solo formato JSON getallidx/getdata — que se elimino
+por ser un subconjunto de este: este archivo tambien sirve
+HistIndex.dat/dadoshist.cgi, el formato CSV que el dispositivo real
+intenta primero). run_with_mock.py lo usa para pruebas locales sin
+depender del equipo real.
 """
 
 import json

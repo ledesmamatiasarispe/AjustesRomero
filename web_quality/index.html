@@ -88,36 +88,6 @@
   </div>
 </aside>
 
-<!-- ── Chat en vivo ────────────────────────────────────────── -->
-<section id="chatPanel">
-  <div id="chatHeader">
-    <span>💬 Chat</span>
-    <button id="btnChatToggle" title="Minimizar">▼</button>
-  </div>
-  <div id="chatBody">
-
-    <div id="chatLogin">
-      <p class="chat-login-title">Entrá al chat para hablar con el encargado</p>
-      <input id="chatUser" type="text" placeholder="Nombre de usuario" autocomplete="username" maxlength="30">
-      <input id="chatPass" type="password" placeholder="Contraseña" autocomplete="current-password">
-      <div class="chat-btn-row">
-        <button id="btnChatLogin" class="btn-primary">Entrar</button>
-        <button id="btnChatRegister" class="btn-secondary">Registrarse</button>
-      </div>
-      <p id="chatLoginError"></p>
-    </div>
-
-    <div id="chatActive" hidden>
-      <div id="chatMessages"></div>
-      <div id="chatInputRow">
-        <input id="chatInput" type="text" placeholder="Escribí tu mensaje…" maxlength="500" autocomplete="off">
-        <button id="btnChatSend" class="btn-primary">Enviar</button>
-      </div>
-    </div>
-
-  </div>
-</section>
-
 <script src="/app.js?v=3"></script>
 </body>
 </html>

@@ -1,3 +1,23 @@
+# host_api.py
+# Servidor HTTP embebido (sin framework, http.server puro) que expone la
+# app de escritorio a la web "Pie de Horno": una SPA que corren los
+# operarios desde el celular/tablet en el piso de planta para llevar el
+# conteo de cucharas y confirmar los materiales del horno, todo sincronizado
+# en vivo con lo que ve el escritorio.
+#
+# Modelo de auth: no hay usuarios/contraseñas, cada dispositivo (celular)
+# se identifica con un device_id random generado del lado del cliente y
+# persistido en localStorage; el HOST (escritorio, pestaña Pie de Horno)
+# tiene que aprobarlo manualmente antes de que pueda leer datos, y
+# asignarle rol "editor" antes de que pueda escribir (conteo de cucharas).
+# Ver register_or_touch_device/get_device y la tabla de estados en
+# storage.load_devices_state/save_devices_state.
+#
+# Tiempo real: en vez de polling desde el cliente, /api/events es un
+# stream Server-Sent-Events que se queda esperando en _EVENT_CONDITION
+# hasta que algo llama notify_data_changed() (sube _DATA_VERSION y
+# despierta a todos los streams); el cliente web, al recibir el evento
+# "refresh", vuelve a pedir /api/pie-horno. Ver _serve_events.
 import json
 import mimetypes
 import re
@@ -20,12 +40,16 @@ from storage import (
     save_devices_state,
     save_ladles_state,
 )
+import carbomax_modbus_client
+import spectro_agent_client
 
 
 HOST_API_HOST = "0.0.0.0"
 HOST_API_PORT = 8765
 CURRENT_HOST_API_PORT = HOST_API_PORT
 WEB_DIR = Path(__file__).resolve().parent / "web"
+ICONS_DIR = WEB_DIR / "icons"
+ICON_NAME_RE = re.compile(r"^[A-Za-z0-9_.-]+\.png$")
 MAX_JSON_BODY_BYTES = 32 * 1024
 MAX_CUCHARAMATERIALS = 200
 MAX_CUCHARAS_COUNT = 9999
@@ -37,6 +61,14 @@ DEVICE_ROLES = ("viewer", "editor")
 _EVENT_CONDITION = threading.Condition()
 _DATA_VERSION = 0
 
+# Puente entre el ciclo automatico de Carbomax (tab_ajuste.py) y la web:
+# cuando el escritorio detecta una lectura nueva y no hay objetivo/sesion
+# activa, publica el "pendiente" aca (set_carbomax_pending) para que el
+# kiosko web lo muestre y el operario confirme/rechace desde el celular;
+# la respuesta llega por _handle_post_carbomax_action, que invoca este
+# callback (registrado por tab_ajuste via set_carbomax_action_callback)
+# para que el escritorio siga el flujo normal como si lo hubiera hecho el
+# operario localmente.
 _CARBOMAX_PENDING = {}          # {carbon, silicon, source, analysis_ts, objectives, record_keys}
 _CARBOMAX_ACTION_CB = None      # fn(action, objetivo, colada) llamado desde el web
 
@@ -55,6 +87,30 @@ def set_carbomax_pending(data):
 def clear_carbomax_pending():
     global _CARBOMAX_PENDING
     _CARBOMAX_PENDING = {}
+    notify_data_changed()
+
+
+# Mismo puente que el de Carbomax arriba, pero para el espectrometro LMX06
+# (ver spectro_client.py / _run_spectro_auto en tab_ajuste.py). El pendiente
+# trae un dict de elementos en vez de C/Si fijos.
+_SPECTRO_PENDING = {}           # {elements: {ElementName: pct}, source, objectives}
+_SPECTRO_ACTION_CB = None       # fn(action, objetivo, colada) llamado desde el web
+
+
+def set_spectro_action_callback(fn):
+    global _SPECTRO_ACTION_CB
+    _SPECTRO_ACTION_CB = fn
+
+
+def set_spectro_pending(data):
+    global _SPECTRO_PENDING
+    _SPECTRO_PENDING = dict(data) if data else {}
+    notify_data_changed()
+
+
+def clear_spectro_pending():
+    global _SPECTRO_PENDING
+    _SPECTRO_PENDING = {}
     notify_data_changed()
 
 
@@ -132,33 +188,6 @@ def _family_for_material_objetivo(material_objetivo):
     return ""
 
 
-def _cucharas_payload_for(material_objetivo):
-    target = str(material_objetivo or "").strip()
-    stored = load_ladles_state()
-    current = stored.get("current", {}) if isinstance(stored.get("current", {}), dict) else {}
-    counts_raw = current.get("counts", {}) if target else {}
-    if not isinstance(counts_raw, dict):
-        counts_raw = {}
-    materials = _ladle_material_options(target)
-    rows = []
-    total = 0
-    for code in materials:
-        try:
-            count = max(0, int(counts_raw.get(code, 0)))
-        except Exception:
-            count = 0
-        total += count
-        rows.append({"material_final": code, "cantidad": count})
-    return {
-        "colada": str(current.get("colada", "")).strip(),
-        "material_objetivo": target,
-        "rows": rows,
-        "total_cucharas": total,
-        "updated_at": stored.get("updated_at"),
-        "family": _family_for_material_objetivo(target),
-    }
-
-
 def _host_context(payload):
     ajuste = payload.get("ajuste", {}) if isinstance(payload, dict) else {}
     if not isinstance(ajuste, dict):
@@ -201,6 +230,16 @@ def _normalize_ladles_state(state):
     return base
 
 
+# El conteo de cucharas NO se guarda solo como un numero por material: cada
+# incremento/decremento queda registrado como un "evento" individual con su
+# timestamp (saved_at). El conteo visible es simplemente len(eventos); la
+# lista completa es lo que permite despues calcular estadisticas (primera/
+# ultima cuchara, duracion de la colada) en _statistics_from_events, y
+# reconstruir el estado si hace falta deshacer un "Iniciar" (ver
+# restore_previous_cucharas). _normalize_events_for_counts hace la
+# conversion inversa (de un dict {material: cantidad} a la lista de eventos
+# correspondiente, recortando o rellenando con la hora actual) para los
+# casos donde el cliente manda un conteo directo en vez de un delta.
 def _event_time(event):
     if isinstance(event, dict):
         return str(event.get("saved_at", "") or "")
@@ -307,6 +346,13 @@ def _statistics_from_events(events, materials):
     }
 
 
+# El estado de cucharas ("current") tiene su propia nocion de colada/
+# material_objetivo, separada de la que vive en furnace_state (la sesion de
+# Ajuste). Esta funcion es la que los mantiene alineados: si cucharas
+# todavia no tiene colada/objetivo (recien iniciado, o el operario nunca
+# tocó "Iniciar"), los toma prestados del contexto actual de Ajuste. No
+# fuerza el cambio si cucharas ya tiene su propia colada distinta en curso
+# (eso lo maneja explicitamente start_cucharas_count/colada_override).
 def _sync_ladles_current_with_host(state, host_payload):
     out = _normalize_ladles_state(state)
     current = out["current"]
@@ -376,6 +422,7 @@ def build_host_payload():
         save_ladles_state(ladles)
     payload["cucharas"] = _cucharas_payload_from_state(ladles)
     payload["carbomax_pending"] = dict(_CARBOMAX_PENDING) if _CARBOMAX_PENDING else None
+    payload["spectro_pending"] = dict(_SPECTRO_PENDING) if _SPECTRO_PENDING else None
     return payload
 
 
@@ -850,6 +897,11 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
         self._send_bytes(raw, content_type or "application/octet-stream")
 
     def _serve_events(self):
+        # Long-lived SSE: mantiene la conexion abierta y solo escribe algo
+        # cuando _DATA_VERSION cambia (o cada EVENT_KEEPALIVE_SECONDS, para
+        # que proxies/navegadores no den la conexion por muerta). El cliente
+        # web no recibe el dato en si por este canal, solo un aviso de
+        # "algo cambio, volvé a pedir /api/pie-horno" (ver notify_data_changed).
         status = self._device_auth_status()
         if status != "approved":
             self._send_device_error(status)
@@ -1003,6 +1055,18 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
             result.append(entry)
         self._send_json({"ok": True, "inoculaciones": result})
 
+    def _handle_get_spectro_commands(self):
+        device = self._device_auth_device()
+        status = str((device or {}).get("status") or "unknown")
+        if status != "approved":
+            self._send_device_error(status)
+            return
+        self._send_json({
+            "ok": True,
+            "comandos": spectro_agent_client.comandos_publicos(),
+            "can_send": self._can_edit_cucharas(device),
+        })
+
     def do_GET(self):
         path = self._request_path()
         if path in ("/", "/index.html"):
@@ -1011,6 +1075,12 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
             self._serve_file(WEB_DIR / "app.css")
         elif path == "/static/app.js":
             self._serve_file(WEB_DIR / "app.js")
+        elif path.startswith("/icons/"):
+            name = path[len("/icons/"):]
+            if ICON_NAME_RE.match(name):
+                self._serve_file(ICONS_DIR / name)
+            else:
+                self._send_json({"ok": False, "error": "not_found"}, status=404)
         elif path in ("/api/events", "/api/events/"):
             self._serve_events()
         elif path in ("/api/health", "/api/health/"):
@@ -1021,11 +1091,13 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
             self._handle_get_pie_horno()
         elif path in ("/api/inoculaciones", "/api/inoculaciones/"):
             self._handle_get_inoculaciones()
+        elif path in ("/api/spectro/commands", "/api/spectro/commands/"):
+            self._handle_get_spectro_commands()
         else:
             self._send_json({
                 "ok": False,
                 "error": "not_found",
-                "endpoints": ["/", "/api/health", "/api/device/register", "/api/device/status", "/api/pie-horno", "/api/inoculaciones", "/api/events"],
+                "endpoints": ["/", "/api/health", "/api/device/register", "/api/device/status", "/api/pie-horno", "/api/inoculaciones", "/api/events", "/api/spectro/commands", "/api/modbus/read"],
             }, status=404)
 
     # ── POST handlers ─────────────────────────────────────────────────────────
@@ -1156,6 +1228,82 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
                 pass
         self._send_json({"ok": True, "action": action})
 
+    def _handle_post_spectro_action(self):
+        device = self._device_auth_device()
+        if str((device or {}).get("status") or "unknown") != "approved":
+            self._send_device_error(str((device or {}).get("status") or "unknown"))
+            return
+        payload = self._read_json_body()
+        if payload is None:
+            self._send_json({"ok": False, "error": "invalid_json"}, status=400)
+            return
+        action = str(payload.get("action", "") or "").strip().lower()
+        if action not in ("confirm", "reject"):
+            self._send_json({"ok": False, "error": "invalid_action"}, status=400)
+            return
+        objetivo = str(payload.get("objetivo", "") or "").strip()
+        colada   = str(payload.get("colada", "") or "").strip()
+        clear_spectro_pending()
+        if callable(_SPECTRO_ACTION_CB):
+            try:
+                _SPECTRO_ACTION_CB(action, objetivo, colada)
+            except Exception:
+                pass
+        self._send_json({"ok": True, "action": action})
+
+    def _handle_post_spectro_command(self):
+        device = self._device_auth_device()
+        status = str((device or {}).get("status") or "unknown")
+        if status != "approved":
+            self._send_device_error(status)
+            return
+        if not self._can_edit_cucharas(device):
+            self._send_json({
+                "ok": False, "error": "read_only", "status": "approved",
+                "role": str((device or {}).get("role") or "viewer"),
+                "message": "Este dispositivo solo puede ver.",
+            }, status=403)
+            return
+        payload = self._read_json_body()
+        if payload is None:
+            self._send_json({"ok": False, "error": "invalid_json"}, status=400)
+            return
+        slug = str(payload.get("cmd", "") or "").strip()
+        if slug not in spectro_agent_client.COMANDOS:
+            self._send_json({"ok": False, "error": "comando_desconocido"}, status=400)
+            return
+        try:
+            result = spectro_agent_client.enviar_comando(slug)
+        except spectro_agent_client.SpectroAgentError as ex:
+            self._send_json({"ok": False, "error": "agente_inalcanzable", "message": str(ex)}, status=502)
+            return
+        self._send_json(result, status=200 if result.get("ok") else 502)
+
+    def _handle_post_modbus_read(self):
+        device = self._device_auth_device()
+        status = str((device or {}).get("status") or "unknown")
+        if status != "approved":
+            self._send_device_error(status)
+            return
+        if not self._can_edit_cucharas(device):
+            self._send_json({
+                "ok": False, "error": "read_only", "status": "approved",
+                "role": str((device or {}).get("role") or "viewer"),
+                "message": "Este dispositivo solo puede ver.",
+            }, status=403)
+            return
+        payload = self._read_json_body() or {}
+        try:
+            start = max(0, int(payload.get("start", 0)))
+        except Exception:
+            start = 0
+        try:
+            count = int(payload.get("count", 20))
+        except Exception:
+            count = 20
+        results = carbomax_modbus_client.leer_todo(start_address=start, quantity=count)
+        self._send_json({"ok": True, "start": start, "results": results})
+
     def do_POST(self):
         path = self._request_path()
         if path in ("/api/device/register", "/api/device/register/"):
@@ -1166,11 +1314,22 @@ class _HostAPIHandler(BaseHTTPRequestHandler):
             self._handle_post_cucharas()
         elif path in ("/api/carbomax/action", "/api/carbomax/action/"):
             self._handle_post_carbomax_action()
+        elif path in ("/api/spectro/action", "/api/spectro/action/"):
+            self._handle_post_spectro_action()
+        elif path in ("/api/spectro/command", "/api/spectro/command/"):
+            self._handle_post_spectro_command()
+        elif path in ("/api/modbus/read", "/api/modbus/read/"):
+            self._handle_post_modbus_read()
         else:
             self._send_json({"ok": False, "error": "not_found"}, status=404)
 
 
 class _QuietThreadingHTTPServer(ThreadingHTTPServer):
+    # Los celulares en el piso de planta se desconectan/reconectan todo el
+    # tiempo (wifi debil, se cierra el navegador, etc). Sin esto,
+    # ThreadingHTTPServer imprime un traceback completo por cada corte de
+    # conexion en pleno stream de /api/events. 10053/10054 son los codigos
+    # WinError equivalentes a BrokenPipeError/ConnectionReset en Windows.
     def handle_error(self, request, client_address):
         exc_type, exc, _ = sys.exc_info()
         disconnect_errors = (BrokenPipeError, ConnectionAbortedError, ConnectionResetError)

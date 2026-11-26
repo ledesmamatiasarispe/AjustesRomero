@@ -2,6 +2,13 @@
 Installer de AjustesRomero
 Uso: python3 install.py   (Linux)
      python  install.py   (Windows)
+
+Diseño: una clase base OSProfile con los pasos especificos de cada SO
+(instalar tkinter, crear acceso directo, registrar autoarranque del
+updater) como metodos a sobreescribir; detect_os() elige la subclase
+correcta (Windows/Fedora/Fedora atomico via rpm-ostree/Debian-Ubuntu-
+derivados) leyendo /etc/os-release en Linux. Agregar soporte a un SO nuevo
+es agregar una subclase, no tocar la logica principal en main().
 """
 
 import os
@@ -263,6 +270,9 @@ def detect_os() -> OSProfile:
 # ── Descarga de la app ────────────────────────────────────────────────────────
 
 def download_app(target_dir: Path) -> bool:
+    # RELEASE_URL esta en None (ver arriba) hasta que exista una release
+    # publicada en GitHub, asi que hoy esto SIEMPRE usa _clone_repo (git
+    # clone/pull) — _download_release queda listo pero sin usarse todavia.
     return _download_release(target_dir) if RELEASE_URL else _clone_repo(target_dir)
 
 

@@ -1,4 +1,8 @@
 # ce.py
+# Formulas de Carbono Equivalente (CE), usadas en Ajuste/Historicos/Calidad
+# para resumir en un solo numero que tan "cerca de eutectico" esta la
+# composicion. Cada aleacion del catalogo puede tener su propia formula
+# (guardada en "especiales") o usar la formula por defecto de la sesion.
 from utils import to_float, _norm
 from config import ELEMENTS
 
@@ -9,6 +13,10 @@ def ce_from_percent(comp_pct, formula="FUNDICION", custom_coefs=None):
       - IIW:       C + Mn/6 + (Cr+Mo+V)/5 + (Ni+Cu)/15  (opcional Si/24 => "IIW+Si/24")
       - CET:       C + (Mn+Mo)/10 + (Cr+Cu)/20 + Ni/40
       - PERSONALIZADA: CE = Σ coef(elemento) * %(elemento)
+
+    Nota: si "formula" no matchea ninguno de los nombres reconocidos arriba,
+    el calculo cae silenciosamente en la formula IIW (no hay un "else" que
+    avise de un nombre de formula desconocido/mal escrito).
     """
     f = _norm(formula or "FUNDICION")
     C  = to_float(comp_pct.get("C",0.0))

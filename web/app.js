@@ -1,10 +1,33 @@
+// app.js — SPA "Pie de Horno" servida por host_api.py (_HostAPIHandler,
+// ver ese modulo para el modelo de datos completo). Sin build step ni
+// framework: un solo archivo que manipula el DOM directo.
+//
+// Modelo de auth: cada dispositivo (celular/tablet) genera un device_id
+// random la primera vez y lo persiste en localStorage (ver
+// ensureDeviceIdentity); el escritorio (pestaña Pie de Horno) tiene que
+// aprobarlo antes de que pueda leer datos, y darle rol "editor" antes de
+// que pueda escribir (conteo de cucharas / confirmar materiales). Estos
+// headers (X-Pie-Device-Id/Name) viajan en cada request, ver fetchJSON
+// mas abajo.
+//
+// Tiempo real: en vez de poll constante, se abre un stream SSE a
+// /api/events (ver connectLiveEvents) que solo empuja un aviso de
+// "algo cambio" (notify_data_changed del lado del host); al recibirlo se
+// vuelve a pedir /api/pie-horno completo. DATA_REFRESH_MS es solo el
+// respaldo por si el SSE se corta y no reconecta a tiempo.
 const DATA_REFRESH_MS = 60000;
 const CLOCK_REFRESH_MS = 60000;
 const DEVICE_STATUS_REFRESH_MS = 5000;
+// Si no hay actividad tactil/mouse por 2hs, se tapa la pantalla con un
+// reloj grande (pantalla de "protector" para el kiosko Raspberry en el
+// piso de planta) — ver idleClockState/checkIdleClock.
 const IDLE_CLOCK_AFTER_MS = 2 * 60 * 60 * 1000;
 const DEVICE_ID_KEY = "pie_horno_device_id";
 const DEVICE_NAME_KEY = "pie_horno_device_name";
 const DEVICE_NAME_CONFIRMED_KEY = "pie_horno_device_name_confirmed";
+// ?kiosk=raspi activa estilos/comportamiento especificos para la
+// Raspberry Pi que corre esto en modo kiosko fijo (ver tab_pie_horno.py,
+// que la controla por SSH) — distinto de un celular/tablet cualquiera.
 const RASPI_KIOSK = new URLSearchParams(window.location.search).get("kiosk") === "raspi";
 
 document.documentElement.classList.toggle("raspi-kiosk", RASPI_KIOSK);
@@ -56,6 +79,13 @@ const nodes = {
   cucharasStatsEmpty: document.getElementById("cucharas-stats-empty"),
   idleClockOverlay: document.getElementById("idle-clock-overlay"),
   idleClockTime: document.getElementById("idle-clock-time"),
+  espectroStatus: document.getElementById("espectro-status"),
+  espectroGroups: document.getElementById("espectro-groups"),
+  modbusStartInput: document.getElementById("modbus-start-input"),
+  modbusCountInput: document.getElementById("modbus-count-input"),
+  modbusReadBtn: document.getElementById("modbus-read-btn"),
+  modbusStatus: document.getElementById("modbus-status"),
+  modbusGrid: document.getElementById("modbus-grid"),
 };
 
 const cucharasState = {
@@ -188,6 +218,11 @@ function setKeyboardButtonState(active) {
   nodes.keyboardToggleBtn.textContent = active ? "Cerrar teclado" : "Teclado";
 }
 
+// Boton "Teclado": en el kiosko tactil (sin teclado fisico) no siempre
+// hay un input visible enfocable para invocar el teclado virtual del SO;
+// nodes.keyboardFocusInput es un input oculto dedicado solo a este truco
+// (enfocarlo hace aparecer el teclado tactil sin necesitar tocar un campo
+// real de la pantalla).
 function toggleKeyboard() {
   const active = document.activeElement;
   const editableActive = active && (
@@ -365,6 +400,10 @@ function setupIdleClock() {
   window.setInterval(checkIdleClock, 1000);
 }
 
+// Los operarios de planta miden materiales a ojo/balanza en fracciones
+// (ej. "2 y 3/4 kg"), no en decimales — por eso los kg calculados se
+// muestran como fraccion mixta en vez de "2.75". Busca el denominador
+// (hasta 16avos) que mejor aproxima la parte fraccionaria.
 function toFraction(n) {
   if (typeof n !== "number" || Number.isNaN(n)) return "—";
   if (n === 0) return "0";
@@ -461,6 +500,11 @@ function setAjusteStatus(message, variant = "") {
   }
 }
 
+// "porcentaje_horno" es que fraccion del kg calculado por Ajuste va
+// efectivamente a ESTE horno (cuando la carga de un material se reparte
+// entre varios hornos); kg_horno = kg * pct/100 es lo que realmente
+// termina pesando/cargando el operario. Coincide 1:1 con
+// host_api.save_furnace_material_confirmation del lado del servidor.
 function syncAjusteState(ajuste) {
   const rows = Array.isArray(ajuste?.materiales) ? ajuste.materiales : [];
   ajusteState.rows = rows
@@ -639,6 +683,13 @@ function showSessionBanner(colada, material) {
   sessionBanner.timer = setTimeout(hideSessionBanner, 8000);
 }
 
+// Evita que un snapshot del servidor (llegado por el refresh periodico o
+// por el SSE de OTRO dispositivo conectado) le pise al operario los
+// contadores que esta tocando en este mismo momento antes de guardarlos:
+// mientras haya un conteo "iniciado" con valores > 0 en este dispositivo
+// y el payload no venga de un guardado propio (fromDirectSave), se
+// ignoran los datos entrantes salvo para detectar que la sesion cambio
+// (coladas distinta) y avisar con el banner.
 function syncCucharasState(payload, fromDirectSave = false) {
   const newColada   = payload?.colada            || "";
   const newMaterial = payload?.material_objetivo || "";
@@ -728,6 +779,9 @@ function renderCucharas(payload) {
       tdActions.appendChild(plusBtn);
 
       if (isNodular) {
+        // Familia Nodular: las cucharas de este material suelen cargarse
+        // de a pares, por eso se agrega un atajo "+2" ademas del "+1"
+        // normal (el operario toca menos veces para el caso comun).
         const plus2Btn = document.createElement("button");
         plus2Btn.type = "button";
         plus2Btn.textContent = "+2";
@@ -768,6 +822,10 @@ async function runCucharasAction(action) {
       const ok = window.confirm("Iniciar borra el conteo actual de esta colada. Continuar?");
       if (!ok) return;
     }
+    // Guarda un snapshot local del conteo/colada actual ANTES de limpiar,
+    // para poder deshacer un "Iniciar" apretado por error (ver el boton
+    // "Deshacer" / runUndo, que llama a /api/cucharas action=restore_previous
+    // — mismo par que host_api.restore_previous_cucharas del lado server).
     saveUndoSnapshot();  // guardar antes de limpiar
   }
   cucharasState.saving = true;
@@ -785,6 +843,8 @@ async function runCucharasAction(action) {
       return;
     }
     if (response.status === 409) {
+      // missing_ajuste_context: todavia no hay colada/objetivo iniciado
+      // en Ajuste del lado del escritorio (ver host_api.start_cucharas_count).
       cucharasState.saving = false;
       renderCucharas({
         colada: cucharasState.colada,
@@ -988,6 +1048,14 @@ function renderSnapshot(data) {
   deviceState.role = permissions.role || deviceState.role || "viewer";
   cucharasState.canEdit = Boolean(permissions.can_edit_cucharas);
   ajusteState.canEdit = Boolean(permissions.can_edit_ajuste);
+  if (spectroCommands.length && spectroCanSend !== Boolean(permissions.can_edit_ajuste)) {
+    spectroCanSend = Boolean(permissions.can_edit_ajuste);
+    renderSpectroCommands();
+  }
+  modbusCanRead = Boolean(permissions.can_edit_cucharas);
+  if (nodes.modbusReadBtn) {
+    nodes.modbusReadBtn.disabled = !modbusCanRead || modbusReading;
+  }
   const compActual = (ajuste.composicion_actual || []).filter((row) => Math.abs(Number(row?.valor || 0)) > 1e-12);
   const compEstimada = (ajuste.composicion_estimada || []).filter((row) => Math.abs(Number(row?.valor || 0)) > 1e-12);
   setText(nodes.updatedAt, data?.updated_at || "");
@@ -1018,6 +1086,7 @@ function renderSnapshot(data) {
   });
   renderCucharasStats(cucharas.statistics || {});
   renderCarbomaxPending(data?.carbomax_pending || null);
+  renderSpectroPending(data?.spectro_pending || null);
 }
 
 // ── Modal Carbomax pendiente ────────────────────────────────────────
@@ -1036,6 +1105,15 @@ const carbomaxModal = {
   sending: false,
 };
 
+// Contraparte web del popup _show_carbomax_objetivo_dialog del escritorio
+// (tab_ajuste.py): cuando el ciclo automatico de Carbomax detecta una
+// lectura nueva y no hay sesion/objetivo activo, el escritorio publica el
+// pendiente en host_api._CARBOMAX_PENDING y este modal se muestra en
+// cualquier dispositivo con rol "editor" para que el operario confirme
+// (elige objetivo) o rechace desde el celular, sin tener que ir hasta la
+// PC. La respuesta viaja por /api/carbomax/action, que dispara el mismo
+// callback interno que si se hubiera confirmado desde el escritorio (ver
+// tab_ajuste._on_web_carbomax_action).
 function renderCarbomaxPending(pending) {
   if (!carbomaxModal.overlay) return;
   if (!pending) {
@@ -1102,6 +1180,99 @@ async function sendCarbomaxAction(action) {
     // silencioso — el host limpiará el estado de todos modos
   } finally {
     hideCarbomaxModal();
+  }
+}
+
+// ── Modal Espectrómetro pendiente ───────────────────────────────────
+// Mismo mecanismo que el modal de Carbomax de arriba (ver comentario ahí),
+// pero para el espectrómetro LMX06 (spectro_client.py / _run_spectro_auto
+// en tab_ajuste.py). Diferencia: en vez de dos valores fijos (C, Si) puede
+// traer 10+ elementos, así que se arma una grilla de chips dinámica en vez
+// de usar los spans fijos #carbomax-modal-c/#carbomax-modal-si.
+
+const spectroModal = {
+  overlay: document.getElementById("spectro-modal-overlay"),
+  sourceEl: document.getElementById("spectro-modal-source"),
+  valuesEl: document.getElementById("spectro-modal-values"),
+  objetivoRow: document.getElementById("spectro-objetivo-row"),
+  objetivoSelect: document.getElementById("spectro-objetivo-select"),
+  coladaInput: document.getElementById("spectro-colada-input"),
+  confirmBtn: document.getElementById("spectro-confirm-btn"),
+  rejectBtn: document.getElementById("spectro-reject-btn"),
+  visible: false,
+  sending: false,
+};
+
+function renderSpectroPending(pending) {
+  if (!spectroModal.overlay) return;
+  if (!pending) {
+    hideSpectroModal();
+    return;
+  }
+  // Solo mostrar a dispositivos editor
+  if (deviceState.role !== "editor") {
+    hideSpectroModal();
+    return;
+  }
+  const elements = pending.elements && typeof pending.elements === "object" ? pending.elements : {};
+  const entries = Object.entries(elements);
+  if (!entries.length) {
+    hideSpectroModal();
+    return;
+  }
+  spectroModal.valuesEl.innerHTML = entries
+    .sort((a, b) => a[0].localeCompare(b[0]))
+    .map(([el, pct]) => {
+      const safeEl = String(el).replace(/</g, "&lt;");
+      const num = Number(pct);
+      return `<span class="spectro-val-chip"><span class="spectro-val-chip-label">${safeEl}</span><span class="spectro-val-chip-num">${Number.isFinite(num) ? num.toFixed(3) : "-"}%</span></span>`;
+    })
+    .join("");
+  spectroModal.sourceEl.textContent = pending.source || "";
+
+  const objectives = Array.isArray(pending.objectives) ? pending.objectives : [];
+  if (objectives.length) {
+    spectroModal.objetivoRow.hidden = false;
+    spectroModal.objetivoSelect.innerHTML = objectives
+      .map((o) => `<option value="${String(o).replace(/"/g, "&quot;")}">${String(o)}</option>`)
+      .join("");
+  } else {
+    spectroModal.objetivoRow.hidden = true;
+  }
+
+  if (!spectroModal.visible) {
+    spectroModal.overlay.removeAttribute("hidden");
+    spectroModal.visible = true;
+  }
+}
+
+function hideSpectroModal() {
+  if (!spectroModal.overlay) return;
+  spectroModal.overlay.setAttribute("hidden", "");
+  spectroModal.visible = false;
+  spectroModal.sending = false;
+}
+
+async function sendSpectroAction(action) {
+  if (spectroModal.sending) return;
+  spectroModal.sending = true;
+  spectroModal.confirmBtn.disabled = true;
+  spectroModal.rejectBtn.disabled  = true;
+  try {
+    const body = { action };
+    if (action === "confirm") {
+      body.objetivo = spectroModal.objetivoSelect?.value || "";
+      body.colada   = spectroModal.coladaInput?.value?.trim() || "";
+    }
+    await apiFetch("/api/spectro/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch (_) {
+    // silencioso — el host limpiará el estado de todos modos
+  } finally {
+    hideSpectroModal();
   }
 }
 
@@ -1178,6 +1349,11 @@ function setupCarbomaxModal() {
   carbomaxModal.rejectBtn?.addEventListener("click",  () => sendCarbomaxAction("reject"));
 }
 
+function setupSpectroModal() {
+  spectroModal.confirmBtn?.addEventListener("click", () => sendSpectroAction("confirm"));
+  spectroModal.rejectBtn?.addEventListener("click",  () => sendSpectroAction("reject"));
+}
+
 function setStatus(ok, label) {
   nodes.statusPill.textContent = label;
   nodes.statusPill.classList.toggle("is-ok", ok);
@@ -1247,6 +1423,7 @@ function setupCucharasTabs() {
 setupTabs();
 setupCucharasTabs();
 setupCarbomaxModal();
+setupSpectroModal();
 nodes.reloadAppBtn.addEventListener("click", () => {
   window.location.reload();
 });
@@ -1350,6 +1527,11 @@ function _inocItemBases(item) {
   return [...s].sort();
 }
 
+// Resuelve que protocolo mostrar para un material+base: si esa base
+// tiene protocolo especifico, ese; si no, el protocolo por defecto. Los
+// datos ya vienen resueltos asi desde el servidor (host_api._handle_get_inoculaciones
+// -> storage.resolve_inoc_protocol), esto solo elige cual de los dos
+// arrays ya presentes en el payload mostrar segun el filtro de base activo.
 function _inocProtocol(item, base) {
   const pb = item.procedimiento_por_base || {};
   if (base && pb[base]) return pb[base];
@@ -1429,6 +1611,162 @@ document.getElementById("inoc-base-filter")?.addEventListener("change", () => {
     }
   }
 });
+
+// ── Espectro: botonera de teclado remoto (spectro_agent_client.py) ────────────
+let spectroCommands = [];
+let spectroCanSend = false;
+let spectroSending = false;
+
+async function loadSpectroCommands() {
+  try {
+    const res = await apiFetch("/api/spectro/commands");
+    const data = await res.json();
+    spectroCommands = data.comandos || [];
+    spectroCanSend = Boolean(data.can_send);
+    renderSpectroCommands();
+  } catch (_) {
+    spectroCommands = [];
+    setText(nodes.espectroStatus, "No se pudo cargar la lista de comandos.");
+  }
+}
+
+function renderSpectroCommands() {
+  if (!nodes.espectroGroups) return;
+  nodes.espectroGroups.innerHTML = "";
+  const groups = [];
+  const byGroup = new Map();
+  for (const cmd of spectroCommands) {
+    if (!byGroup.has(cmd.grupo)) {
+      byGroup.set(cmd.grupo, []);
+      groups.push(cmd.grupo);
+    }
+    byGroup.get(cmd.grupo).push(cmd);
+  }
+  for (const grupo of groups) {
+    const card = document.createElement("section");
+    card.className = "data-card espectro-group-card";
+    const header = document.createElement("div");
+    header.className = "card-header";
+    header.innerHTML = `<div><h2>${grupo}</h2></div>`;
+    card.appendChild(header);
+    const grid = document.createElement("div");
+    grid.className = "espectro-button-grid";
+    for (const cmd of byGroup.get(grupo)) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "action-button secondary espectro-key-btn";
+      btn.dataset.cmd = cmd.slug;
+      btn.disabled = !spectroCanSend;
+      const iconHtml = cmd.icono ? `<img class="espectro-key-icon" src="${cmd.icono}" alt="" width="24" height="24">` : "";
+      btn.innerHTML = `${iconHtml}${cmd.etiqueta}<span class="espectro-key-shortcut">${cmd.atajo}</span>`;
+      btn.addEventListener("click", () => sendSpectroCommand(cmd.slug, btn));
+      grid.appendChild(btn);
+    }
+    card.appendChild(grid);
+    nodes.espectroGroups.appendChild(card);
+  }
+  if (!spectroCanSend) {
+    setText(nodes.espectroStatus, "Este dispositivo solo puede ver (pedí rol editor desde el host).");
+  }
+}
+
+async function sendSpectroCommand(slug, btn) {
+  if (spectroSending) return;
+  spectroSending = true;
+  if (btn) btn.disabled = true;
+  setText(nodes.espectroStatus, `Enviando ${slug}...`);
+  try {
+    const res = await apiFetch("/api/spectro/command", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cmd: slug }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      setText(nodes.espectroStatus, `OK: ${slug} (${data.sent || ""})`);
+    } else {
+      setText(nodes.espectroStatus, `Error: ${data.message || data.error || "no se pudo enviar"}`);
+    }
+  } catch (_) {
+    setText(nodes.espectroStatus, "Error: no se pudo contactar al host.");
+  } finally {
+    spectroSending = false;
+    if (btn) btn.disabled = !spectroCanSend;
+  }
+}
+
+// ── Delta Modbus: lectura cruda RS485 (carbomax_modbus_client.py) ────────────
+let modbusCanRead = false;
+let modbusReading = false;
+
+function _modbusRegisterRows(entry) {
+  if (!entry.ok) {
+    return `<p class="empty-state">${entry.error || "Error de lectura."}</p>`;
+  }
+  if (!entry.values.length) {
+    return `<p class="empty-state">Sin valores.</p>`;
+  }
+  const cols = entry.values[0].hex !== undefined
+    ? "<tr><th>Direccion</th><th>Valor</th><th>Hex</th></tr>"
+    : "<tr><th>Direccion</th><th>Valor</th></tr>";
+  const rows = entry.values.map((v) => (
+    v.hex !== undefined
+      ? `<tr><td>${v.address}</td><td>${v.value}</td><td>${v.hex}</td></tr>`
+      : `<tr><td>${v.address}</td><td>${v.value}</td></tr>`
+  )).join("");
+  return `<table><thead>${cols}</thead><tbody>${rows}</tbody></table>`;
+}
+
+function renderModbusResults(results) {
+  if (!nodes.modbusGrid) return;
+  const keys = ["coils", "discrete_inputs", "holding_registers", "input_registers"];
+  nodes.modbusGrid.innerHTML = keys.map((key) => {
+    const entry = results[key];
+    if (!entry) return "";
+    const badge = entry.ok ? "" : ` <span class="modbus-error-badge">error</span>`;
+    return `
+      <section class="data-card modbus-card">
+        <div class="card-header">
+          <div>
+            <p class="card-kicker">Funcion ${key}${badge}</p>
+            <h2>${entry.label}</h2>
+          </div>
+        </div>
+        <p class="modbus-range">Direccion ${entry.start} — cantidad ${entry.quantity}</p>
+        <div class="table-wrap modbus-table-wrap">${_modbusRegisterRows(entry)}</div>
+      </section>`;
+  }).join("");
+}
+
+async function readModbusDelta() {
+  if (modbusReading || !nodes.modbusReadBtn) return;
+  modbusReading = true;
+  nodes.modbusReadBtn.disabled = true;
+  setText(nodes.modbusStatus, "Leyendo...");
+  const start = parseInt(nodes.modbusStartInput.value, 10) || 0;
+  const count = parseInt(nodes.modbusCountInput.value, 10) || 20;
+  try {
+    const res = await apiFetch("/api/modbus/read", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ start, count }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      renderModbusResults(data.results);
+      setText(nodes.modbusStatus, `OK — direccion ${data.start}`);
+    } else {
+      setText(nodes.modbusStatus, `Error: ${data.message || data.error || "no se pudo leer"}`);
+    }
+  } catch (_) {
+    setText(nodes.modbusStatus, "Error: no se pudo contactar al host.");
+  } finally {
+    modbusReading = false;
+    nodes.modbusReadBtn.disabled = !modbusCanRead;
+  }
+}
+
+nodes.modbusReadBtn?.addEventListener("click", () => readModbusDelta());
 
 async function loadInoculaciones() {
   try {
@@ -1564,6 +1902,9 @@ function showInocDetail(idx, base) {
   }
 }
 
+// Luminancia relativa (formula WCAG) del color de fondo para elegir texto
+// negro o blanco legible encima (color_inoculacion configurado en
+// tab_catalogo.py por material).
 function contrastColor(hex) {
   const c = hex.replace("#", "");
   const r = parseInt(c.substring(0, 2), 16) / 255;
@@ -1593,6 +1934,10 @@ document.querySelectorAll("[data-tab-target]").forEach(btn => {
         _inocPopulateBaseFilter();
         renderInocList();
         if (_inocDetailIdx >= 0) showInocDetail(_inocDetailIdx);
+      }
+    } else if (btn.dataset.tabTarget === "espectro-panel") {
+      if (!spectroCommands.length) {
+        loadSpectroCommands();
       }
     }
   });

@@ -1,4 +1,18 @@
 # tab_historicos.py
+#
+# Pestaña Historial: cada colada guardada es una "sesion" (dict con
+# ajustes, calculos, lecturas de Carbono, cucharas, analisis termico
+# adjuntos). Se navega con un dock de pestañas internas (una por colada
+# abierta con doble click) sobre self.nb.
+#
+# OJO con los indices: el Treeview izquierdo (self.tree) usa como iid el
+# indice REAL de la sesion en self.hist (que a su vez refleja el orden
+# ORDER BY id de storage.py), no la posicion visual — por eso el insert en
+# refresh() recorre self.hist al reves (mas reciente arriba) pero cada
+# fila lleva su idx real como iid. Todo lo que edita/borra una sesion o un
+# ajuste (update_session, delete_adjustment, etc. de storage.py) recibe
+# ese indice real, nunca una posicion de pantalla — mismo patron fragil ya
+# documentado en storage.py.
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 import csv
@@ -174,6 +188,12 @@ class TabHistoricos(ttk.Frame):
         self._alloy_cache = None
         for i in self.tree.get_children():
             self.tree.delete(i)
+        # "crisol" es un contador de coladas desde el ultimo sinterizado
+        # (revestimiento nuevo del horno) — no es un campo guardado, se
+        # recalcula recorriendo el historial completo en orden y
+        # reiniciando en 1 cada vez que se encuentra una colada marcada
+        # "primer_sinterizado" (ver _toggle_sinterizado). El prefijo "[S]"
+        # marca visualmente esa colada de reinicio.
         crisol_counter = 0
         crisol_displays = []
         for s in self.hist:
@@ -305,6 +325,12 @@ class TabHistoricos(ttk.Frame):
 
         vars_by_material = []
         for material in materials:
+            # Prioridad para pre-tildar materiales: 1) lo que el operario
+            # realmente cargo como cucharas en Pie de Horno para esta
+            # colada (la fuente mas confiable de "que se coló de verdad");
+            # 2) si no hay cucharas cargadas, los defaults configurados en
+            # Calidad para esta familia/base; 3) si tampoco hay eso, una
+            # inferencia simple por nombre de material base/objetivo.
             if ladle_materials:
                 checked = material in ladle_materials
             elif default_materials:
@@ -524,7 +550,7 @@ class TabHistoricos(ttk.Frame):
         thermal_btns.pack(fill="x", pady=(6, 0))
         ttk.Button(thermal_btns, text="Desvincular", command=lambda i=idx: self._detach_thermal_from_session(i)).pack(side="left")
         ttk.Button(thermal_btns, text="Editar", command=lambda i=idx: self._edit_thermal_in_session(i)).pack(side="left", padx=(6, 0))
-        ttk.Button(thermal_btns, text="Cerrar pestaÃ±a", command=lambda: self._close_session_tab(idx)).pack(side="right")
+        ttk.Button(thermal_btns, text="Cerrar pestaña", command=lambda: self._close_session_tab(idx)).pack(side="right")
 
         # Detalle (dock interno)
         detail_nb = ttk.Notebook(bottom)
@@ -808,12 +834,12 @@ class TabHistoricos(ttk.Frame):
             messagebox.showinfo("Historial", "Este analisis termico no tiene origen vinculado.", parent=self)
             return
         if self._thermal_tab is None or self._root_notebook is None:
-            messagebox.showerror("Historial", "La pestaÃ±a de Analisis termico no esta disponible.", parent=self)
+            messagebox.showerror("Historial", "La pestaña de Analisis termico no esta disponible.", parent=self)
             return
         if not self._thermal_tab.open_records([source_file], additive=True):
             messagebox.showerror(
                 "Historial",
-                "No se pudo encontrar ese analisis en la pestaÃ±a de Analisis termico.",
+                "No se pudo encontrar ese analisis en la pestaña de Analisis termico.",
                 parent=self,
             )
             return
@@ -904,6 +930,12 @@ class TabHistoricos(ttk.Frame):
         var_etapa = tk.StringVar()
         var_obs = tk.StringVar(value=str(entry.get("observacion", "") or ""))
 
+        # El campo editable depende del modo: Carbono puede tener varias
+        # lecturas en la misma colada, asi que se numeran con "orden" (1a,
+        # 2a lectura...); Microestructura en cambio se toma en distintas
+        # etapas del proceso (horno/cuchara transporte/cuchara colada, ver
+        # load_inoc_momentos), asi que ahi lo que se edita es la etapa, no
+        # un numero de orden.
         if mode_group == "Carbono":
             ttk.Label(box, text="Orden").grid(row=2, column=0, sticky="w", pady=(0, 6))
             orden = entry.get("orden")
@@ -965,6 +997,11 @@ class TabHistoricos(ttk.Frame):
         return [entry] if entry else []
 
     def _ladle_colada_key(self, session):
+        # history_by_colada (storage de cucharas) usa como clave el numero
+        # de colada normalizado "NNNN /AA" (4 digitos, sin el material),
+        # no el string completo "colada" de la sesion (que incluye el
+        # material, ej. "4/25-FC200"). Hay que rehacer esa normalizacion
+        # aca para pegarle a la misma clave que uso host_api.py al guardar.
         idn, yy, _ = split_colada(session.get("colada", ""))
         if not idn:
             return str(session.get("colada", "")).strip()
@@ -1118,6 +1155,11 @@ class TabHistoricos(ttk.Frame):
             key = f"{int(idn):04d} /{str(yy).zfill(2)}"
         history_by_colada = self.ladles.get("history_by_colada", {}) if isinstance(self.ladles, dict) else {}
         entries = history_by_colada.get(key, [])
+        # Formato dual por compatibilidad: versiones viejas guardaban una
+        # LISTA de snapshots por colada (se usa el ultimo); la version
+        # actual (ver host_api._persist_cucharas_events) guarda un solo
+        # DICT con counts/events/statistics ya resueltos. Se soportan
+        # ambos para no perder historial viejo al actualizar la app.
         if isinstance(entries, list):
             if not entries:
                 return None

@@ -1,5 +1,14 @@
 "use strict";
 
+// app.js — SPA de la camara de calidad (kiosko para microscopio), servida
+// por quality_api.py. Sin auth por dispositivo (a diferencia de Pie de
+// Horno/host_api.py) — cualquiera en la red local que entre puede ver y
+// analizar. Flujo tipico: video en vivo (MJPEG o polling de un solo
+// frame, segun soporte del navegador/proxy) -> "Capturar" congela un
+// frame -> el usuario ajusta modo/umbral/calibracion -> "Analizar" manda
+// ese frame congelado al servidor (quality_analyzer.py hace el trabajo
+// pesado de OpenCV) -> se dibuja el overlay de resultado sobre un canvas
+// superpuesto a la imagen.
 // ── Estado global ────────────────────────────────────────────────────────────
 const S = {
   live: true,
@@ -77,6 +86,10 @@ function showHint(msg, ms = 2500) {
   showHint._t = setTimeout(() => n.hint.classList.remove("visible"), ms);
 }
 
+// Misma conversion de unidades que quality_analyzer.get_px_per_mm (Python,
+// servidor) — duplicada aca para poder mostrar la escala/medidas en vivo
+// en el canvas sin ida y vuelta al servidor; el analisis real (px/mm que
+// cuenta para los resultados) siempre se recalcula server-side con cal_id.
 function getCalPxPerMm() {
   const cal = S.calibrations.find(c => c.id === S.calId);
   if (!cal || !cal.px_per_unit) return null;
@@ -797,146 +810,3 @@ loadCalibrations();
 drawOverlay();
 setStatus("Stream en vivo. Presioná Capturar para congelar la imagen.");
 
-// ── Chat ─────────────────────────────────────────────────────────────────────
-const Chat = (() => {
-  let _user = localStorage.getItem("chatUser") || null;
-  let _pass = localStorage.getItem("chatPass") || null;
-  let _lastId = 0;
-  let _sse = null;
-
-  const el = {
-    panel:    document.getElementById("chatPanel"),
-    header:   document.getElementById("chatHeader"),
-    toggle:   document.getElementById("btnChatToggle"),
-    body:     document.getElementById("chatBody"),
-    login:    document.getElementById("chatLogin"),
-    active:   document.getElementById("chatActive"),
-    userIn:   document.getElementById("chatUser"),
-    passIn:   document.getElementById("chatPass"),
-    btnLogin: document.getElementById("btnChatLogin"),
-    btnReg:   document.getElementById("btnChatRegister"),
-    errMsg:   document.getElementById("chatLoginError"),
-    messages: document.getElementById("chatMessages"),
-    input:    document.getElementById("chatInput"),
-    btnSend:  document.getElementById("btnChatSend"),
-  };
-
-  function setErr(msg) { el.errMsg.textContent = msg || ""; }
-
-  function expand() {
-    el.panel.classList.remove("collapsed", "has-new");
-    el.toggle.textContent = "▼";
-  }
-
-  function _renderMsg(msg) {
-    const isManager = msg.is_manager;
-    const isOwn = !isManager && msg.username === _user;
-    const div = document.createElement("div");
-    div.className = "chat-msg " + (isManager ? "manager" : isOwn ? "own" : "other");
-    const auth = document.createElement("div");
-    auth.className = "chat-msg-author";
-    auth.textContent = msg.username;
-    const body = document.createElement("div");
-    body.textContent = msg.body;
-    div.appendChild(auth);
-    div.appendChild(body);
-    el.messages.appendChild(div);
-    el.messages.scrollTop = el.messages.scrollHeight;
-    if (msg.id > _lastId) _lastId = msg.id;
-  }
-
-  async function _fetchMsgs(since) {
-    try {
-      const r = await fetch("/api/chat/messages?since=" + (since || 0));
-      if (!r.ok) return;
-      const msgs = await r.json();
-      msgs.forEach(_renderMsg);
-    } catch (_) {}
-  }
-
-  function _connectSSE() {
-    if (_sse) { _sse.close(); _sse = null; }
-    _sse = new EventSource("/api/chat/events");
-    _sse.addEventListener("new_message", () => {
-      _fetchMsgs(_lastId);
-      if (el.panel.classList.contains("collapsed")) {
-        el.panel.classList.add("has-new");
-        expand();
-      }
-    });
-    _sse.onerror = () => {
-      if (_sse) { _sse.close(); _sse = null; }
-      setTimeout(_connectSSE, 5000);
-    };
-  }
-
-  function _showActive() {
-    el.login.hidden = true;
-    el.active.removeAttribute("hidden");
-  }
-
-  async function _doAuth(register) {
-    const u = el.userIn.value.trim();
-    const p = el.passIn.value;
-    if (!u || !p) { setErr("Completá nombre y contraseña"); return; }
-    setErr("");
-    el.btnLogin.disabled = true;
-    el.btnReg.disabled = true;
-    try {
-      const r = await fetch(register ? "/api/chat/register" : "/api/chat/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: u, password: p }),
-      });
-      const data = await r.json();
-      if (data.error) {
-        setErr(data.error);
-      } else {
-        _user = u; _pass = p;
-        localStorage.setItem("chatUser", u);
-        localStorage.setItem("chatPass", p);
-        _showActive();
-        _fetchMsgs(0);
-        _connectSSE();
-      }
-    } catch (_) {
-      setErr("Error de red");
-    } finally {
-      el.btnLogin.disabled = false;
-      el.btnReg.disabled = false;
-    }
-  }
-
-  async function _sendMsg() {
-    const body = el.input.value.trim();
-    if (!body || !_user) return;
-    el.input.value = "";
-    try {
-      await fetch("/api/chat/send", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: _user, password: _pass, body }),
-      });
-    } catch (_) {}
-  }
-
-  // Init
-  el.header.addEventListener("click", (e) => {
-    if (!e.target.closest("#chatActive") && !e.target.closest("#chatLogin")) {
-      el.panel.classList.toggle("collapsed");
-      el.panel.classList.remove("has-new");
-      el.toggle.textContent = el.panel.classList.contains("collapsed") ? "▲" : "▼";
-    }
-  });
-  el.btnLogin.addEventListener("click", () => _doAuth(false));
-  el.btnReg.addEventListener("click", () => _doAuth(true));
-  el.btnSend.addEventListener("click", _sendMsg);
-  el.input.addEventListener("keydown", (e) => { if (e.key === "Enter") _sendMsg(); });
-
-  // Auto-login si hay credenciales guardadas
-  if (_user && _pass) {
-    el.userIn.value = _user;
-    el.passIn.value = _pass;
-    _doAuth(false);
-  }
-})();

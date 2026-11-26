@@ -11,12 +11,12 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 
 @router.get("")
-def get_settings(_: dict = Depends(devices.require_approved_device)):
+def get_settings(_: dict = Depends(devices.require_acceso)):
     return datos.load_settings()
 
 
 @router.post("")
-def update_settings(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+def update_settings(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     current = datos.load_settings()
     if "auto_save_hours" in payload:
         try:

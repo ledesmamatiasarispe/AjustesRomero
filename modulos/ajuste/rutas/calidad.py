@@ -259,7 +259,7 @@ def _clean_report_patch(payload):
 # ---------- endpoints: catálogo ----------
 
 @router.get("/catalog")
-def get_catalog(_: dict = Depends(devices.require_approved_device)):
+def get_catalog(_: dict = Depends(devices.require_acceso)):
     final_materials, base_to_materials, material_to_bases, _alloys = _load_final_catalog()
     bases = _base_codes(base_to_materials)
     return {
@@ -285,7 +285,7 @@ def get_catalog(_: dict = Depends(devices.require_approved_device)):
 # se hizo el ensayo ese mes, no si el papel se archivó después.
 
 @router.get("/alerta-mensual")
-def get_alerta_mensual(_: dict = Depends(devices.require_approved_device)):
+def get_alerta_mensual(_: dict = Depends(devices.require_acceso)):
     mes_actual = datetime.now().strftime("%Y-%m")
     reports = datos.load_quality_reports()
     familias_del_mes = {
@@ -300,7 +300,7 @@ def get_alerta_mensual(_: dict = Depends(devices.require_approved_device)):
 # ---------- endpoints: informes ----------
 
 @router.get("/reports")
-def list_reports(_: dict = Depends(devices.require_approved_device)):
+def list_reports(_: dict = Depends(devices.require_acceso)):
     reports = datos.load_quality_reports()
     final_materials, _b, _m, _a = _load_final_catalog()
     out = []
@@ -313,7 +313,7 @@ def list_reports(_: dict = Depends(devices.require_approved_device)):
 
 
 @router.post("/reports")
-def upsert_report(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+def upsert_report(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     """Crea o actualiza UN informe (modo individual, no grupal). Si payload trae "id" y existe, actualiza;
     si no, crea uno nuevo."""
     final_materials, base_to_materials, material_to_bases, alloys = _load_final_catalog()
@@ -357,7 +357,7 @@ def upsert_report(payload: dict = Body(...), _: dict = Depends(devices.require_e
 
 
 @router.patch("/reports/{report_id}")
-def patch_report_draft(report_id: str, payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+def patch_report_draft(report_id: str, payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     """Autoguardado de borrador: a diferencia de POST /reports, esto NO valida ni confirma -- guarda el
     estado actual del formulario marcado como _draft_pending=True, conservando el último estado confirmado en
     _draft_base para poder "Cancelar" después. Body: {"patch": {...campos...}}."""
@@ -383,7 +383,7 @@ def patch_report_draft(report_id: str, payload: dict = Body(...), _: dict = Depe
 
 
 @router.post("/reports/{report_id}/cancel-draft")
-def cancel_report_draft(report_id: str, _: dict = Depends(devices.require_editor_device)):
+def cancel_report_draft(report_id: str, _: dict = Depends(devices.require_acceso_editor)):
     reports = datos.load_quality_reports()
     idx = next((i for i, r in enumerate(reports) if r.get("id") == report_id), None)
     if idx is None:
@@ -402,7 +402,7 @@ def cancel_report_draft(report_id: str, _: dict = Depends(devices.require_editor
 
 
 @router.delete("/reports/{report_id}")
-def delete_report(report_id: str, _: dict = Depends(devices.require_editor_device)):
+def delete_report(report_id: str, _: dict = Depends(devices.require_acceso_editor)):
     reports = datos.load_quality_reports()
     new_reports = [r for r in reports if r.get("id") != report_id]
     if len(new_reports) == len(reports):
@@ -414,7 +414,7 @@ def delete_report(report_id: str, _: dict = Depends(devices.require_editor_devic
 # ---------- endpoints: grupo (base + lote) ----------
 
 @router.post("/reports/group")
-def save_group(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+def save_group(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     """Edición en bloque de TODO un grupo (base+lote): aplica el mismo patch a cada informe del grupo, con
     "informe" siempre re-armado como "{valor} - mat {material}" por informe."""
     base = str(payload.get("base", "") or "").strip()
@@ -441,7 +441,7 @@ def save_group(payload: dict = Body(...), _: dict = Depends(devices.require_edit
 
 
 @router.patch("/reports/group/draft")
-def draft_group(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+def draft_group(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     base = str(payload.get("base", "") or "").strip()
     lote = str(payload.get("lote", "") or "").strip()
     patch = _clean_report_patch(payload.get("patch") or {})
@@ -470,7 +470,7 @@ def draft_group(payload: dict = Body(...), _: dict = Depends(devices.require_edi
 
 
 @router.post("/reports/group/cancel-draft")
-def cancel_group_draft(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+def cancel_group_draft(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     base = str(payload.get("base", "") or "").strip()
     lote = str(payload.get("lote", "") or "").strip()
     reports = datos.load_quality_reports()
@@ -489,7 +489,7 @@ def cancel_group_draft(payload: dict = Body(...), _: dict = Depends(devices.requ
 
 
 @router.delete("/reports/group")
-def delete_group(base: str = Query(...), lote: str = Query(...), _: dict = Depends(devices.require_editor_device)):
+def delete_group(base: str = Query(...), lote: str = Query(...), _: dict = Depends(devices.require_acceso_editor)):
     reports = datos.load_quality_reports()
     new_reports = [r for r in reports if not (r.get("base", "") == base and r.get("lote", "") == lote)]
     removed = len(reports) - len(new_reports)
@@ -500,7 +500,7 @@ def delete_group(base: str = Query(...), lote: str = Query(...), _: dict = Depen
 
 
 @router.post("/reports/group/archive")
-def archive_group(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+def archive_group(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     base = str(payload.get("base", "") or "").strip()
     lote = str(payload.get("lote", "") or "").strip()
     reports = datos.load_quality_reports()
@@ -517,7 +517,7 @@ def archive_group(payload: dict = Body(...), _: dict = Depends(devices.require_e
 
 
 @router.post("/reports/group/add-materials")
-def add_materials_to_group(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+def add_materials_to_group(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     """Agrega informes nuevos (con los defaults del catálogo) para materiales de la MISMA base que todavía no
     tienen informe en este lote, copiando fecha/ce/c/si/datos del primer informe existente del grupo como
     plantilla."""
@@ -587,7 +587,7 @@ def add_materials_to_group(payload: dict = Body(...), _: dict = Depends(devices.
 # ---------- endpoints: imágenes ----------
 
 @router.post("/reports/{report_id}/images")
-def upload_image(report_id: str, file: UploadFile = File(...), _: dict = Depends(devices.require_editor_device)):
+def upload_image(report_id: str, file: UploadFile = File(...), _: dict = Depends(devices.require_acceso_editor)):
     suffix = Path(file.filename or "").suffix.lower()
     if suffix not in IMAGE_EXTENSIONS:
         raise HTTPException(status_code=400, detail={"error": "formato_no_permitido"})
@@ -617,7 +617,7 @@ def upload_image(report_id: str, file: UploadFile = File(...), _: dict = Depends
 
 
 @router.patch("/reports/{report_id}/images/{image_id}")
-def edit_image_comment(report_id: str, image_id: str, payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+def edit_image_comment(report_id: str, image_id: str, payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     reports = datos.load_quality_reports()
     idx = next((i for i, r in enumerate(reports) if r.get("id") == report_id), None)
     if idx is None:
@@ -638,7 +638,7 @@ def edit_image_comment(report_id: str, image_id: str, payload: dict = Body(...),
 
 
 @router.delete("/reports/{report_id}/images/{image_id}")
-def remove_image(report_id: str, image_id: str, _: dict = Depends(devices.require_editor_device)):
+def remove_image(report_id: str, image_id: str, _: dict = Depends(devices.require_acceso_editor)):
     """Solo desvincula la imagen del informe (no borra el archivo del disco)."""
     reports = datos.load_quality_reports()
     idx = next((i for i, r in enumerate(reports) if r.get("id") == report_id), None)
@@ -653,7 +653,7 @@ def remove_image(report_id: str, image_id: str, _: dict = Depends(devices.requir
 
 
 @router.get("/images/{filename}")
-def get_image(filename: str, _: dict = Depends(devices.require_approved_device)):
+def get_image(filename: str, _: dict = Depends(devices.require_acceso)):
     path = Path(datos.ensure_quality_images_dir()) / filename
     if ".." in filename or not path.exists():
         raise HTTPException(status_code=404, detail={"error": "imagen_no_encontrada"})
@@ -763,7 +763,7 @@ def _history_common_data(session, final_materials, base_to_materials, material_t
 
 
 @router.get("/material-options")
-def material_options_for_session(session_idx: int = Query(...), _: dict = Depends(devices.require_approved_device)):
+def material_options_for_session(session_idx: int = Query(...), _: dict = Depends(devices.require_acceso)):
     history = datos.load_history()
     if session_idx < 0 or session_idx >= len(history):
         raise HTTPException(status_code=404, detail={"error": "sesion_no_encontrada"})
@@ -782,7 +782,7 @@ def material_options_for_session(session_idx: int = Query(...), _: dict = Depend
 
 
 @router.post("/generate-from-session")
-def generate_from_session(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+def generate_from_session(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     """Crea/actualiza un informe por material seleccionado, prellenado con CE/C/Si finales y fecha/colada de
     la sesión + defaults del catálogo para cada material."""
     session_idx = payload.get("session_idx")

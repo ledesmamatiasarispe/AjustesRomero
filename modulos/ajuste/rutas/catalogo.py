@@ -216,13 +216,13 @@ def _build_alloy_dict(payload: dict, existing: dict | None, alloys: list) -> dic
 
 
 @router.get("")
-def list_alloys(_: dict = Depends(devices.require_approved_device)):
+def list_alloys(_: dict = Depends(devices.require_acceso)):
     alloys = datos.load_alloys()
     return [{"idx": i, **a} for i, a in enumerate(alloys)]
 
 
 @router.get("/{idx}")
-def get_alloy(idx: int, _: dict = Depends(devices.require_approved_device)):
+def get_alloy(idx: int, _: dict = Depends(devices.require_acceso)):
     alloys = datos.load_alloys()
     if idx < 0 or idx >= len(alloys):
         raise HTTPException(status_code=404, detail={"error": "not_found"})
@@ -230,7 +230,7 @@ def get_alloy(idx: int, _: dict = Depends(devices.require_approved_device)):
 
 
 @router.post("")
-async def create_alloy(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+async def create_alloy(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     alloys = datos.load_alloys()
     new_item = _build_alloy_dict(payload, None, alloys)
     alloys.append(new_item)
@@ -240,7 +240,7 @@ async def create_alloy(payload: dict = Body(...), _: dict = Depends(devices.requ
 
 
 @router.put("/{idx}")
-async def update_alloy(idx: int, payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+async def update_alloy(idx: int, payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     alloys = datos.load_alloys()
     if idx < 0 or idx >= len(alloys):
         raise HTTPException(status_code=404, detail={"error": "not_found"})
@@ -251,7 +251,7 @@ async def update_alloy(idx: int, payload: dict = Body(...), _: dict = Depends(de
 
 
 @router.delete("/{idx}")
-async def delete_alloy(idx: int, _: dict = Depends(devices.require_editor_device)):
+async def delete_alloy(idx: int, _: dict = Depends(devices.require_acceso_editor)):
     alloys = datos.load_alloys()
     if idx < 0 or idx >= len(alloys):
         raise HTTPException(status_code=404, detail={"error": "not_found"})
@@ -262,7 +262,7 @@ async def delete_alloy(idx: int, _: dict = Depends(devices.require_editor_device
 
 
 @router.post("/{idx}/duplicate")
-async def duplicate_alloy(idx: int, _: dict = Depends(devices.require_editor_device)):
+async def duplicate_alloy(idx: int, _: dict = Depends(devices.require_acceso_editor)):
     alloys = datos.load_alloys()
     if idx < 0 or idx >= len(alloys):
         raise HTTPException(status_code=404, detail={"error": "not_found"})
@@ -277,12 +277,12 @@ async def duplicate_alloy(idx: int, _: dict = Depends(devices.require_editor_dev
 # ---------- Inoculación: unidades y etapas (usadas por el editor) ----------
 
 @router.get("/inoc/units")
-def get_inoc_units(_: dict = Depends(devices.require_approved_device)):
+def get_inoc_units(_: dict = Depends(devices.require_acceso)):
     return {"units": datos.load_inoc_units()}
 
 
 @router.put("/inoc/units")
-def set_inoc_units(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+def set_inoc_units(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     units = payload.get("units") or []
     if not units:
         raise HTTPException(status_code=400, detail={"error": "lista_vacia"})
@@ -291,12 +291,12 @@ def set_inoc_units(payload: dict = Body(...), _: dict = Depends(devices.require_
 
 
 @router.get("/inoc/momentos")
-def get_inoc_momentos(_: dict = Depends(devices.require_approved_device)):
+def get_inoc_momentos(_: dict = Depends(devices.require_acceso)):
     return {"momentos": datos.load_inoc_momentos()}
 
 
 @router.put("/inoc/momentos")
-def set_inoc_momentos(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+def set_inoc_momentos(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     momentos = payload.get("momentos") or []
     if not momentos:
         raise HTTPException(status_code=400, detail={"error": "lista_vacia"})
@@ -307,7 +307,7 @@ def set_inoc_momentos(payload: dict = Body(...), _: dict = Depends(devices.requi
 # ---------- "Ver inoculación" / "Ver composición estimada" (solo Aleación final) ----------
 
 @router.get("/{idx}/inoculacion")
-def get_inoculacion(idx: int, base: str | None = None, _: dict = Depends(devices.require_approved_device)):
+def get_inoculacion(idx: int, base: str | None = None, _: dict = Depends(devices.require_acceso)):
     """Protocolo de inoculación resuelto para esta Aleación final (el de la base pedida si existe uno
     específico, si no el por defecto), con gramos/dosis calculados."""
     alloys = datos.load_alloys()
@@ -331,7 +331,7 @@ def get_inoculacion(idx: int, base: str | None = None, _: dict = Depends(devices
 
 
 @router.post("/{idx}/simulate-inoc")
-def simulate_inoc(idx: int, payload: dict = Body(...), _: dict = Depends(devices.require_approved_device)):
+def simulate_inoc(idx: int, payload: dict = Body(...), _: dict = Depends(devices.require_acceso)):
     """Composición resultante de aplicar el protocolo de inoculación de esta Aleación final sobre una base,
     etapa por etapa. payload: {"base": str, "stage_masses": {momento_key: kg}}."""
     alloys = datos.load_alloys()

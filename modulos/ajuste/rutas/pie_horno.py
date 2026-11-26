@@ -29,7 +29,7 @@ def _local_ip():
 
 
 @router.get("/local-url")
-def local_url(request: Request, _: dict = Depends(devices.require_approved_device)):
+def local_url(request: Request, _: dict = Depends(devices.require_acceso)):
     """URL que hay que tipear en el navegador kiosko de la Raspberry -- apunta directo a kiosk.html (no a
     "/", que en esta app abre el shell del núcleo) con ?kiosk=raspi para los ajustes de tamaño específicos
     de esa pantalla. Usa request.url.port (el puerto real con el que este navegador llegó al servidor) en
@@ -40,13 +40,13 @@ def local_url(request: Request, _: dict = Depends(devices.require_approved_devic
 
 
 @router.get("/raspberry/status")
-def raspberry_status(_: dict = Depends(devices.require_approved_device)):
+def raspberry_status(_: dict = Depends(devices.require_acceso)):
     """Bloqueante (SSH real) a propósito -- FastAPI corre los endpoints 'def' sincronos en threadpool."""
     return raspberry_ssh.get_status()
 
 
 @router.post("/raspberry/{action}")
-def raspberry_action(action: str, _: dict = Depends(devices.require_editor_device)):
+def raspberry_action(action: str, _: dict = Depends(devices.require_acceso_editor)):
     if action not in raspberry_ssh.RASPBERRY_ACTIONS:
         raise HTTPException(status_code=400, detail={"error": "accion_invalida"})
     return raspberry_ssh.run_action(action)

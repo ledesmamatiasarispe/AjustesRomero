@@ -757,7 +757,7 @@ def _build_history_analysis(payload, colada, material_base, observacion="", etap
 # ---------- endpoints ----------
 
 @router.get("/records")
-def list_records(mode: str = Query("Microestructura"), _: dict = Depends(devices.require_approved_device)):
+def list_records(mode: str = Query("Microestructura"), _: dict = Depends(devices.require_acceso)):
     if mode not in THERMAL_MODE_OPTIONS:
         mode = "Microestructura"
     history = _history_with_active()
@@ -801,7 +801,7 @@ def list_records(mode: str = Query("Microestructura"), _: dict = Depends(devices
 
 
 @router.get("/curve")
-def get_curve(path: list[str] = Query(...), _: dict = Depends(devices.require_approved_device)):
+def get_curve(path: list[str] = Query(...), _: dict = Depends(devices.require_acceso)):
     history = _history_with_active()
     link_map = _build_history_link_map(history)
     device_by_path = _device_records_by_path()
@@ -846,7 +846,7 @@ def get_curve(path: list[str] = Query(...), _: dict = Depends(devices.require_ap
 
 
 @router.get("/carbon-tse-options")
-def carbon_tse_options(path: str = Query(...), _: dict = Depends(devices.require_approved_device)):
+def carbon_tse_options(path: str = Query(...), _: dict = Depends(devices.require_acceso)):
     """Dado el path de una curva de Microestructura ya vinculada, busca los TS/TL de Carbono vinculados a
     la(s) misma(s) colada(s), para overlayear como líneas de referencia."""
     history = datos.load_history()
@@ -883,7 +883,7 @@ def carbon_tse_options(path: str = Query(...), _: dict = Depends(devices.require
 
 
 @router.post("/compare")
-def compare_curves(payload: dict = Body(...), _: dict = Depends(devices.require_approved_device)):
+def compare_curves(payload: dict = Body(...), _: dict = Depends(devices.require_acceso)):
     paths = [str(p or "").strip() for p in (payload.get("paths") or []) if str(p or "").strip()]
     if len(paths) < 2:
         raise HTTPException(status_code=400, detail={"error": "se_necesitan_2_o_mas_curvas"})
@@ -966,12 +966,12 @@ def compare_curves(payload: dict = Body(...), _: dict = Depends(devices.require_
 
 
 @router.get("/etapas")
-def get_etapas(_: dict = Depends(devices.require_approved_device)):
+def get_etapas(_: dict = Depends(devices.require_acceso)):
     return {"etapas": _etapa_muestra_options()}
 
 
 @router.get("/coladas")
-def get_coladas(_: dict = Depends(devices.require_approved_device)):
+def get_coladas(_: dict = Depends(devices.require_acceso)):
     history = datos.load_history()
     coladas = [str(s.get("colada", "") or "").strip() for s in history if isinstance(s, dict) and str(s.get("colada", "") or "").strip()]
     coladas = list(dict.fromkeys(reversed(coladas)))
@@ -982,7 +982,7 @@ def get_coladas(_: dict = Depends(devices.require_approved_device)):
 
 
 @router.get("/link")
-def get_link(path: str = Query(...), _: dict = Depends(devices.require_approved_device)):
+def get_link(path: str = Query(...), _: dict = Depends(devices.require_acceso)):
     history = _history_with_active()
     entries = []
     for session in history:
@@ -1005,7 +1005,7 @@ def get_link(path: str = Query(...), _: dict = Depends(devices.require_approved_
 
 
 @router.patch("/link")
-def patch_link(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+def patch_link(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     colada = str(payload.get("colada") or "").strip()
     source_file = str(payload.get("source_file") or "").strip()
     patch = payload.get("patch") or {}
@@ -1021,7 +1021,7 @@ def patch_link(payload: dict = Body(...), _: dict = Depends(devices.require_edit
 
 
 @router.post("/attach")
-def attach_to_history(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+def attach_to_history(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     paths = [str(p or "").strip() for p in (payload.get("paths") or []) if str(p or "").strip()]
     colada = str(payload.get("colada") or "").strip()
     material_base = str(payload.get("material_base") or "").strip()
@@ -1114,7 +1114,7 @@ def _run_auto_link(mode_group, history=None):
 
 
 @router.post("/auto-link")
-def auto_link(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+def auto_link(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     mode_group = str(payload.get("mode_group") or "").strip()
     if mode_group not in ("Carbono", "Microestructura"):
         raise HTTPException(status_code=400, detail={"error": "mode_group_invalido"})
@@ -1208,7 +1208,7 @@ def _attach_microstructure_group(colada, items):
 
 
 @router.delete("/records")
-def delete_records(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+def delete_records(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     paths = [str(p or "").strip() for p in (payload.get("paths") or []) if str(p or "").strip()]
     if not paths:
         raise HTTPException(status_code=400, detail={"error": "sin_registros"})
@@ -1227,7 +1227,7 @@ def delete_records(payload: dict = Body(...), _: dict = Depends(devices.require_
 
 
 @router.post("/open-folder")
-def open_folder(_: dict = Depends(devices.require_approved_device)):
+def open_folder(_: dict = Depends(devices.require_acceso)):
     try:
         os.startfile(str(THERMAL_ANALYSIS_DIR))
     except Exception:
@@ -1239,7 +1239,7 @@ def open_folder(_: dict = Depends(devices.require_approved_device)):
 
 
 @router.get("/device-ips")
-def device_ips(_: dict = Depends(devices.require_approved_device)):
+def device_ips(_: dict = Depends(devices.require_acceso)):
     ips = datos.load_thermal_ips()
     return {"ips": ips, "default": DEFAULT_THERMAL_DEVICE_IP}
 
@@ -1300,7 +1300,7 @@ def _check_current_session_carbon(new_paths, device_by_path):
 
 
 @router.post("/download")
-def download_from_device(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+def download_from_device(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     """Baja el índice+detalle desde la página web del equipo (device_sync.sync_once, HistIndex.dat/
     dadoshist.cgi, sin rutas alternativas), persiste en la misma tabla que ya se lee en /records, y
     auto-vincula lo nuevo por horario (Carbono y Microestructura). Es un "def" sincrono a propósito: FastAPI

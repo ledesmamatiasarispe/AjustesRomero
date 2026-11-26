@@ -285,14 +285,14 @@ def _load_and_clean(alloys):
 # ---------- Endpoints ----------
 
 @router.get("/session")
-def get_session(_: dict = Depends(devices.require_approved_device)):
+def get_session(_: dict = Depends(devices.require_acceso)):
     alloys = datos.load_alloys()
     st = _load_and_clean(alloys)
     return _session_view(st, alloys)
 
 
 @router.get("/graph")
-def get_graph(_: dict = Depends(devices.require_approved_device)):
+def get_graph(_: dict = Depends(devices.require_acceso)):
     """Datos del gráfico de dispersión C/Si. El frontend (graph.js) hace el dibujo en canvas; acá solo se
     arma el JSON (transiciones de la sesión en curso, punto actual/estimado, polígono de límites+CE, y las
     estadísticas históricas por objetivo: casco convexo de arranques y elipse de deriva entre ajustes
@@ -330,7 +330,7 @@ def get_graph(_: dict = Depends(devices.require_approved_device)):
 
 
 @router.patch("/session")
-async def patch_session(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+async def patch_session(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     """Actualiza cualquier subconjunto de {mass, actual, objective, adjust_list, kg, method, colada,
     partial_pct} -- un solo PATCH porque el frontend web no tiene un widget Tk por campo que dispare su propio
     callback."""
@@ -375,7 +375,7 @@ async def patch_session(payload: dict = Body(...), _: dict = Depends(devices.req
 
 
 @router.post("/carbon-silicon")
-async def load_carbon_silicon(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+async def load_carbon_silicon(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     """Carga C/Si en la composición Actual (Fe por diferencia) y, opcionalmente, elige el objetivo si todavía
     no hay sesión iniciada -- usado por el popup de "Carbono detectado" simple (openCarbonDetectedModal en
     ajuste.js)."""
@@ -402,7 +402,7 @@ async def load_carbon_silicon(payload: dict = Body(...), _: dict = Depends(devic
 
 
 @router.post("/estimate")
-async def estimate(payload: dict = Body(None), _: dict = Depends(devices.require_editor_device)):
+async def estimate(payload: dict = Body(None), _: dict = Depends(devices.require_acceso_editor)):
     """Botón "Estimar" (o "Calcular %" si se manda pct)."""
     payload = payload or {}
     alloys = datos.load_alloys()
@@ -448,7 +448,7 @@ async def estimate(payload: dict = Body(None), _: dict = Depends(devices.require
 
 
 @router.post("/calc")
-async def calc_prediction(_: dict = Depends(devices.require_editor_device)):
+async def calc_prediction(_: dict = Depends(devices.require_acceso_editor)):
     """Botón "Calcular" -- recalcula la predicción a partir del kg cargado a mano en la sesión, sin correr el
     solver."""
     alloys = datos.load_alloys()
@@ -457,7 +457,7 @@ async def calc_prediction(_: dict = Depends(devices.require_editor_device)):
 
 
 @router.post("/cambio-base")
-async def cambio_base(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+async def cambio_base(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     """Botón "Cambio de base" del panel Estimado: a partir de una composición YA lograda (la Estimada/final de
     la colada en curso, que quedó targeteada a un material) calcula qué agregar para en cambio llegar a OTRO
     material del catálogo, con una masa elegida a mano.
@@ -561,7 +561,7 @@ async def _commit_apply(st, alloys):
 
 
 @router.post("/apply")
-async def apply_adjustment(_: dict = Depends(devices.require_editor_device)):
+async def apply_adjustment(_: dict = Depends(devices.require_acceso_editor)):
     """Botón "Aplicar" -- registra el ajuste en el historial de la sesión en curso, publica el snapshot de
     Pie de Horno, y "commitea" la composición/masa estimada como la nueva composición/masa actual (deja el kg
     en 0 para el próximo ajuste)."""
@@ -578,7 +578,7 @@ async def apply_adjustment(_: dict = Depends(devices.require_editor_device)):
 
 
 @router.post("/reset")
-async def reset_adjustment(_: dict = Depends(devices.require_editor_device)):
+async def reset_adjustment(_: dict = Depends(devices.require_acceso_editor)):
     """Botón "Reiniciar ajuste" -- vuelve la masa a 1000, el kg a 0 y borra el historial de ajustes/cálculos
     de la sesión en curso (sin tocar objetivo/colada -- para eso está /save-session o /cancel-session)."""
     st = datos.load_ajuste_session()
@@ -595,7 +595,7 @@ async def reset_adjustment(_: dict = Depends(devices.require_editor_device)):
 
 
 @router.post("/cancel-session")
-async def cancel_session(_: dict = Depends(devices.require_editor_device)):
+async def cancel_session(_: dict = Depends(devices.require_acceso_editor)):
     """Cancela el inicio de sesión sin guardar nada en Históricos (objetivo y cronómetro vuelven a cero)."""
     st = datos.load_ajuste_session()
     st["objective"] = ""
@@ -681,14 +681,14 @@ async def _do_save_session(st, auto=False):
 
 
 @router.post("/reload-session")
-async def reload_session(_: dict = Depends(devices.require_approved_device)):
+async def reload_session(_: dict = Depends(devices.require_acceso)):
     """Fuerza a todos los clientes conectados a recargar la sesión desde la DB."""
     await hub.broadcast("ajuste", {"type": "session_changed"})
     return {"ok": True}
 
 
 @router.post("/save-session")
-async def save_session(_: dict = Depends(devices.require_editor_device)):
+async def save_session(_: dict = Depends(devices.require_acceso_editor)):
     """Botón "Guardar sesión" / terminar colada.
 
     Antes de cerrar, si hay un espectrómetro configurado le manda FinishAnalysis -- documenta/exporta el
@@ -722,7 +722,7 @@ async def save_session(_: dict = Depends(devices.require_editor_device)):
 # análisis" del original.
 
 @router.post("/carbomax-auto/toggle")
-async def toggle_carbomax_auto(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+async def toggle_carbomax_auto(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     alloys = datos.load_alloys()
     st = _load_and_clean(alloys)
     enabled = bool(payload.get("enabled"))
@@ -742,7 +742,7 @@ async def toggle_carbomax_auto(payload: dict = Body(...), _: dict = Depends(devi
 
 
 @router.post("/carbomax-auto/config")
-async def configure_carbomax_auto(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+async def configure_carbomax_auto(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     alloys = datos.load_alloys()
     st = _load_and_clean(alloys)
     names = [str(n or "").strip() for n in (payload.get("base_names") or [])]
@@ -773,7 +773,7 @@ async def configure_carbomax_auto(payload: dict = Body(...), _: dict = Depends(d
 
 
 @router.post("/carbomax-auto/check-now")
-async def check_carbomax_now(_: dict = Depends(devices.require_editor_device)):
+async def check_carbomax_now(_: dict = Depends(devices.require_acceso_editor)):
     """Botón "Forzar" del panel Carbomax de Ajuste: lee los stands YA en vez de esperar el resto del
     intervalo de poll_seconds, por si el análisis ya terminó. Mismo camino de detección/guardado que el tick
     de fondo -- ver carbomax_modbus_auto.force_check_now(), que reusa _check_stands_once() tal cual usa el
@@ -788,7 +788,7 @@ async def check_carbomax_now(_: dict = Depends(devices.require_editor_device)):
 
 
 @router.post("/carbomax-auto/use-record")
-async def use_carbomax_record(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+async def use_carbomax_record(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     """"Usar" de una fila de la lista de últimos análisis de Carbono -- índice posicional. A diferencia de
     Spectro (que solo copia a Actual), esto corre el cálculo completo del plan C/Si/Fe
     (compute_and_apply_plan) contra los 3 materiales base configurados, así que requiere que ya haya un
@@ -839,7 +839,7 @@ async def use_carbomax_record(payload: dict = Body(...), _: dict = Depends(devic
 # no hay "auto_apply" acá, a diferencia de Carbomax).
 
 @router.post("/spectro-auto/toggle")
-async def toggle_spectro_auto(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+async def toggle_spectro_auto(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     """"Conectado/Desconectado" del cuadro Espectro -- arranca o para el listener de eventos de fondo
     (spectro_auto.py::_tick_once)."""
     alloys = datos.load_alloys()
@@ -858,7 +858,7 @@ async def toggle_spectro_auto(payload: dict = Body(...), _: dict = Depends(devic
 
 
 @router.post("/spectro-auto/reconnect")
-async def force_spectro_reconnect(_: dict = Depends(devices.require_editor_device)):
+async def force_spectro_reconnect(_: dict = Depends(devices.require_acceso_editor)):
     """Botón "Forzar reconexión" de Opciones Spectro (ver spectro_auto.force_reconnect). Prende spectro_auto
     si estaba apagado (forzar reconectar implica querer estar conectado) y tira el listener actual para que
     arranque uno nuevo en el próximo tick, en vez de depender de que is_alive() detecte un socket colgado
@@ -882,7 +882,7 @@ async def force_spectro_reconnect(_: dict = Depends(devices.require_editor_devic
 
 
 @router.post("/spectro-auto/config")
-async def configure_spectro_auto(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+async def configure_spectro_auto(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     alloys = datos.load_alloys()
     st = _load_and_clean(alloys)
     host = str(payload.get("host", "") or "").strip()
@@ -899,7 +899,7 @@ async def configure_spectro_auto(payload: dict = Body(...), _: dict = Depends(de
 
 
 @router.post("/spectro-auto/test")
-async def test_spectro_connection(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+async def test_spectro_connection(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     """Botón "Probar conexión" del cuadro: pide GetSoftwareVersion sin tocar la sesión ni el listener de
     fondo."""
     import asyncio
@@ -917,7 +917,7 @@ async def test_spectro_connection(payload: dict = Body(...), _: dict = Depends(d
 
 
 @router.post("/spectro-auto/measure")
-async def measure_spectro_now(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+async def measure_spectro_now(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     """Botón "Medir ahora": dispara PrepareAnalysis -> Measure -> FinishAnalysis -> GetAnalysisResults
     contra el instrumento real (ver spectro_auto.trigger_measurement para el detalle y el alcance
     deliberadamente acotado -- un replicate, solo muestra "Unknown")."""
@@ -960,7 +960,7 @@ async def spectro_agent_announce(request: Request, payload: dict = Body(default=
 
 
 @router.post("/spectro-auto/set-sample-id")
-async def set_spectro_sample_id(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+async def set_spectro_sample_id(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     """Manda un ID de muestra nuevo al instrumento vía PrepareAnalysis, sin disparar Measure -- pensado para
     responder la alerta SampleIdentificationNeeded: el protocolo no permite mandar texto libre dentro de
     FinishOperatorInteraction (solo elige una opción ya ofrecida), así que la "entrada" real pasa por este
@@ -988,7 +988,7 @@ async def set_spectro_sample_id(payload: dict = Body(...), _: dict = Depends(dev
 
 
 @router.post("/spectro-auto/finish-interaction")
-async def finish_spectro_interaction(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+async def finish_spectro_interaction(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     """Responde desde la web una OperatorInteractionNeeded pendiente (ver spectro_auto.py::_on_spectro_alert_event,
     alerta más reciente del cuadro Espectro) -- contraparte de FinishOperatorInteraction. Sin esto la alerta
     se veía pero no había forma de resolverla salvo pararse frente al instrumento.
@@ -1030,7 +1030,7 @@ async def finish_spectro_interaction(payload: dict = Body(...), _: dict = Depend
 
 
 @router.get("/spectro-auto/keys")
-async def get_spectro_keys(_: dict = Depends(devices.require_approved_device)):
+async def get_spectro_keys(_: dict = Depends(devices.require_acceso)):
     """Lista de comandos de la botonera de teclado remoto (ver spectro_agent_client.py) para que la web
     arme los botones, con `activo` marcando cuáles están visibles hoy -- la web muestra solo los activos en
     la botonera y TODOS en el checklist de "Opciones Spectro"."""
@@ -1046,7 +1046,7 @@ async def get_spectro_keys(_: dict = Depends(devices.require_approved_device)):
 
 
 @router.post("/spectro-auto/keys/visibility")
-async def set_spectro_keys_visibility(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+async def set_spectro_keys_visibility(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     """Checklist de "Opciones Spectro": guarda qué comandos de la botonera quedan ocultos. Reemplaza la
     lista completa, y es compartida -- lo que se desmarca ahí se va de la botonera para todos los
     dispositivos."""
@@ -1066,7 +1066,7 @@ async def set_spectro_keys_visibility(payload: dict = Body(...), _: dict = Depen
 
 
 @router.post("/spectro-auto/hide-measure-button")
-async def set_hide_measure_button(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+async def set_hide_measure_button(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     """Checklist de "Opciones Spectro": "Medir ahora" nunca funciona sin licencia Full -- esto lo saca de la
     vista (compartido, para todos los dispositivos) sin borrar el botón/endpoint del código."""
     alloys = datos.load_alloys()
@@ -1078,7 +1078,7 @@ async def set_hide_measure_button(payload: dict = Body(...), _: dict = Depends(d
 
 
 @router.post("/spectro-auto/send-key")
-async def send_spectro_key(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+async def send_spectro_key(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     """Botonera de teclado remoto: manda una tecla real a la ventana de LMX06MeasurementGUI.exe vía el
     agente que corre en su sesión interactiva (ver spectro_agent_client.py) -- la alternativa a "Medir
     ahora" cuando el control remoto del instrumento está en modo "Limited" y no permite Measure por la
@@ -1105,7 +1105,7 @@ async def send_spectro_key(payload: dict = Body(...), _: dict = Depends(devices.
 
 
 @router.post("/spectro-auto/start-flush")
-async def start_spectro_flush(_: dict = Depends(devices.require_editor_device)):
+async def start_spectro_flush(_: dict = Depends(devices.require_acceso_editor)):
     """Arranca el flush por API (manual 8.32) -- alternativa a la tecla F de la botonera que no depende de
     que la ventana de LMX06MeasurementGUI.exe tenga foco (mismo criterio que stop-measure)."""
     import asyncio
@@ -1126,7 +1126,7 @@ async def start_spectro_flush(_: dict = Depends(devices.require_editor_device)):
 
 
 @router.post("/spectro-auto/stop-flush")
-async def stop_spectro_flush(_: dict = Depends(devices.require_editor_device)):
+async def stop_spectro_flush(_: dict = Depends(devices.require_acceso_editor)):
     """Para el flush por API (manual 8.33) -- contraparte de start-flush."""
     import asyncio
     from .. import spectro_client
@@ -1146,7 +1146,7 @@ async def stop_spectro_flush(_: dict = Depends(devices.require_editor_device)):
 
 
 @router.post("/spectro-auto/stop-measure")
-async def stop_spectro_measure(_: dict = Depends(devices.require_editor_device)):
+async def stop_spectro_measure(_: dict = Depends(devices.require_acceso_editor)):
     """Corta una medición en curso vía StopMeasure -- sin payload, a diferencia del resto de las rutas de
     este archivo. Funciona en paralelo a measure_spectro_now (que queda bloqueado en asyncio.to_thread
     esperando la respuesta de Measure en SU propia conexión): StopMeasure abre una conexión nueva a
@@ -1169,7 +1169,7 @@ async def stop_spectro_measure(_: dict = Depends(devices.require_editor_device))
 
 
 @router.post("/spectro-auto/use-result")
-async def use_spectro_result(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+async def use_spectro_result(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     """"Usar en Actual" de una fila de la tabla de últimas mediciones -- id posicional (mismo criterio que
     /api/alloys/{idx}), copia esos elementos a "Actual" (sin C/Si, ver spectro_auto._apply_elements) y
     listo: NO corre estimate/apply, eso lo dispara el operario aparte con "Calcular"/"Aplicar" como
@@ -1196,7 +1196,7 @@ async def use_spectro_result(payload: dict = Body(...), _: dict = Depends(device
 
 
 @router.get("/spectro-auto/instrument")
-async def get_spectro_instrument(_: dict = Depends(devices.require_approved_device)):
+async def get_spectro_instrument(_: dict = Depends(devices.require_acceso)):
     """Estado del instrumento + modo de control remoto bajo demanda (además del push periódico de
     spectro_auto.py::_tick_once) -- para el botón de refresco manual del cuadro."""
     import asyncio
@@ -1217,7 +1217,7 @@ async def get_spectro_instrument(_: dict = Depends(devices.require_approved_devi
 
 
 @router.get("/spectro-auto/methods")
-async def get_spectro_methods(_: dict = Depends(devices.require_approved_device)):
+async def get_spectro_methods(_: dict = Depends(devices.require_acceso)):
     import asyncio
     from .. import spectro_client
 
@@ -1236,7 +1236,7 @@ async def get_spectro_methods(_: dict = Depends(devices.require_approved_device)
 
 
 @router.post("/spectro-auto/select-method")
-async def select_spectro_method(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+async def select_spectro_method(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     import asyncio
     from .. import spectro_client
 
@@ -1261,7 +1261,7 @@ async def select_spectro_method(payload: dict = Body(...), _: dict = Depends(dev
 
 
 @router.get("/spectro-auto/profiles")
-async def get_spectro_profiles(_: dict = Depends(devices.require_approved_device)):
+async def get_spectro_profiles(_: dict = Depends(devices.require_acceso)):
     import asyncio
     from .. import spectro_client
 
@@ -1280,7 +1280,7 @@ async def get_spectro_profiles(_: dict = Depends(devices.require_approved_device
 
 
 @router.post("/spectro-auto/select-profile")
-async def select_spectro_profile(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+async def select_spectro_profile(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     import asyncio
     from .. import spectro_client
 

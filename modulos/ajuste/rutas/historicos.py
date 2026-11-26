@@ -270,7 +270,7 @@ def _summary(session):
 
 
 @router.get("/sessions")
-def list_sessions(_: dict = Depends(devices.require_approved_device)):
+def list_sessions(_: dict = Depends(devices.require_acceso)):
     hist = datos.load_history()
     crisol = _crisol_displays(hist)
     traccion_lab_keys = _coladas_con_traccion_lab()
@@ -294,7 +294,7 @@ def list_sessions(_: dict = Depends(devices.require_approved_device)):
 
 
 @router.get("/sessions/{idx}")
-def get_session(idx: int, _: dict = Depends(devices.require_approved_device)):
+def get_session(idx: int, _: dict = Depends(devices.require_acceso)):
     hist = datos.load_history()
     if idx < 0 or idx >= len(hist):
         raise HTTPException(status_code=404, detail={"error": "not_found"})
@@ -315,7 +315,7 @@ def get_session(idx: int, _: dict = Depends(devices.require_approved_device)):
 
 
 @router.put("/sessions/{idx}/cucharas")
-def edit_cucharas(idx: int, payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+def edit_cucharas(idx: int, payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     """Cuerpo: {"counts": {material: cantidad, ...}}. Corrige a mano el conteo de cucharas de esta colada
     (solo permite ajustar materiales que YA tenían registro; no crea columnas de material nuevas). Reconstruye
     "events" recortando/completando con la hora actual para que total(events) siga coincidiendo con el conteo
@@ -396,7 +396,7 @@ def edit_cucharas(idx: int, payload: dict = Body(...), _: dict = Depends(devices
 
 
 @router.put("/sessions/{idx}")
-def edit_session(idx: int, payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+def edit_session(idx: int, payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     """Edita la colada (formato libre "ID /YY - MATERIAL", igual que el original)."""
     hist = datos.load_history()
     if idx < 0 or idx >= len(hist):
@@ -412,7 +412,7 @@ def edit_session(idx: int, payload: dict = Body(...), _: dict = Depends(devices.
 
 
 @router.post("/sessions/{idx}/toggle-sinterizado")
-def toggle_sinterizado(idx: int, _: dict = Depends(devices.require_editor_device)):
+def toggle_sinterizado(idx: int, _: dict = Depends(devices.require_acceso_editor)):
     """Marca/desmarca esta colada como el primer horno post-sinterizado. El contador de "crisol" que devuelve
     GET /sessions se reinicia en 1 a partir de esta colada."""
     hist = datos.load_history()
@@ -428,7 +428,7 @@ def toggle_sinterizado(idx: int, _: dict = Depends(devices.require_editor_device
 
 
 @router.delete("/sessions/{idx}")
-def remove_session(idx: int, _: dict = Depends(devices.require_editor_device)):
+def remove_session(idx: int, _: dict = Depends(devices.require_acceso_editor)):
     hist = datos.load_history()
     if idx < 0 or idx >= len(hist):
         raise HTTPException(status_code=404, detail={"error": "not_found"})
@@ -437,7 +437,7 @@ def remove_session(idx: int, _: dict = Depends(devices.require_editor_device)):
 
 
 @router.put("/sessions/{idx}/adjustments/{adj_idx}")
-def edit_adjustment(idx: int, adj_idx: int, payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+def edit_adjustment(idx: int, adj_idx: int, payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     """Cuerpo: {"materiales": {nombre: kg, ...}}. Recalcula "estimado"/"resumen"/"ce_estimado" a partir del
     nuevo plan de materiales (cada nombre tiene que resolver a un material con flag "ajuste"), dejando
     "inicial"/"objetivo_comp" intactos (el punto de partida de ese ajuste no cambia, solo el plan aplicado)."""
@@ -478,7 +478,7 @@ def edit_adjustment(idx: int, adj_idx: int, payload: dict = Body(...), _: dict =
 
 
 @router.delete("/sessions/{idx}/adjustments/{adj_idx}")
-def remove_adjustment(idx: int, adj_idx: int, _: dict = Depends(devices.require_editor_device)):
+def remove_adjustment(idx: int, adj_idx: int, _: dict = Depends(devices.require_acceso_editor)):
     hist = datos.load_history()
     if idx < 0 or idx >= len(hist):
         raise HTTPException(status_code=404, detail={"error": "session_not_found"})
@@ -490,7 +490,7 @@ def remove_adjustment(idx: int, adj_idx: int, _: dict = Depends(devices.require_
 
 
 @router.get("/sessions/{idx}/adjustments/{adj_idx}/export.csv")
-def export_adjustment_csv(idx: int, adj_idx: int, _: dict = Depends(devices.require_approved_device)):
+def export_adjustment_csv(idx: int, adj_idx: int, _: dict = Depends(devices.require_acceso)):
     """Reporte de composición final de un ajuste puntual (tres secciones: datos generales, composición
     inicial/final/objetivo, materiales aplicados)."""
     hist = datos.load_history()
@@ -563,7 +563,7 @@ def export_adjustment_csv(idx: int, adj_idx: int, _: dict = Depends(devices.requ
 
 
 @router.get("/export.json")
-def export_history_json(_: dict = Depends(devices.require_approved_device)):
+def export_history_json(_: dict = Depends(devices.require_acceso)):
     hist = datos.load_history()
     return StreamingResponse(
         iter([json.dumps(hist, ensure_ascii=False, indent=2)]),

@@ -119,8 +119,19 @@ Ajuste.deviceHeaders = function () {
   return { "X-Pie-Device-Id": id, "X-Pie-Device-Name": name };
 };
 
+// Sesión del usuario logueado en el núcleo (misma clave que nucleo.js: "<prefijo>_token"). Solo existe dentro de la
+// app principal (index.html del núcleo lleva data-prefijo); las páginas sueltas -- el kiosco de Pie de Horno, la
+// cámara -- no la mandan y siguen dependiendo de la aprobación del dispositivo (ver devices.require_acceso).
+Ajuste.sesionHeaders = function () {
+  const prefijo = document.body && document.body.dataset.prefijo;
+  if (!prefijo) return {};
+  let token = null;
+  try { token = localStorage.getItem(`${prefijo}_token`); } catch (_) { /* sin almacenamiento */ }
+  return token ? { Authorization: `Bearer ${token}` } : {};
+};
+
 Ajuste.apiFetch = async function (url, options = {}) {
-  const headers = { ...Ajuste.deviceHeaders(), ...(options.headers || {}) };
+  const headers = { ...Ajuste.deviceHeaders(), ...Ajuste.sesionHeaders(), ...(options.headers || {}) };
   const response = await fetch(url, { ...options, headers, cache: "no-store" });
   if (!response.ok) {
     let detail = null;
@@ -143,7 +154,10 @@ Ajuste.myDeviceStatus = async function () {
  * resto de la pantalla. Cada vista lo llama al arrancar; el callback recibe el status una vez que queda aprobado
  * ("approved") -- o de una si el backend tiene prendido dev_skip_approval.
  */
-Ajuste.waitForApproval = function (onApproved) {
+// Con un usuario logueado (status.por_usuario) no se espera nada: la aprobación por dispositivo es solo para el kiosco
+// de Pie de Horno, que la pide explícita con { soloDispositivo: true }. El usuario logueado puede editar (role
+// "editor" efectivo); el estado real del dispositivo se sigue viendo en la pestaña Pie de Horno.
+Ajuste.waitForApproval = function (onApproved, { soloDispositivo = false } = {}) {
   let banner = document.getElementById("ajuste-approval-banner");
   if (!banner) {
     banner = document.createElement("div");
@@ -159,6 +173,11 @@ Ajuste.waitForApproval = function (onApproved) {
   async function check() {
     try {
       const status = await Ajuste.myDeviceStatus();
+      if (!soloDispositivo && status.por_usuario) {
+        banner.remove();
+        onApproved({ ...status, status: "approved", role: "editor" });
+        return;
+      }
       if (status.status === "approved" || status.dev_skip_approval) {
         banner.remove();
         onApproved(status);

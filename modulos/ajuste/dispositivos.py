@@ -180,6 +180,34 @@ def require_approved_device(device: dict = Depends(current_device)):
     return device
 
 
+def usuario_opcional(authorization: str | None = Header(None)):
+    """La sesión del núcleo (usuario logueado) si vino una válida; None si no vino o venció -- sin lanzar 401:
+    quien llama decide si con eso alcanza o si cae a la aprobación del dispositivo."""
+    if not authorization:
+        return None
+    from nucleo import auth  # tarde: auth usa la base, que se configura al arrancar
+    try:
+        return auth.sesion(authorization)
+    except HTTPException:
+        return None
+
+
+# Pestañas de la app (todo menos el kiosco de Pie de Horno): pasa un usuario logueado, o -- como antes -- un
+# dispositivo aprobado sin sesión (así las pantallas que se abren sin login, como el kiosco, pueden seguir leyendo
+# lo que necesitan de otras rutas). La aprobación por dispositivo queda para el kiosco (rutas/kiosk.py, que sigue
+# usando require_approved_device / require_editor_device): es la pantalla fija al pie del horno, sin nadie logueado.
+def require_acceso(device: dict = Depends(current_device), usuario: dict | None = Depends(usuario_opcional)):
+    if usuario:
+        return device or {}
+    return require_approved_device(device)
+
+
+def require_acceso_editor(device: dict = Depends(current_device), usuario: dict | None = Depends(usuario_opcional)):
+    if usuario:
+        return device or {}
+    return require_editor_device(require_approved_device(device))
+
+
 def require_editor_device(device: dict = Depends(require_approved_device)):
     if DEV_SKIP_APPROVAL:
         return device

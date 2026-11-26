@@ -11,7 +11,7 @@ router = APIRouter(prefix="/api/modbus", tags=["modbus"])
 
 
 @router.post("/read")
-def read(payload: dict = Body(default={}), _: dict = Depends(devices.require_editor_device)):
+def read(payload: dict = Body(default={}), _: dict = Depends(devices.require_acceso_editor)):
     try:
         start = max(0, int(payload.get("start", 0)))
     except (TypeError, ValueError):

@@ -11,7 +11,7 @@ router = APIRouter(prefix="/api/devices", tags=["devices"])
 
 
 @router.get("/me")
-def my_status(device: dict = Depends(devices.current_device)):
+def my_status(device: dict = Depends(devices.current_device), usuario: dict | None = Depends(devices.usuario_opcional)):
     """Cualquier dispositivo (incluso 'pending') puede consultar su propio estado -- es lo que la página usa para
     saber si mostrar 'esperando aprobación' o dejar pasar al resto de la app.
 
@@ -26,16 +26,19 @@ def my_status(device: dict = Depends(devices.current_device)):
         "status": device.get("status", "pending"),
         "role": device.get("role", "viewer"),
         "dev_skip_approval": devices.DEV_SKIP_APPROVAL,
+        # Hay un usuario logueado: las pestañas no esperan la aprobación del dispositivo (devices.require_acceso).
+        # El kiosco de Pie de Horno no manda sesión, así que para él esto siempre es False.
+        "por_usuario": usuario is not None,
     }
 
 
 @router.get("")
-def list_devices(_: dict = Depends(devices.require_editor_device)):
+def list_devices(_: dict = Depends(devices.require_acceso_editor)):
     return {"devices": devices.list_devices()}
 
 
 @router.post("/{device_id}/approve")
-async def approve(device_id: str, _: dict = Depends(devices.require_editor_device)):
+async def approve(device_id: str, _: dict = Depends(devices.require_acceso_editor)):
     updated = devices.set_device_status(device_id, "approved")
     if updated is None:
         raise HTTPException(status_code=404, detail={"error": "not_found"})
@@ -44,7 +47,7 @@ async def approve(device_id: str, _: dict = Depends(devices.require_editor_devic
 
 
 @router.post("/{device_id}/revoke")
-async def revoke(device_id: str, _: dict = Depends(devices.require_editor_device)):
+async def revoke(device_id: str, _: dict = Depends(devices.require_acceso_editor)):
     updated = devices.set_device_status(device_id, "revoked")
     if updated is None:
         raise HTTPException(status_code=404, detail={"error": "not_found"})
@@ -53,7 +56,7 @@ async def revoke(device_id: str, _: dict = Depends(devices.require_editor_device
 
 
 @router.post("/{device_id}/role/{role}")
-async def set_role(device_id: str, role: str, _: dict = Depends(devices.require_editor_device)):
+async def set_role(device_id: str, role: str, _: dict = Depends(devices.require_acceso_editor)):
     try:
         updated = devices.set_device_role(device_id, role)
     except ValueError as ex:
@@ -65,7 +68,7 @@ async def set_role(device_id: str, role: str, _: dict = Depends(devices.require_
 
 
 @router.delete("/{device_id}")
-async def delete(device_id: str, _: dict = Depends(devices.require_editor_device)):
+async def delete(device_id: str, _: dict = Depends(devices.require_acceso_editor)):
     devices.delete_device(device_id)
     await hub.broadcast("devices", {"type": "devices_changed"})
     return {"ok": True}

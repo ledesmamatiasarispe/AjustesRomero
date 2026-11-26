@@ -56,7 +56,7 @@ def _run_locked(run):
 
 
 @router.post("/reports/group/load")
-def load_report_group(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+def load_report_group(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     """Botón real 'Cargar en Access' aplicado a un GRUPO (los N materiales de una misma colada) -- cargar
     los materiales de una colada de un solo click en vez de uno por uno. Mismo orden que ve la pantalla
     (material, alfabético -- ver buildGroups en calidad.js).
@@ -79,7 +79,7 @@ def load_report_group(payload: dict = Body(...), _: dict = Depends(devices.requi
 
 
 @router.post("/reports/bulk/load")
-def load_all_report_groups(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+def load_all_report_groups(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     """Botón 'Cargar TODO en Access' -- cargar de un solo click TODOS los grupos (coladas) que la pantalla
     tiene visibles en el árbol, en vez de abrir cada grupo y apretar 'Cargar en Access' uno por uno. El
     frontend manda la lista de grupos tal cual los construye buildGroups() (ya filtrados por
@@ -120,7 +120,7 @@ def load_all_report_groups(payload: dict = Body(...), _: dict = Depends(devices.
 
 
 @router.post("/reports/{report_id}/load")
-def load_report(report_id: str, _: dict = Depends(devices.require_editor_device)):
+def load_report(report_id: str, _: dict = Depends(devices.require_acceso_editor)):
     """Botón real 'Cargar en Access': abre/activa Fundiciones y carga colada + responsable + fecha +
     material completo hasta espesores."""
     report = _find_report(report_id)
@@ -130,7 +130,7 @@ def load_report(report_id: str, _: dict = Depends(devices.require_editor_device)
 
 
 @router.post("/reports/{report_id}/review")
-def review_report(report_id: str, _: dict = Depends(devices.require_editor_device)):
+def review_report(report_id: str, _: dict = Depends(devices.require_acceso_editor)):
     """Botón real 'Abrir en Access': navega hasta el material ya cargado, sin volver a escribir datos, para
     revisar a ojo en Access."""
     report = _find_report(report_id)
@@ -140,7 +140,7 @@ def review_report(report_id: str, _: dict = Depends(devices.require_editor_devic
 
 
 @router.get("/status")
-def get_status(_: dict = Depends(devices.require_approved_device)):
+def get_status(_: dict = Depends(devices.require_acceso)):
     return {"status": com.get_status(), "busy": _ACCESS_LOCK.locked()}
 
 
@@ -148,7 +148,7 @@ def get_status(_: dict = Depends(devices.require_approved_device)):
 # real, algo que no se puede verificar fuera de la PC del laboratorio) ----------
 
 @router.post("/diagnostico/probar-control")
-def probe_control(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+def probe_control(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     control_name = str(payload.get("control_name", "") or "").strip()
     if not control_name:
         raise HTTPException(status_code=400, detail={"error": "falta_control_name"})
@@ -156,7 +156,7 @@ def probe_control(payload: dict = Body(...), _: dict = Depends(devices.require_e
 
 
 @router.get("/diagnostico/control-activo")
-def active_control(_: dict = Depends(devices.require_editor_device)):
+def active_control(_: dict = Depends(devices.require_acceso_editor)):
     def run():
         info = com.detect_active_control()
         return {"ok": info is not None, "info": info, "status": com.get_status()}
@@ -164,7 +164,7 @@ def active_control(_: dict = Depends(devices.require_editor_device)):
 
 
 @router.post("/diagnostico/material/{direction}")
-def go_material(direction: str, _: dict = Depends(devices.require_editor_device)):
+def go_material(direction: str, _: dict = Depends(devices.require_acceso_editor)):
     if direction not in ("next", "prev"):
         raise HTTPException(status_code=400, detail={"error": "direccion_invalida"})
     return _run_locked(lambda: {"ok": bool(com.go_material_record(direction)), "status": com.get_status()})

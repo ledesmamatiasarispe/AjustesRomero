@@ -7,9 +7,9 @@
 # propósito, documentado en su propio comentario como "cualquiera en la red local que entre puede ver y
 # analizar", y ya señalado como una exposición real conocida (escritura sin auth, servidor bindeado a
 # 0.0.0.0). Esta migración le dio auth por dispositivo consistente a cada router -- acá también: lecturas
-# (calibraciones/stream/frame/report-targets) exigen require_approved_device, escrituras reales
-# (capture/analyze/save-to-report) exigen require_editor_device. La PC del microscopio necesita aprobarse una
-# vez, como cualquier otra pantalla de esta app -- antes no necesitaba ninguna aprobación.
+# (calibraciones/stream/frame/report-targets) exigen require_acceso, escrituras reales
+# (capture/analyze/save-to-report) exigen require_acceso_editor: un usuario logueado, o -- para la página suelta
+# de la cámara, que no tiene login -- la PC del microscopio aprobada como dispositivo.
 import threading
 import time
 from datetime import datetime
@@ -216,7 +216,7 @@ def _error_jpeg(message: str) -> bytes:
 # ---------- endpoints ----------
 
 @api_router.get("/calibraciones")
-def get_calibraciones(_: dict = Depends(devices.require_approved_device)):
+def get_calibraciones(_: dict = Depends(devices.require_acceso)):
     cals = qa.load_calibrations()
     effective_id = next((c["id"] for c in cals if c.get("is_default")), None)
     if not effective_id and cals:
@@ -225,7 +225,7 @@ def get_calibraciones(_: dict = Depends(devices.require_approved_device)):
 
 
 @api_router.get("/mjpeg")
-def mjpeg_stream(_: dict = Depends(devices.require_approved_device)):
+def mjpeg_stream(_: dict = Depends(devices.require_acceso)):
     def generate():
         _streamer.acquire()
         try:
@@ -261,7 +261,7 @@ def mjpeg_stream(_: dict = Depends(devices.require_approved_device)):
 
 
 @api_router.post("/stream/start")
-def stream_start(_: dict = Depends(devices.require_approved_device)):
+def stream_start(_: dict = Depends(devices.require_acceso)):
     """El frontend llama esto una vez al empezar a hacer polling de /frame
     (reemplaza al <img src="/mjpeg"> persistente, que mantenia la camara
     abierta mientras el <img> siguiera conectado). Sin esto, GET /frame
@@ -271,7 +271,7 @@ def stream_start(_: dict = Depends(devices.require_approved_device)):
 
 
 @api_router.post("/stream/stop")
-def stream_stop(_: dict = Depends(devices.require_approved_device)):
+def stream_stop(_: dict = Depends(devices.require_acceso)):
     """Contraparte de /stream/start -- se llama al pausar (capturar) o al
     cerrar la pagina, para liberar la camara fisica si nadie mas la esta
     usando."""
@@ -280,7 +280,7 @@ def stream_stop(_: dict = Depends(devices.require_approved_device)):
 
 
 @api_router.get("/frame")
-def get_frame(_: dict = Depends(devices.require_approved_device)):
+def get_frame(_: dict = Depends(devices.require_acceso)):
     """Un frame a la vez, pedido por polling desde el frontend -- reemplaza al <img src="/mjpeg"> persistente
     como mecanismo PRINCIPAL de video en vivo. Requiere que el cliente ya haya llamado a POST /stream/start."""
     frame = _streamer.get_jpeg()
@@ -293,7 +293,7 @@ def get_frame(_: dict = Depends(devices.require_approved_device)):
 
 
 @api_router.post("/capture")
-def capture(_: dict = Depends(devices.require_editor_device)):
+def capture(_: dict = Depends(devices.require_acceso_editor)):
     frame_bgr = _streamer.get_bgr()
     if frame_bgr is None:
         raise HTTPException(status_code=503, detail={"error": "no_frame"})
@@ -306,7 +306,7 @@ def capture(_: dict = Depends(devices.require_editor_device)):
 
 
 @api_router.get("/captured")
-def get_captured(_: dict = Depends(devices.require_approved_device)):
+def get_captured(_: dict = Depends(devices.require_acceso)):
     frame_bgr = _get_captured()
     if frame_bgr is None:
         raise HTTPException(status_code=404, detail={"error": "sin_captura"})
@@ -318,7 +318,7 @@ def get_captured(_: dict = Depends(devices.require_approved_device)):
 
 
 @api_router.post("/analyze")
-def analyze(payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+def analyze(payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     import base64
     frame_bgr = _get_captured()
     if frame_bgr is None:
@@ -363,7 +363,7 @@ def analyze(payload: dict = Body(...), _: dict = Depends(devices.require_editor_
 # ---------- guardar imagen capturada en un informe de Calidad ----------
 
 @api_router.post("/save-to-report/{report_id}")
-def save_to_report(report_id: str, payload: dict = Body(...), _: dict = Depends(devices.require_editor_device)):
+def save_to_report(report_id: str, payload: dict = Body(...), _: dict = Depends(devices.require_acceso_editor)):
     """Adjunta la imagen actualmente capturada (con overlay opcional
     quemado encima, ya armado del lado del cliente) a un informe de
     Calidad existente -- puente entre esta página standalone y el ABM de
@@ -410,7 +410,7 @@ def save_to_report(report_id: str, payload: dict = Body(...), _: dict = Depends(
 
 
 @api_router.get("/report-targets")
-def report_targets(_: dict = Depends(devices.require_approved_device)):
+def report_targets(_: dict = Depends(devices.require_acceso)):
     """Lista de sesion(colada)/material con informe de Calidad ya creado, para el selector "Guardar en ->
     Sesión / Material" de la cámara -- el destino se elige recién al guardar, con estos dos combos."""
     from .. import datos

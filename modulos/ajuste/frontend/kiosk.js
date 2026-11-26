@@ -1103,7 +1103,7 @@ async function start() {
     Ajuste.wsConnect("furnace", () => loadSnapshot());
     Ajuste.wsConnect("ajuste", () => loadSnapshot());
     window.setInterval(loadSnapshot, DATA_REFRESH_MS);
-  });
+  }, { soloDispositivo: true }); // el kiosco al pie del horno es la única pantalla que exige dispositivo aprobado
   window.setInterval(refreshClock, CLOCK_REFRESH_MS);
 }
 

@@ -1079,7 +1079,7 @@ def _build_composicion_traccion(hist, quality_reports, alloys):
 
 
 @router.get("/data")
-def get_informes_data(_: dict = Depends(devices.require_approved_device)):
+def get_informes_data(_: dict = Depends(devices.require_acceso)):
     hist = datos.load_history()
     datos.prune_ladles_history_for_sessions(hist)
     ladles = datos.load_ladles_state()

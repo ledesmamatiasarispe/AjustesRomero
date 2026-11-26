@@ -176,7 +176,8 @@ VISTAS.pie_horno = async () => {
   const me = await phRefreshMe();
   await phRefreshList();
   await phLoadLocalUrl();
-  const canEdit = me.dev_skip_approval || (me.status === "approved" && me.role === "editor");
+  // Usuario logueado: edita aunque esta PC no esté aprobada (la aprobación es para el kiosco, no para esta pestaña).
+  const canEdit = me.dev_skip_approval || me.por_usuario || (me.status === "approved" && me.role === "editor");
   if (canEdit) {
     phRefreshRaspStatus();
   } else {

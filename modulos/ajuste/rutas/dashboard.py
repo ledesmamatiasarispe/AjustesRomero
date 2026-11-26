@@ -49,12 +49,12 @@ def _azufre_por_colada(bases):
 
 
 @router.get("/azufre-nodulares")
-def azufre_nodulares(_: dict = Depends(devices.require_approved_device)):
+def azufre_nodulares(_: dict = Depends(devices.require_acceso)):
     return {"puntos": _azufre_por_colada(NODULAR_BASES)}
 
 
 @router.get("/azufre-base/{base}")
-def azufre_base(base: str, _: dict = Depends(devices.require_approved_device)):
+def azufre_base(base: str, _: dict = Depends(devices.require_acceso)):
     base = base.strip()
     if base not in ALL_BASES:
         raise HTTPException(status_code=404, detail={"error": "base_desconocida"})
@@ -62,7 +62,7 @@ def azufre_base(base: str, _: dict = Depends(devices.require_approved_device)):
 
 
 @router.get("/acceso.html")
-def descargar_acceso(request: Request, _: dict = Depends(devices.require_approved_device)):
+def descargar_acceso(request: Request, _: dict = Depends(devices.require_acceso)):
     """Acceso a esta app para el botón "Descargar acceso" del Dashboard. Usa request.base_url en vez de una IP
     fija, porque cada equipo de la planta puede llegar por una interfaz de red distinta. Es un .html con
     redirect, no un .url: Chrome/Edge tratan los .url como "tipo de archivo peligroso" y los renombran a
@@ -149,7 +149,7 @@ def _clima_espacial_fresco():
 
 
 @router.get("/clima-espacial")
-def clima_espacial(_: dict = Depends(devices.require_approved_device)):
+def clima_espacial(_: dict = Depends(devices.require_acceso)):
     ahora = time.time()
     if ahora - _noaa_cache["ts"] > _NOAA_CACHE_TTL:
         fresco = _clima_espacial_fresco()

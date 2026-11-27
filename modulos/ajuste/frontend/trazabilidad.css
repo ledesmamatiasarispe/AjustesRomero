@@ -1,0 +1,23 @@
+/* trazabilidad.css -- pantalla de la bitácora de cambios (ISO 9001). */
+.traz-filtros { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: flex-end; margin: 10px 0 6px; }
+.traz-filtros label { display: flex; flex-direction: column; font-size: .85rem; color: var(--sutil); gap: 2px; }
+.traz-filtros input[type="text"] { width: 150px; }
+.traz-filtros .botones { display: flex; gap: 6px; }
+.traz-integridad { font-weight: 600; margin: 6px 0; }
+.traz-integridad.ok { color: var(--verde); }
+.traz-integridad.mal { color: var(--rojo); }
+.traz-tabla tr.traz-fila { cursor: pointer; }
+.traz-tabla tr.traz-fila:hover { background: var(--gris-claro); }
+.traz-accion { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: .85rem; font-weight: 600;
+  background: var(--gris-claro); }
+.traz-accion.traz-alta { background: var(--verde-claro); color: var(--verde); }
+.traz-accion.traz-mod { background: var(--azul-claro); color: var(--azul); }
+.traz-accion.traz-baja { background: var(--rojo-claro); color: var(--rojo); }
+.traz-accion.traz-inicio { background: var(--ambar-claro); color: var(--ambar); }
+.traz-detalle > td { background: var(--fondo); }
+.traz-meta { margin-bottom: 6px; }
+.traz-cambios { width: 100%; font-size: .88rem; }
+.traz-cambios td { word-break: break-word; max-width: 420px; }
+.traz-json { max-height: 360px; overflow: auto; font-size: .8rem; background: var(--tarjeta);
+  border: 1px solid var(--borde); border-radius: 6px; padding: 8px; white-space: pre-wrap; word-break: break-word; }
+.traz-tabla .mono, .traz-cambios .mono { font-family: "Consolas", "SF Mono", monospace; }

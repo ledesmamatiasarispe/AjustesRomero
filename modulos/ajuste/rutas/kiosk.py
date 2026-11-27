@@ -314,8 +314,11 @@ def build_kiosk_snapshot(device):
 
 # ---------- endpoints ----------
 
+# Solo lectura: además del kiosco (dispositivo aprobado, sin login) la lee el contador de cucharas de la pestaña Ajuste,
+# donde el que entra es un usuario logueado desde una PC que no tiene por qué estar aprobada -- por eso require_acceso
+# y no require_approved_device. El kiosco no manda sesión, así que para él sigue valiendo la aprobación del dispositivo.
 @api_router.get("/snapshot")
-def get_snapshot(device: dict = Depends(devices.require_approved_device)):
+def get_snapshot(device: dict = Depends(devices.require_acceso)):
     return build_kiosk_snapshot(device)
 
 

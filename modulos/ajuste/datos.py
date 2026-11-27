@@ -20,6 +20,8 @@ import re
 
 from nucleo import db
 
+from . import trazabilidad
+
 COLADA_KEY_RE = re.compile(r"^\s*(\d+)\s*/\s*(\d{2})(?:\s*-\s*.*)?\s*$")
 
 
@@ -51,7 +53,15 @@ def _config_get(c, clave, default):
         return default
 
 
+# Claves de config que NO van a la bitácora: thermal_ips es solo la lista de IPs recientes que recuerda la pantalla
+# de Análisis Térmico (se escribe sola al conectar), no una configuración que alguien decida.
+_CONFIG_SIN_TRAZABILIDAD = {"thermal_ips"}
+
+
 def _config_set(c, clave, valor) -> None:
+    if clave not in _CONFIG_SIN_TRAZABILIDAD:
+        trazabilidad.registrar_cambio(c, "configuracion", clave, _config_get(c, clave, None),
+                                      json.loads(json.dumps(valor, ensure_ascii=False)))
     c.execute(
         "INSERT INTO config (clave, valor) VALUES (?, ?) ON CONFLICT(clave) DO UPDATE SET valor=excluded.valor",
         (clave, json.dumps(valor, ensure_ascii=False)),
@@ -60,24 +70,51 @@ def _config_set(c, clave, valor) -> None:
 
 # ---------- Catálogo: aleaciones/materiales (tabla "alloys") ----------
 
+def _sesion_de_fila(c, row_id):
+    row = c.execute("SELECT data FROM sessions WHERE id=?", (row_id,)).fetchone()
+    if not row:
+        return None
+    try:
+        return json.loads(row["data"] or "{}")
+    except Exception:
+        return {}
+
+
+def _auditar_sesion(c, antes, despues):
+    """Trazabilidad de una colada: alta, baja o qué campos cambiaron. La clave es la colada normalizada (la del
+    despues si se renombró, así el registro se encuentra buscando la colada nueva; el diff muestra la vieja)."""
+    ref = despues if despues is not None else antes
+    colada = normalize_colada_key((ref or {}).get("colada", "")) or str((ref or {}).get("colada", ""))
+    trazabilidad.registrar_cambio(c, "sesion", colada, antes, despues, colada=colada)
+
+
+def _alloys_por_nombre(c):
+    out = {}
+    for row in c.execute("SELECT * FROM alloys ORDER BY position").fetchall():
+        a = _alloy_row_to_dict(row)
+        out[str(a.get("nombre", ""))] = a
+    return out
+
+
 def load_alloys():
     """Lista completa del catálogo, en el orden guardado (columna "position"). Los campos "conocidos" salen de
     columnas propias; cualquier otro campo que el catálogo haya guardado viaja en "extra" como JSON."""
     with db.transaccion() as c:
         rows = c.execute("SELECT * FROM alloys ORDER BY position").fetchall()
-        result = []
-        for row in rows:
-            a = {
-                "nombre": row["nombre"], "tipo": row["tipo"],
-                "rendimiento": row["rendimiento"], "costo": row["costo"],
-                "composicion": json.loads(row["composicion"] or "{}"),
-                "limites": json.loads(row["limites"] or "{}"),
-                "especiales": json.loads(row["especiales"] or "{}"),
-                "ajuste": bool(row["ajuste"]),
-            }
-            a.update(json.loads(row["extra"] or "{}"))
-            result.append(a)
-        return result
+        return [_alloy_row_to_dict(row) for row in rows]
+
+
+def _alloy_row_to_dict(row):
+    a = {
+        "nombre": row["nombre"], "tipo": row["tipo"],
+        "rendimiento": row["rendimiento"], "costo": row["costo"],
+        "composicion": json.loads(row["composicion"] or "{}"),
+        "limites": json.loads(row["limites"] or "{}"),
+        "especiales": json.loads(row["especiales"] or "{}"),
+        "ajuste": bool(row["ajuste"]),
+    }
+    a.update(json.loads(row["extra"] or "{}"))
+    return a
 
 
 def save_alloys(alloys):
@@ -86,6 +123,7 @@ def save_alloys(alloys):
     alloys = alloys or []
     known = {"nombre", "tipo", "rendimiento", "costo", "composicion", "limites", "especiales", "ajuste"}
     with db.transaccion() as c:
+        antes = _alloys_por_nombre(c)
         c.execute("DELETE FROM alloys")
         for i, a in enumerate(alloys):
             if not isinstance(a, dict):
@@ -102,6 +140,9 @@ def save_alloys(alloys):
                 json.dumps(a.get("especiales", {}), ensure_ascii=False),
                 1 if a.get("ajuste") else 0, json.dumps(extra, ensure_ascii=False),
             ))
+        # El catálogo define rendimientos y composiciones con los que se calcula cada ajuste: un cambio acá cambia
+        # resultados, así que queda registrado material por material (reordenar la lista no es un cambio).
+        trazabilidad.registrar_coleccion(c, "material", antes, _alloys_por_nombre(c))
 
 
 # ---------- Históricos: sesiones de ajuste guardadas (una fila por colada) ----------
@@ -144,6 +185,7 @@ def append_history(session):
             INSERT INTO sessions (colada_key, colada_raw, objetivo, started_at, ended_at, data)
             VALUES (?,?,?,?,?,?)
         """, _session_to_row(session))
+        _auditar_sesion(c, None, json.loads(_session_to_row(session)[-1]))
 
 
 def update_session(index, session_obj):
@@ -156,10 +198,13 @@ def update_session(index, session_obj):
         key = normalize_colada_key((session_obj or {}).get("colada", ""))
         if key and c.execute("SELECT id FROM sessions WHERE colada_key=? AND id!=?", (key, row_id)).fetchone():
             raise DuplicateColadaError(f"Ya existe una sesion guardada para la colada {key}.")
+        antes = _sesion_de_fila(c, row_id)
+        fila = _session_to_row(session_obj)
         c.execute("""
             UPDATE sessions SET colada_key=?, colada_raw=?, objetivo=?, started_at=?, ended_at=?, data=?
             WHERE id=?
-        """, _session_to_row(session_obj) + (row_id,))
+        """, fila + (row_id,))
+        _auditar_sesion(c, antes, json.loads(fila[-1]))
 
 
 def delete_session(index):
@@ -171,8 +216,12 @@ def delete_session(index):
             return
         row = c.execute("SELECT colada_raw FROM sessions WHERE id=?", (row_id,)).fetchone()
         colada = row["colada_raw"] if row else ""
+        antes = _sesion_de_fila(c, row_id)
         c.execute("DELETE FROM sessions WHERE id=?", (row_id,))
-    delete_ladles_for_colada(colada)
+        # La sesión entera queda en la bitácora: un borrado siempre se puede reconstruir.
+        _auditar_sesion(c, antes, None)
+        # Misma transacción (es reentrante): no puede quedar la colada borrada con sus cucharas vivas o al revés.
+        delete_ladles_for_colada(colada)
 
 
 def update_adjustment(session_index, adj_index, new_adj):
@@ -183,11 +232,13 @@ def update_adjustment(session_index, adj_index, new_adj):
             return
         row = c.execute("SELECT data FROM sessions WHERE id=?", (row_id,)).fetchone()
         session = json.loads(row["data"] or "{}")
+        antes = json.loads(row["data"] or "{}")
         ajustes = session.get("ajustes", [])
         if 0 <= adj_index < len(ajustes):
             ajustes[adj_index] = new_adj
             session["ajustes"] = ajustes
             c.execute("UPDATE sessions SET data=? WHERE id=?", (json.dumps(session, ensure_ascii=False), row_id))
+            _auditar_sesion(c, antes, session)
 
 
 def delete_adjustment(session_index, adj_index):
@@ -198,11 +249,13 @@ def delete_adjustment(session_index, adj_index):
             return
         row = c.execute("SELECT data FROM sessions WHERE id=?", (row_id,)).fetchone()
         session = json.loads(row["data"] or "{}")
+        antes = json.loads(row["data"] or "{}")
         ajustes = session.get("ajustes", [])
         if 0 <= adj_index < len(ajustes):
             del ajustes[adj_index]
             session["ajustes"] = ajustes
             c.execute("UPDATE sessions SET data=? WHERE id=?", (json.dumps(session, ensure_ascii=False), row_id))
+            _auditar_sesion(c, antes, session)
 
 
 def attach_thermal_analysis(colada, analysis_obj):
@@ -217,12 +270,14 @@ def attach_thermal_analysis(colada, analysis_obj):
             session = json.loads(row["data"] or "{}")
             if normalize_colada_key(session.get("colada", "")) != key:
                 continue
+            antes = json.loads(row["data"] or "{}")
             analyses = session.get("thermal_analysis", [])
             if not isinstance(analyses, list):
                 analyses = []
             analyses.append(analysis_obj)
             session["thermal_analysis"] = analyses
             c.execute("UPDATE sessions SET data=? WHERE id=?", (json.dumps(session, ensure_ascii=False), row["id"]))
+            _auditar_sesion(c, antes, session)
             return i
         raise ValueError(f"No existe una sesion historica para la colada {key}.")
 
@@ -239,6 +294,7 @@ def detach_thermal_analysis(colada, analysis_index):
             session = json.loads(row["data"] or "{}")
             if normalize_colada_key(session.get("colada", "")) != key:
                 continue
+            antes = json.loads(row["data"] or "{}")
             analyses = session.get("thermal_analysis", [])
             if not isinstance(analyses, list):
                 analyses = []
@@ -247,6 +303,7 @@ def detach_thermal_analysis(colada, analysis_index):
                 session["thermal_analysis"] = analyses
                 c.execute("UPDATE sessions SET data=? WHERE id=?",
                           (json.dumps(session, ensure_ascii=False), row["id"]))
+                _auditar_sesion(c, antes, session)
             return
         raise ValueError(f"No existe una sesion historica para la colada {key}.")
 
@@ -266,6 +323,7 @@ def set_thermal_analysis_field(colada, source_file, patch):
             session = json.loads(row["data"] or "{}")
             if normalize_colada_key(session.get("colada", "")) != key:
                 continue
+            antes = json.loads(row["data"] or "{}")
             analyses = session.get("thermal_analysis", [])
             if not isinstance(analyses, list):
                 analyses = []
@@ -278,6 +336,7 @@ def set_thermal_analysis_field(colada, source_file, patch):
                 session["thermal_analysis"] = analyses
                 c.execute("UPDATE sessions SET data=? WHERE id=?",
                           (json.dumps(session, ensure_ascii=False), row["id"]))
+                _auditar_sesion(c, antes, session)
             return updated
         raise ValueError(f"No existe una sesion historica para la colada {key}.")
 
@@ -421,12 +480,23 @@ def load_quality_reports():
     return out
 
 
+def _colada_de(registro):
+    colada = str((registro or {}).get("colada", "") or "")
+    return normalize_colada_key(colada) or colada
+
+
 def save_quality_reports(reports):
     """Reemplaza todos los informes. A cada informe sin "id" (o con un id repetido dentro de la misma lista) se
     le asigna un UUID nuevo acá mismo, mutando el dict `r` in-place."""
     import uuid as _uuid
     reports = reports or []
     with db.transaccion() as c:
+        antes = {}
+        for row in c.execute("SELECT id, data FROM quality_reports").fetchall():
+            try:
+                antes[row["id"]] = json.loads(row["data"] or "{}")
+            except Exception:
+                antes[row["id"]] = {}
         c.execute("DELETE FROM quality_reports")
         seen_ids = set()
         for r in reports:
@@ -439,6 +509,10 @@ def save_quality_reports(reports):
             seen_ids.add(rid)
             c.execute("INSERT INTO quality_reports (id, colada, data) VALUES (?,?,?)",
                       (rid, r.get("colada", ""), json.dumps(r, ensure_ascii=False)))
+        # La pantalla manda la lista entera en cada guardado: se registra solo el informe que cambió.
+        despues = {row["id"]: json.loads(row["data"] or "{}")
+                   for row in c.execute("SELECT id, data FROM quality_reports").fetchall()}
+        trazabilidad.registrar_coleccion(c, "informe_calidad", antes, despues, colada_de=_colada_de)
 
 
 def ensure_quality_images_dir():
@@ -576,12 +650,19 @@ def save_carga(nombre, materiales):
             "INSERT INTO cargas_guardadas (nombre, created_at, materiales) VALUES (?,?,?)",
             (nombre, ts, json.dumps(materiales, ensure_ascii=False)),
         )
-        return {"id": cur.lastrowid, "nombre": nombre, "created_at": ts, "materiales": materiales}
+        registro = {"id": cur.lastrowid, "nombre": nombre, "created_at": ts, "materiales": materiales}
+        trazabilidad.registrar(c, "alta", "carga", cur.lastrowid, despues=registro)
+        return registro
 
 
 def delete_carga(carga_id):
     with db.transaccion() as c:
+        row = c.execute("SELECT * FROM cargas_guardadas WHERE id=?", (carga_id,)).fetchone()
         c.execute("DELETE FROM cargas_guardadas WHERE id=?", (carga_id,))
+        if row:
+            trazabilidad.registrar(c, "baja", "carga", carga_id, antes={
+                "id": row["id"], "nombre": row["nombre"], "created_at": row["created_at"],
+                "materiales": json.loads(row["materiales"] or "[]")})
 
 
 # ---------- Conteo de cucharas (Pie de Horno / Raspberry) ----------
@@ -618,6 +699,44 @@ def load_ladles_state():
         return out
 
 
+def _cucharas_en_curso(c):
+    row = c.execute("SELECT colada, material_objetivo, counts, events FROM ladles_current WHERE id=1").fetchone()
+    if not row:
+        return {"colada": "", "material_objetivo": "", "counts": {}, "events": {}}
+    try:
+        counts, events = json.loads(row["counts"] or "{}"), json.loads(row["events"] or "{}")
+    except Exception:
+        counts, events = {}, {}
+    return {"colada": row["colada"] or "", "material_objetivo": row["material_objetivo"] or "",
+            "counts": counts, "events": events}
+
+
+def _cucharas_historial(c):
+    """{colada: datos} sin "updated_at" (cambia en cada guardado aunque no cambie ninguna cuchara)."""
+    out = {}
+    for row in c.execute("SELECT colada_key, data FROM ladles_history").fetchall():
+        try:
+            data = json.loads(row["data"] or "{}")
+        except Exception:
+            data = {}
+        if isinstance(data, dict):
+            data = {k: v for k, v in data.items() if k != "updated_at"}
+        out[row["colada_key"]] = data
+    return out
+
+
+def _auditar_cucharas(c, antes_actual, antes_hist):
+    despues_actual = _cucharas_en_curso(c)
+    if antes_actual != despues_actual:
+        colada = (normalize_colada_key(despues_actual["colada"] or antes_actual["colada"])
+                  or despues_actual["colada"] or antes_actual["colada"])
+        trazabilidad.registrar_cambio(c, "cucharas_en_curso", colada, antes_actual, despues_actual, colada=colada)
+    despues_hist = _cucharas_historial(c)
+    for clave in list(antes_hist) + [k for k in despues_hist if k not in antes_hist]:
+        trazabilidad.registrar_cambio(c, "cucharas", clave, antes_hist.get(clave), despues_hist.get(clave),
+                                      colada=clave)
+
+
 def save_ladles_state(state):
     """Guarda "current" (siempre se pisa entera) y sincroniza "history_by_colada" contra la tabla con upsert/
     delete selectivo en vez de borrar todo y reinsertar (puede tener muchas entradas)."""
@@ -638,6 +757,8 @@ def save_ladles_state(state):
     history_by = base.get("history_by_colada", {})
 
     with db.transaccion() as c:
+        antes_actual = _cucharas_en_curso(c)
+        antes_hist = _cucharas_historial(c)
         c.execute("""
             INSERT OR REPLACE INTO ladles_current (id, updated_at, colada, material_objetivo, counts, events)
             VALUES (1,?,?,?,?,?)
@@ -655,6 +776,8 @@ def save_ladles_state(state):
                   json.dumps(hdata, ensure_ascii=False)))
         for old_key in existing - new_keys:
             c.execute("DELETE FROM ladles_history WHERE colada_key=?", (old_key,))
+        # Cada cuchara que se suma o se resta desde el kiosco es un registro de producción: queda quién y cuándo.
+        _auditar_cucharas(c, antes_actual, antes_hist)
 
 
 def delete_ladles_for_colada(colada):
@@ -665,6 +788,8 @@ def delete_ladles_for_colada(colada):
         return False
     with db.transaccion() as c:
         removed = False
+        antes_actual = _cucharas_en_curso(c)
+        antes_hist = _cucharas_historial(c)
         for candidate in {key, str(colada or "").strip()}:
             if candidate and c.execute("DELETE FROM ladles_history WHERE colada_key=?", (candidate,)).rowcount > 0:
                 removed = True
@@ -673,6 +798,7 @@ def delete_ladles_for_colada(colada):
             c.execute("UPDATE ladles_current SET counts=?, events=? WHERE id=1",
                       (json.dumps({}, ensure_ascii=False), json.dumps({}, ensure_ascii=False)))
             removed = True
+        _auditar_cucharas(c, antes_actual, antes_hist)
         return removed
 
 
@@ -687,6 +813,11 @@ def load_cucharas_base_config(base: str) -> dict:
 
 def save_cucharas_base_config(base: str, material_final: str, active: bool) -> None:
     with db.transaccion() as c:
+        previo = c.execute("SELECT active FROM cucharas_base_config WHERE base=? AND material_final=?",
+                           (base, material_final)).fetchone()
+        trazabilidad.registrar_cambio(c, "cucharas_base", f"{base} / {material_final}",
+                                      None if previo is None else {"activo": bool(previo["active"])},
+                                      {"activo": bool(active)})
         c.execute(
             "INSERT INTO cucharas_base_config (base, material_final, active) VALUES (?,?,?) "
             "ON CONFLICT(base, material_final) DO UPDATE SET active = excluded.active",
@@ -703,6 +834,11 @@ def prune_ladles_history_for_sessions(sessions):
     with db.transaccion() as c:
         rows = c.execute("SELECT colada_key FROM ladles_history").fetchall()
         to_delete = [row["colada_key"] for row in rows if normalize_colada_key(row["colada_key"]) not in valid_keys]
+        if not to_delete:
+            return 0
+        antes_actual, antes_hist = _cucharas_en_curso(c), _cucharas_historial(c)
         for key in to_delete:
             c.execute("DELETE FROM ladles_history WHERE colada_key=?", (key,))
+        # Limpieza automática (cucharas de coladas que ya no existen): igual queda el contenido borrado.
+        _auditar_cucharas(c, antes_actual, antes_hist)
         return len(to_delete)

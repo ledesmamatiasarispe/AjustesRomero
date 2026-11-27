@@ -43,9 +43,9 @@ async function loadMeta() {
   [META] = await Promise.all([Ajuste.apiFetch("/api/meta"), _cargarFamiliasPorBase()]);
 }
 
-// Contador de cucharas cargadas al horno -- mismo dato que muestra Pie de Horno (Raspberry). Reusa
-// /api/kiosk/snapshot tal cual; ese endpoint todavía no existe en esta app (fase del kiosko), así que esto
-// falla en silencio hasta que se porte -- igual que ya hacía la app vieja ante cualquier error de red.
+// Contador de cucharas cargadas al horno -- mismo dato que muestra Pie de Horno (Raspberry), vía /api/kiosk/snapshot
+// (con la sesión del usuario: no hace falta que esta PC esté aprobada como dispositivo). Se refresca solo con cada
+// aviso "kiosk" del WebSocket. Si falla no bloquea Ajuste, pero queda en la consola y en el tooltip del contador.
 async function loadCucharasCounter() {
   try {
     const data = await Ajuste.apiFetch("/api/kiosk/snapshot");
@@ -55,8 +55,13 @@ async function loadCucharasCounter() {
     els.cucharasBadge.title = c.colada
       ? `Cucharas cargadas al horno en la colada ${c.colada}${c.material_objetivo ? ` (${c.material_objetivo})` : ""}`
       : "Cucharas cargadas al horno en esta colada, según Pie de Horno";
-  } catch (_) {
-    // silencioso -- no bloquear Ajuste si el kiosko/snapshot falla (o todavía no existe)
+  } catch (ex) {
+    // No bloquear Ajuste si el snapshot falla, pero que no sea invisible: antes un 403 dejaba el contador mudo.
+    console.warn("Contador de cucharas:", ex);
+    if (els.cucharasBadge) {
+      els.cucharasBadge.textContent = "Cucharas: ?";
+      els.cucharasBadge.title = `No se pudo leer Pie de Horno (${ex.message})`;
+    }
   }
 }
 

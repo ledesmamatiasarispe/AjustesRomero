@@ -145,6 +145,20 @@ Ajuste.apiFetch = async function (url, options = {}) {
   return response.json();
 };
 
+// Trazabilidad (ISO 9001): al eliminar un registro las pantallas piden el motivo y lo mandan en el header X-Motivo; el
+// backend lo guarda en la bitácora junto con el contenido eliminado. Devuelve null si el usuario cancela, y obliga a
+// escribir algo: una baja sin motivo no se puede explicar en una auditoría.
+Ajuste.pedirMotivo = function (pregunta) {
+  for (;;) {
+    const m = prompt(`${pregunta}\n\nMotivo (queda registrado en la trazabilidad):`);
+    if (m === null) return null;
+    if (m.trim()) return m.trim();
+    alert("Escribí el motivo para poder continuar.");
+  }
+};
+
+Ajuste.headersMotivo = (motivo) => ({ "X-Motivo": encodeURIComponent(motivo || "") });
+
 Ajuste.myDeviceStatus = async function () {
   return Ajuste.apiFetch("/api/devices/me");
 };

@@ -6,7 +6,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from ..config import ELEMENTS
 from ..ws import hub
-from . import ajuste, calidad, camara, catalogo, dashboard, dispositivos, fundiciones, historicos, informes, kiosk, modbus, pie_horno, settings, termico
+from . import ajuste, calidad, camara, catalogo, dashboard, dispositivos, fundiciones, historicos, informes, kiosk, modbus, pie_horno, settings, termico, trazabilidad
 
 router = APIRouter()
 router.include_router(dispositivos.router)
@@ -23,6 +23,7 @@ router.include_router(modbus.router)
 router.include_router(fundiciones.router)
 router.include_router(camara.router)
 router.include_router(ajuste.router)
+router.include_router(trazabilidad.router)
 
 # Tipos de material del catálogo (no la composición química -- eso ya lo sabe el frontend por ELEMENTS). Se
 # expone en vez de duplicarla a mano en JS, para que no se desincronice de config.py.

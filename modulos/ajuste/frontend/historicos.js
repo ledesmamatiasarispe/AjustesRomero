@@ -205,9 +205,11 @@ async function _histLoadDetail(idx) {
   });
   $("#hist-adj-rows").querySelectorAll("[data-del-adj]").forEach((btn) => {
     btn.addEventListener("click", async () => {
-      if (!confirm("¿Eliminar este ajuste de la colada?")) return;
+      const motivo = Ajuste.pedirMotivo("¿Eliminar este ajuste de la colada?");
+      if (motivo === null) return;
       try {
-        await Ajuste.apiFetch(`/api/historicos/sessions/${idx}/adjustments/${btn.dataset.delAdj}`, { method: "DELETE" });
+        await Ajuste.apiFetch(`/api/historicos/sessions/${idx}/adjustments/${btn.dataset.delAdj}`,
+          { method: "DELETE", headers: Ajuste.headersMotivo(motivo) });
         await _histLoadDetail(idx);
       } catch (ex) {
         avisar(`Error: ${ex.message}`, true);
@@ -491,6 +493,7 @@ VISTAS.historicos = async () => {
           <button type="button" id="hist-btn-edit-colada">Editar colada</button>
           <button type="button" id="hist-btn-toggle-sinterizado">Marcar/Desmarcar sinterizado</button>
           <button type="button" id="hist-btn-quality-report">Generar informe de calidad</button>
+          <button type="button" id="hist-btn-trazabilidad" title="Quién cargó y modificó esta colada">Trazabilidad</button>
           <button type="button" id="hist-btn-delete-session" class="peligro">Eliminar sesión</button>
         </div>
         <pre id="hist-detail-summary" class="hist-summary"></pre>
@@ -586,12 +589,17 @@ VISTAS.historicos = async () => {
       avisar(`Error: ${ex.message}`, true);
     }
   });
+  $("#hist-btn-trazabilidad").addEventListener("click", () => {
+    const colada = ($("#hist-detail-colada").textContent || "").replace(/^Colada\s*/i, "").trim();
+    Ajuste.verTrazabilidad(colada);
+  });
   $("#hist-btn-delete-session").addEventListener("click", async () => {
     if (typeof histActiveTab !== "number") return;
-    if (!confirm("¿Eliminar la sesión de esta pestaña? Esto no se puede deshacer.")) return;
+    const motivo = Ajuste.pedirMotivo("¿Eliminar la sesión de esta pestaña? (Su contenido queda guardado en Trazabilidad.)");
+    if (motivo === null) return;
     try {
       const idx = histActiveTab;
-      await Ajuste.apiFetch(`/api/historicos/sessions/${idx}`, { method: "DELETE" });
+      await Ajuste.apiFetch(`/api/historicos/sessions/${idx}`, { method: "DELETE", headers: Ajuste.headersMotivo(motivo) });
       _histCloseSessionTab(idx);
     } catch (ex) {
       avisar(`Error: ${ex.message}`, true);

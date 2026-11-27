@@ -13,6 +13,8 @@ columnas=[] porque esta base no evolucionó nunca por ALTER TABLE -- el único C
 ya es la forma final."""
 from pathlib import Path
 
+from . import trazabilidad
+
 ESQUEMA = """
 CREATE TABLE IF NOT EXISTS alloys (
     position    INTEGER PRIMARY KEY,
@@ -88,7 +90,7 @@ CREATE TABLE IF NOT EXISTS cargas_guardadas (
     created_at TEXT,
     materiales TEXT
 );
-"""
+""" + trazabilidad.ESQUEMA
 
 COLUMNAS: list = []
 
@@ -135,3 +137,6 @@ def migrar(c) -> None:
                       (json.dumps(datos, ensure_ascii=False),))
 
     c.execute("DELETE FROM alloys WHERE tipo='Aleación especial'")
+
+    # 4) Trazabilidad ISO 9001: primer registro de la bitácora (una sola vez por base).
+    trazabilidad.iniciar(c)

@@ -21,6 +21,8 @@ from datetime import datetime
 from fastapi import Depends, Header, HTTPException, Request
 
 from nucleo import db
+
+from . import trazabilidad
 from nucleo.ajustes import env
 
 DEV_SKIP_APPROVAL = env("DEV_SKIP_APPROVAL", "0") != "0"
@@ -113,6 +115,7 @@ def set_device_status(device_id, status):
         else:
             c.execute("UPDATE devices SET status=? WHERE device_id=?", (status, device_id))
         fila = c.execute("SELECT * FROM devices WHERE device_id=?", (device_id,)).fetchone()
+        _auditar_dispositivo(c, actual, fila)
         return _row_to_dict(fila)
 
 
@@ -128,12 +131,24 @@ def set_device_role(device_id, role):
         else:
             c.execute("UPDATE devices SET role=? WHERE device_id=?", (role, device_id))
         fila = c.execute("SELECT * FROM devices WHERE device_id=?", (device_id,)).fetchone()
+        _auditar_dispositivo(c, actual, fila)
         return _row_to_dict(fila)
 
 
 def delete_device(device_id):
     with db.transaccion() as c:
+        actual = c.execute("SELECT * FROM devices WHERE device_id=?", (device_id,)).fetchone()
         c.execute("DELETE FROM devices WHERE device_id=?", (device_id,))
+        _auditar_dispositivo(c, actual, None)
+
+
+def _auditar_dispositivo(c, antes, despues):
+    """Aprobar, revocar, cambiar el rol o eliminar un dispositivo cambia quién puede cargar datos: queda en la
+    bitácora. Solo estado/rol/nombre -- last_seen/ip cambian en cada pedido y no son un cambio de nadie."""
+    def vista(row):
+        return None if row is None else {"nombre": row["name"], "estado": row["status"], "rol": row["role"]}
+    clave = (antes or despues)["device_id"] if (antes or despues) is not None else ""
+    trazabilidad.registrar_cambio(c, "dispositivo", clave, vista(antes), vista(despues))
 
 
 def list_devices():
@@ -165,7 +180,7 @@ def current_device(
     )
 
 
-def require_approved_device(device: dict = Depends(current_device)):
+def _exigir_aprobado(device):
     if DEV_SKIP_APPROVAL:
         return device or {"id": "dev-mode", "status": "approved", "role": "editor"}
     if not device or device.get("status") != "approved":
@@ -175,6 +190,22 @@ def require_approved_device(device: dict = Depends(current_device)):
                 "error": "device_not_approved",
                 "status": (device or {}).get("status", "pending"),
                 "message": "Este dispositivo debe aprobarse desde la página de administración.",
+            },
+        )
+    return device
+
+
+def _exigir_editor(device):
+    if DEV_SKIP_APPROVAL:
+        return device
+    if device.get("role") != "editor":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "read_only",
+                "status": "approved",
+                "role": device.get("role", "viewer"),
+                "message": "Este dispositivo solo puede ver.",
             },
         )
     return device
@@ -192,33 +223,40 @@ def usuario_opcional(authorization: str | None = Header(None)):
         return None
 
 
+# Trazabilidad: las cuatro dependencias de acceso son async A PROPÓSITO. Fijan en una contextvar quién está haciendo
+# el pedido (usuario logueado, si no el dispositivo) y el motivo que mandó la pantalla (header X-Motivo), y datos.py
+# lo lee al escribir la bitácora. Una dependencia sync corre en un hilo del threadpool con una COPIA del contexto, y
+# lo que fija ahí no le llega a la ruta; una async corre en la tarea del pedido, y la ruta (sync o async) hereda ese
+# contexto. Lo que hacen adentro es solo comparar diccionarios: no bloquean el loop.
+def _fijar_actor(request: Request, device, usuario):
+    trazabilidad.fijar_actor(usuario, device, _client_ip(request), request.headers.get("x-motivo", ""))
+
+
+async def require_approved_device(request: Request, device: dict = Depends(current_device)):
+    trazabilidad.fijar_actor(None, device, _client_ip(request), request.headers.get("x-motivo", ""))
+    return _exigir_aprobado(device)
+
+
+async def require_editor_device(request: Request, device: dict = Depends(current_device)):
+    trazabilidad.fijar_actor(None, device, _client_ip(request), request.headers.get("x-motivo", ""))
+    return _exigir_editor(_exigir_aprobado(device))
+
+
 # Pestañas de la app (todo menos el kiosco de Pie de Horno): pasa un usuario logueado, o -- como antes -- un
 # dispositivo aprobado sin sesión (así las pantallas que se abren sin login, como el kiosco, pueden seguir leyendo
 # lo que necesitan de otras rutas). La aprobación por dispositivo queda para el kiosco (rutas/kiosk.py, que sigue
 # usando require_approved_device / require_editor_device): es la pantalla fija al pie del horno, sin nadie logueado.
-def require_acceso(device: dict = Depends(current_device), usuario: dict | None = Depends(usuario_opcional)):
+async def require_acceso(request: Request, device: dict = Depends(current_device),
+                         usuario: dict | None = Depends(usuario_opcional)):
+    _fijar_actor(request, device, usuario)
     if usuario:
         return device or {}
-    return require_approved_device(device)
+    return _exigir_aprobado(device)
 
 
-def require_acceso_editor(device: dict = Depends(current_device), usuario: dict | None = Depends(usuario_opcional)):
+async def require_acceso_editor(request: Request, device: dict = Depends(current_device),
+                                usuario: dict | None = Depends(usuario_opcional)):
+    _fijar_actor(request, device, usuario)
     if usuario:
         return device or {}
-    return require_editor_device(require_approved_device(device))
-
-
-def require_editor_device(device: dict = Depends(require_approved_device)):
-    if DEV_SKIP_APPROVAL:
-        return device
-    if device.get("role") != "editor":
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": "read_only",
-                "status": "approved",
-                "role": device.get("role", "viewer"),
-                "message": "Este dispositivo solo puede ver.",
-            },
-        )
-    return device
+    return _exigir_editor(_exigir_aprobado(device))

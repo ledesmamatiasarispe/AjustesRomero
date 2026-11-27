@@ -3,7 +3,7 @@
 Migración de ajuste_comp_web sobre el núcleo de appbase (2026-11-24). REPO se deja vacío a propósito: esta app sigue
 corriendo como servidor LAN siempre encendido (uvicorn directo), no como .exe instalado/autoactualizable -- no
 adoptamos herramientas/compilar.py ni nucleo/actualizador.py por ahora."""
-VERSION = "0.1.1"
+VERSION = "0.2.0"
 APP = "AjusteComp"
 NOMBRE = "Ajuste de Composición"
 SUBTITULO = "Cálculo de composición y seguimiento de coladas"

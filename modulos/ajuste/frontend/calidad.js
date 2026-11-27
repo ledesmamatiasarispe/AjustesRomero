@@ -1230,8 +1230,9 @@ VISTAS.calidad = async () => {
 
   calEls.btnDelete.addEventListener("click", async () => {
     if (!calSelected || calSelected.type !== "report") { alert("Seleccioná un informe individual para eliminar."); return; }
-    if (!confirm("¿Eliminar el informe seleccionado?")) return;
-    await Ajuste.apiFetch(`/api/calidad/reports/${calSelected.id}`, { method: "DELETE" });
+    const motivo = Ajuste.pedirMotivo("¿Eliminar el informe seleccionado?");
+    if (motivo === null) return;
+    await Ajuste.apiFetch(`/api/calidad/reports/${calSelected.id}`, { method: "DELETE", headers: Ajuste.headersMotivo(motivo) });
     _calClearForm();
     await _calLoadReports({ preserveSelection: false });
   });
@@ -1240,8 +1241,10 @@ VISTAS.calidad = async () => {
     const info = calSelected ? (calSelected.type === "group" ? calSelected : calReports.find((r) => r.id === calSelected.id)) : null;
     if (!info) { alert("Seleccioná un grupo o un material del grupo."); return; }
     const count = calReports.filter((r) => r.base === info.base && r.lote === info.lote).length;
-    if (!confirm(`¿Eliminar el grupo completo (${count} informes)?`)) return;
-    await Ajuste.apiFetch(`/api/calidad/reports/group?base=${encodeURIComponent(info.base)}&lote=${encodeURIComponent(info.lote)}`, { method: "DELETE" });
+    const motivo = Ajuste.pedirMotivo(`¿Eliminar el grupo completo (${count} informes)?`);
+    if (motivo === null) return;
+    await Ajuste.apiFetch(`/api/calidad/reports/group?base=${encodeURIComponent(info.base)}&lote=${encodeURIComponent(info.lote)}`,
+      { method: "DELETE", headers: Ajuste.headersMotivo(motivo) });
     _calClearForm();
     await _calLoadReports({ preserveSelection: false });
   });
